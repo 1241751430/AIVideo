@@ -4,6 +4,8 @@
 
 本项目是一个本地 AI 自动制片工具。用户只需要提供主题、主要内容或参考图片，agent 就可以自动选择合适的内容 skill，生成文案、分镜、渲染素材，并在安装好 `ffmpeg` 的情况下导出最终视频。
 
+推荐运行方式：优先使用 Docker。宿主机直跑仍然支持，但无论是本地使用还是部署上线，容器方式都更稳，因为它可以统一 Node.js、Python 和 `ffmpeg` 环境。
+
 ## 功能特性
 
 - `aivideo init`
@@ -19,10 +21,19 @@
 
 ## 环境要求
 
+推荐方式：
+
+- Docker
+- Docker Compose
+
+备选宿主机运行方式：
+
 - Node.js 20+
 - pnpm 10+
 - Python 3.10+
 - `ffmpeg` 和 `ffprobe`
+
+在 Docker 模式下，宿主机不需要单独安装 `ffmpeg`，也不需要额外创建本地 Python 虚拟环境。
 
 如果没有安装 `ffmpeg`，项目仍然可以生成文案、分镜、字幕和渲染清单等中间产物，但无法导出最终视频文件。
 
@@ -87,6 +98,25 @@ sudo apt install -y ffmpeg
 
 ## 快速开始
 
+### 推荐方式：Docker
+
+```bash
+cp .env.example .env
+docker compose build
+docker compose run --rm aivideo skills list
+docker compose run --rm aivideo providers test
+docker compose run --rm aivideo generate --theme "夏季防晒喷雾" --skill ecommerce --mode script
+```
+
+这种模式下：
+
+- `ffmpeg` 由容器内部提供
+- Python 在容器内部运行
+- 宿主机只需要安装 Docker 和 Docker Compose
+- 生成产物仍然会通过挂载卷写入本地 `projects/` 目录
+
+### 备选方式：宿主机直跑
+
 ```bash
 pnpm install
 pnpm build
@@ -106,14 +136,70 @@ pnpm cli generate --theme "夏季防晒喷雾" --skill ecommerce --mode script
 
 当前项目是一个以 CLI 为核心的工具，推荐两种部署方式：
 
+- Docker 部署
 - 本地工作站部署
 - 单机 Linux 服务器部署
 
-仓库当前还没有内置 Docker 打包方案。如果后续需要容器化部署，建议作为单独交付项补充。
+仓库当前已经包含：
+
+- [Dockerfile](./Dockerfile)
+- [docker-compose.yml](./docker-compose.yml)
+- [.dockerignore](./.dockerignore)
 
 ## 部署步骤
 
-### 方式一：本地部署
+### 方式一：Docker 部署
+
+适用于希望获得统一运行环境，并且不想在宿主机安装 Node.js、Python 或 `ffmpeg` 的场景。这也是当前最推荐的运行和部署方式。
+
+要求：
+
+- Docker
+- Docker Compose
+
+部署步骤：
+
+1. 准备环境变量文件：
+
+```bash
+cp .env.example .env
+```
+
+2. 如果需要远程模型能力，编辑 `.env` 并填入 provider API Key。
+
+3. 构建镜像：
+
+```bash
+docker compose build
+```
+
+4. 验证容器运行环境：
+
+```bash
+docker compose run --rm aivideo skills list
+docker compose run --rm aivideo providers test
+```
+
+5. 执行生成任务：
+
+```bash
+docker compose run --rm aivideo generate --theme "你的主题" --skill auto --mode script --duration 30s
+```
+
+6. 如果要导出最终视频：
+
+```bash
+docker compose run --rm aivideo generate --theme "你的主题" --skill auto --mode video --duration 30s
+```
+
+说明：
+
+- 容器内已经包含 `ffmpeg`、`ffprobe`、Node.js、pnpm 和 Python
+- 这种模式下不需要宿主机级别的 Python 虚拟环境
+- `projects/` 会从宿主机挂载进去，生成结果会保留在本地目录
+- `aivideo.config.yaml` 会以只读方式挂载到容器内部
+
+### 方式二：本地部署
 
 适用于操作者直接在本机生成内容。
 
@@ -168,7 +254,7 @@ pnpm cli generate --theme "你的主题" --skill auto --mode video --duration 30
 pnpm cli render --project <project-id>
 ```
 
-### 方式二：单机服务器部署
+### 方式三：单机服务器部署
 
 适用于由一台专用 Linux 服务器统一生成内容，或配合定时任务使用。
 
@@ -223,8 +309,10 @@ pnpm cli generate --theme "AI 办公助手" --skill knowledge --mode video --dur
 
 - 当前项目默认不提供 HTTP API
 - 当前部署形态是命令行驱动，更适合由 cron、CI 或外部工作流系统调度
+- Docker 是当前默认推荐的运行和部署方式
 - 所有生成产物默认写入 `projects/`，部署用户需要对该目录具备写权限
 - 在生产环境中，请只在 `.env` 或服务器密钥管理系统中保存 API Key，不要写入版本库
+- 如果使用 Docker 模式，宿主机不需要本地 Python 虚拟环境，也不需要宿主机级别的 `ffmpeg`
 
 ## 运行边界
 

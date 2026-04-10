@@ -1,0 +1,11 @@
+.git
+.gitignore
+node_modules
+dist
+coverage
+.DS_Store
+.env
+.venv
+projects
+*.log
+__pycache__

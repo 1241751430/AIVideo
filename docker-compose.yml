@@ -1,0 +1,15 @@
+services:
+  aivideo:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: aivideo-agent:local
+    working_dir: /app
+    entrypoint: ["node", "apps/cli/dist/index.js"]
+    command: ["help"]
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - ./projects:/app/projects
+      - ./aivideo.config.yaml:/app/aivideo.config.yaml:ro

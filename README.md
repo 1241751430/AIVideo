@@ -4,6 +4,8 @@
 
 AI Video Agent CLI is a local AI-powered video production tool. Users only need to provide a topic, key content, or reference images. The agent can then choose a suitable content skill, generate copy, build a storyboard, prepare render assets, and export a video when `ffmpeg` is available.
 
+Recommended runtime mode: Docker first. Host-level execution remains available, but containerized runtime is the preferred path for both local usage and deployment because it provides a stable Node.js, Python, and `ffmpeg` environment.
+
 ## Features
 
 - `aivideo init`
@@ -19,10 +21,19 @@ AI Video Agent CLI is a local AI-powered video production tool. Users only need 
 
 ## Requirements
 
+Recommended:
+
+- Docker
+- Docker Compose
+
+Alternative host-level runtime:
+
 - Node.js 20+
 - pnpm 10+
 - Python 3.10+
 - `ffmpeg` and `ffprobe`
+
+In Docker mode, you do not need to install `ffmpeg` on the host machine, and you do not need to create a local Python virtual environment.
 
 If `ffmpeg` is not installed, the project can still generate intermediate assets such as copy, storyboard, subtitles, and render manifests, but it cannot export the final video file.
 
@@ -87,6 +98,25 @@ Install `ffmpeg` from the appropriate package source for your distribution and m
 
 ## Quick Start
 
+### Recommended: Docker
+
+```bash
+cp .env.example .env
+docker compose build
+docker compose run --rm aivideo skills list
+docker compose run --rm aivideo providers test
+docker compose run --rm aivideo generate --theme "Summer sunscreen spray" --skill ecommerce --mode script
+```
+
+In this mode:
+
+- `ffmpeg` is provided inside the container
+- Python runs inside the container
+- The host machine only needs Docker and Docker Compose
+- Generated assets are still written to the local `projects/` directory through the mounted volume
+
+### Alternative: Run On Host
+
 ```bash
 pnpm install
 pnpm build
@@ -106,14 +136,70 @@ Add API keys to `.env` to enable remote models. If no remote provider is configu
 
 The current project is CLI-first. Recommended deployment modes:
 
+- Docker deployment
 - Local workstation deployment
 - Single Linux server deployment
 
-Docker packaging is not included yet. If containerized deployment is required later, it should be added as a separate deliverable.
+The repository now includes:
+
+- [Dockerfile](./Dockerfile)
+- [docker-compose.yml](./docker-compose.yml)
+- [.dockerignore](./.dockerignore)
 
 ## Deployment Steps
 
-### Option 1: Local Deployment
+### Option 1: Docker Deployment
+
+Use this when you want a reproducible runtime and do not want to install Node.js, Python, or `ffmpeg` on the host system. This is the recommended option for both local usage and deployment.
+
+Requirements:
+
+- Docker
+- Docker Compose
+
+Steps:
+
+1. Prepare the environment file:
+
+```bash
+cp .env.example .env
+```
+
+2. Edit `.env` and add provider API keys if remote models are needed.
+
+3. Build the image:
+
+```bash
+docker compose build
+```
+
+4. Verify the container runtime:
+
+```bash
+docker compose run --rm aivideo skills list
+docker compose run --rm aivideo providers test
+```
+
+5. Run a generation task:
+
+```bash
+docker compose run --rm aivideo generate --theme "Your topic" --skill auto --mode script --duration 30s
+```
+
+6. To export a final video:
+
+```bash
+docker compose run --rm aivideo generate --theme "Your topic" --skill auto --mode video --duration 30s
+```
+
+Notes:
+
+- The container already includes `ffmpeg`, `ffprobe`, Node.js, pnpm, and Python
+- You do not need a host-level Python virtual environment in this mode
+- `projects/` is mounted from the host, so generated assets remain available outside the container
+- `aivideo.config.yaml` is mounted read-only into the container
+
+### Option 2: Local Deployment
 
 Use this when the operator generates content on the same machine.
 
@@ -168,7 +254,7 @@ pnpm cli generate --theme "Your topic" --skill auto --mode video --duration 30s
 pnpm cli render --project <project-id>
 ```
 
-### Option 2: Single Server Deployment
+### Option 3: Single Server Deployment
 
 Use this when a dedicated Linux server handles centralized generation or scheduled tasks.
 
@@ -223,8 +309,10 @@ pnpm cli generate --theme "AI office assistant" --skill knowledge --mode video -
 
 - The current project does not expose an HTTP API by default
 - The current deployment model is command-driven, so scheduling is usually handled by cron, CI, or an external workflow system
+- Docker is the recommended default runtime for day-to-day usage and deployment
 - Generated assets are written under `projects/`, so the deployment user must have write permission there
 - In production-like environments, keep API keys only in `.env` or a server-side secret manager, not in committed files
+- In Docker mode, the host machine does not need a local Python virtual environment or host-level `ffmpeg`
 
 ## Runtime Boundaries
 

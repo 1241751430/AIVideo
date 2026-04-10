@@ -28,8 +28,27 @@ def resolve_media_path(project_dir: Path, value: str | None) -> str | None:
     return str(project_dir / candidate)
 
 
+def resolve_project_path(project_dir: Path, value: str, label: str) -> Path:
+    candidate = (project_dir / value).resolve()
+    project_root = project_dir.resolve()
+    if candidate != project_root and project_root not in candidate.parents:
+        raise RuntimeError(f"{label} must stay within the project directory")
+    return candidate
+
+
 def escape_drawtext(value: str) -> str:
     return value.replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
+
+
+def escape_filter_path(value: str) -> str:
+    return (
+        value.replace("\\", "\\\\")
+        .replace(":", "\\:")
+        .replace("'", "\\'")
+        .replace("[", "\\[")
+        .replace("]", "\\]")
+        .replace(",", "\\,")
+    )
 
 
 def build_clip_command(
@@ -129,6 +148,13 @@ def render(project_dir: Path, manifest_path: Path) -> Path:
     work_dir = project_dir / ".render_tmp"
     work_dir.mkdir(parents=True, exist_ok=True)
 
+    output_path = resolve_project_path(project_dir, manifest["outputFile"], "Output file")
+    captions = resolve_project_path(project_dir, manifest["captionsFile"], "Captions file")
+    for shot in manifest["shots"]:
+        audio_path = shot.get("audioPath")
+        if audio_path:
+            resolve_project_path(project_dir, audio_path, "Audio file")
+
     clips: list[Path] = []
     for index, shot in enumerate(manifest["shots"]):
         clips.append(make_clip(project_dir, work_dir, shot, manifest["width"], manifest["height"], index))
@@ -138,9 +164,7 @@ def render(project_dir: Path, manifest_path: Path) -> Path:
     merged = work_dir / "merged.mp4"
     run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(concat_file), "-c", "copy", str(merged)])
 
-    output_path = project_dir / manifest["outputFile"]
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    captions = project_dir / manifest["captionsFile"]
     if captions.exists():
         run(
             [
@@ -149,7 +173,7 @@ def render(project_dir: Path, manifest_path: Path) -> Path:
                 "-i",
                 str(merged),
                 "-vf",
-                f"subtitles={captions.as_posix()}",
+                f"subtitles='{escape_filter_path(captions.as_posix())}'",
                 "-c:a",
                 "copy",
                 str(output_path),

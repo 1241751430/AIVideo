@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { parseArgs, parseDuration } from "./cli.js";
+import { assertPathWithin, parseArgs, parseDuration } from "./cli.js";
 
 test("parseDuration understands second suffix", () => {
   assert.equal(parseDuration("45s"), 45);
@@ -13,4 +13,11 @@ test("parseArgs supports inline and positional arguments", () => {
   assert.equal(parsed.options.theme, "新品发布");
   assert.equal(parsed.options.duration, "45s");
   assert.equal(parsed.options.live, true);
+});
+
+test("assertPathWithin rejects paths outside the base directory", () => {
+  assert.throws(
+    () => assertPathWithin("/tmp/projects", "/tmp/other/project", "Project directory"),
+    /must stay within/
+  );
 });

@@ -25,6 +25,33 @@ test("validateGenerateRequest rejects empty input", () => {
   );
 });
 
+test("validateGenerateRequest rejects oversized workloads", () => {
+  assert.throws(
+    () =>
+      validateGenerateRequest({
+        theme: "长视频",
+        skill: "marketing",
+        mode: "video",
+        aspectRatio: "9:16",
+        durationSeconds: 601
+      }),
+    /600 seconds or less/
+  );
+
+  assert.throws(
+    () =>
+      validateGenerateRequest({
+        theme: "图片很多",
+        images: Array.from({ length: 21 }, (_, index) => `image-${index}.png`),
+        skill: "marketing",
+        mode: "script",
+        aspectRatio: "9:16",
+        durationSeconds: 30
+      }),
+    /Images count must be 20 or less/
+  );
+});
+
 test("generateArtifacts builds storyboard and captions", async () => {
   const request: GenerateRequest = {
     theme: "AI 智能体介绍",

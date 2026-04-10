@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { basename, isAbsolute, join, resolve } from "node:path";
+import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import {
   BUILTIN_SKILLS,
   CONFIG_FILE,
@@ -123,9 +123,11 @@ async function runRender(cwd: string, options: Record<string, string | boolean>)
     throw new Error("render requires --project <project-id|path>");
   }
   const config = loadConfig(cwd);
+  const projectsRoot = resolve(cwd, config.defaults.projectsDir);
   const projectDir = isAbsolute(projectArg)
     ? projectArg
     : resolveProjectDir(cwd, config.defaults.projectsDir, projectArg);
+  assertPathWithin(projectsRoot, projectDir, "Project directory");
   const manifestPath = resolve(projectDir, "render-manifest.json");
   if (!existsSync(manifestPath)) {
     throw new Error(`render-manifest.json not found in ${projectDir}`);
@@ -247,6 +249,15 @@ export function parseDuration(value: string | undefined): number | undefined {
     ? Number.parseInt(normalized.slice(0, -1), 10)
     : Number.parseInt(normalized, 10);
   return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+export function assertPathWithin(baseDir: string, candidatePath: string, label: string): void {
+  const resolvedBase = resolve(baseDir);
+  const resolvedCandidate = resolve(candidatePath);
+  const rel = relative(resolvedBase, resolvedCandidate);
+  if (rel === ".." || rel.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`)) {
+    throw new Error(`${label} must stay within ${baseDir}.`);
+  }
 }
 
 async function ensureBinary(command: string): Promise<void> {

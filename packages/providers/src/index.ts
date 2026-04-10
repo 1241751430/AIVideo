@@ -16,6 +16,9 @@ import {
   VideoModelProvider
 } from "@aivideo/core";
 
+const LIVE_TEST_TIMEOUT_MS = 10_000;
+const MODEL_REQUEST_TIMEOUT_MS = 45_000;
+
 class LocalRuleTextProvider implements TextModelProvider {
   readonly id = "local-rule-text";
   readonly capability = "text" as const;
@@ -86,11 +89,15 @@ class OpenAICompatibleTextProvider implements TextModelProvider {
       };
     }
 
-    const response = await fetch(`${this.config.baseURL}/models`, {
-      headers: {
-        Authorization: `Bearer ${apiKey}`
-      }
-    });
+    const response = await fetchWithTimeout(
+      `${this.config.baseURL}/models`,
+      {
+        headers: {
+          Authorization: `Bearer ${apiKey}`
+        }
+      },
+      LIVE_TEST_TIMEOUT_MS
+    );
 
     return {
       providerId: this.id,
@@ -107,21 +114,25 @@ class OpenAICompatibleTextProvider implements TextModelProvider {
       throw new Error(`Provider ${this.id} is missing baseURL, model, or API key.`);
     }
 
-    const response = await fetch(`${this.config.baseURL}/chat/completions`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        Authorization: `Bearer ${apiKey}`
+    const response = await fetchWithTimeout(
+      `${this.config.baseURL}/chat/completions`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          Authorization: `Bearer ${apiKey}`
+        },
+        body: JSON.stringify({
+          model: this.config.model,
+          temperature: 0.7,
+          messages: [
+            { role: "system", content: request.systemPrompt },
+            { role: "user", content: request.userPrompt }
+          ]
+        })
       },
-      body: JSON.stringify({
-        model: this.config.model,
-        temperature: 0.7,
-        messages: [
-          { role: "system", content: request.systemPrompt },
-          { role: "user", content: request.userPrompt }
-        ]
-      })
-    });
+      MODEL_REQUEST_TIMEOUT_MS
+    );
 
     if (!response.ok) {
       throw new Error(`Provider ${this.id} failed with HTTP ${response.status}`);
@@ -325,4 +336,23 @@ function execFileAsync(command: string, args: string[]): Promise<void> {
       resolve();
     });
   });
+}
+
+async function fetchWithTimeout(
+  input: string,
+  init: RequestInit,
+  timeoutMs: number
+): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(input, { ...init, signal: controller.signal });
+  } catch (error) {
+    if ((error as Error).name === "AbortError") {
+      throw new Error(`Request to ${input} timed out after ${timeoutMs}ms`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
 }

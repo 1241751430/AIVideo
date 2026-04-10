@@ -21,6 +21,8 @@ const ASPECT_SIZES: Record<string, { width: number; height: number }> = {
   "1:1": { width: 1080, height: 1080 },
   "4:5": { width: 1080, height: 1350 }
 };
+const MAX_DURATION_SECONDS = 600;
+const MAX_INPUT_IMAGES = 20;
 
 export function validateGenerateRequest(request: GenerateRequest): void {
   if (!request.theme && !request.content && (!request.images || request.images.length === 0)) {
@@ -31,6 +33,12 @@ export function validateGenerateRequest(request: GenerateRequest): void {
   }
   if (request.mode !== "script" && request.mode !== "video") {
     throw new Error(`Unsupported mode: ${request.mode}`);
+  }
+  if (request.durationSeconds > MAX_DURATION_SECONDS) {
+    throw new Error(`Duration must be ${MAX_DURATION_SECONDS} seconds or less.`);
+  }
+  if ((request.images?.length ?? 0) > MAX_INPUT_IMAGES) {
+    throw new Error(`Images count must be ${MAX_INPUT_IMAGES} or less.`);
   }
   if (!ASPECT_SIZES[request.aspectRatio]) {
     throw new Error(`Unsupported aspect ratio: ${request.aspectRatio}`);

@@ -1,0 +1,12 @@
+{
+  "name": "aivideo-agent",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@10.28.2",
+  "scripts": {
+    "build": "pnpm -r build",
+    "test": "pnpm build && pnpm -r test:compiled",
+    "check": "pnpm build && pnpm test",
+    "cli": "node apps/cli/dist/index.js"
+  }
+}

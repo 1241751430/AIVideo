@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "no
 import { createInterface } from "node:readline/promises";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { stdin as input, stdout as output } from "node:process";
+import { pathToFileURL } from "node:url";
 import {
   BUILTIN_SKILLS,
   CONFIG_FILE,
@@ -362,7 +363,7 @@ async function runCreate(cwd: string): Promise<void> {
   }
 }
 
-async function runRender(cwd: string, options: Record<string, string | boolean>): Promise<void> {
+async function runRender(cwd: string, options: Record<string, string | boolean>): Promise<string> {
   const projectArg = getStringOption(options, "project");
   if (!projectArg) {
     throw new Error("render requires --project <project-id|path>");
@@ -388,7 +389,9 @@ async function runRender(cwd: string, options: Record<string, string | boolean>)
     heartbeatMs: 5000
   });
   const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as { outputFile: string };
-  console.log(`Rendered video: ${resolve(projectDir, manifest.outputFile)}`);
+  const finalVideoPath = resolve(projectDir, manifest.outputFile);
+  printVideoReadySummary(projectDir, finalVideoPath);
+  return finalVideoPath;
 }
 
 function buildGenerateRequest(
@@ -636,6 +639,22 @@ export function inferInputLanguage(parts: Array<string | undefined>): string | u
   }
 
   return undefined;
+}
+
+export function getVideoReadySummary(projectDir: string, videoPath: string): string[] {
+  return [
+    "Video generation complete.",
+    `Project directory: ${projectDir}`,
+    `Final video: ${videoPath}`,
+    `Open file: ${pathToFileURL(videoPath).href}`,
+    "No extra export command is required."
+  ];
+}
+
+function printVideoReadySummary(projectDir: string, videoPath: string): void {
+  for (const line of getVideoReadySummary(projectDir, videoPath)) {
+    console.log(line);
+  }
 }
 
 function normalizeBriefKey(value: string): string {

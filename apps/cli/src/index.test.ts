@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { assertPathWithin, inferInputLanguage, parseArgs, parseDuration, parseStructuredBrief } from "./cli.js";
+import {
+  assertPathWithin,
+  getVideoReadySummary,
+  inferInputLanguage,
+  parseArgs,
+  parseDuration,
+  parseStructuredBrief
+} from "./cli.js";
 
 test("parseDuration understands second suffix", () => {
   assert.equal(parseDuration("45s"), 45);
@@ -70,4 +77,13 @@ test("inferInputLanguage prefers input language when not explicitly provided", (
   assert.equal(inferInputLanguage(["Summer sunscreen spray", "Lightweight and non-greasy"]), "en-US");
   assert.equal(inferInputLanguage(["夏季防晒喷雾", "Lightweight and non-greasy"]), "zh-CN");
   assert.equal(inferInputLanguage([]), undefined);
+});
+
+test("getVideoReadySummary includes direct video path and file link", () => {
+  const lines = getVideoReadySummary("/tmp/projects/demo", "/tmp/projects/demo/output/final.mp4");
+  assert.equal(lines[0], "Video generation complete.");
+  assert.match(lines[1] ?? "", /Project directory: \/tmp\/projects\/demo/);
+  assert.match(lines[2] ?? "", /Final video: \/tmp\/projects\/demo\/output\/final\.mp4/);
+  assert.match(lines[3] ?? "", /^Open file: file:\/\/\/tmp\/projects\/demo\/output\/final\.mp4$/);
+  assert.equal(lines[4], "No extra export command is required.");
 });

@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, mkdirSync, utimesSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import { autoSelectSkill } from "./skills.js";
 import { GenerateRequest, ProviderSelection } from "./types.js";
-import { generateArtifacts, validateGenerateRequest } from "./workflow.js";
+import { cleanupExpiredProjects, generateArtifacts, validateGenerateRequest } from "./workflow.js";
 
 test("autoSelectSkill chooses ecommerce for shopping intent", () => {
   const skill = autoSelectSkill({
@@ -66,4 +69,19 @@ test("generateArtifacts builds storyboard and captions", async () => {
   assert.equal(artifacts.storyboard.aspectRatio, "16:9");
   assert.equal(artifacts.storyboard.shots.length, 5);
   assert.equal(artifacts.captions.length, artifacts.storyboard.shots.length);
+});
+
+test("cleanupExpiredProjects removes only expired directories", () => {
+  const root = mkdtempSync(join(tmpdir(), "aivideo-projects-"));
+  const expired = join(root, "expired-project");
+  const fresh = join(root, "fresh-project");
+  mkdirSync(expired);
+  mkdirSync(fresh);
+
+  const tenDaysAgo = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);
+  utimesSync(expired, tenDaysAgo, tenDaysAgo);
+
+  const removed = cleanupExpiredProjects(root, 7);
+  assert.equal(removed.length, 1);
+  assert.match(removed[0] ?? "", /expired-project/);
 });

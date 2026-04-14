@@ -15,9 +15,11 @@ Recommended runtime mode: Docker first. Host-level execution remains available, 
 - `aivideo providers test`
   - Validate provider configuration
 - `aivideo generate`
-  - Generate scripts, storyboards, and optionally render a video
+  - Generate scripts, storyboards, and optionally render a video from structured brief text or explicit flags
 - `aivideo render`
   - Re-render an existing project
+- `aivideo cleanup`
+  - Remove expired project artifacts from `projects/`
 
 ## Requirements
 
@@ -105,7 +107,8 @@ cp .env.example .env
 docker compose build
 docker compose run --rm aivideo skills list
 docker compose run --rm aivideo providers test
-docker compose run --rm aivideo generate --theme "Summer sunscreen spray" --skill ecommerce --mode script
+docker compose run --rm aivideo generate --brief "Theme: Summer sunscreen spray; Content: lightweight, non-greasy; Mode: script; Aspect: 9:16; Duration: 30s"
+docker compose run --rm aivideo cleanup --keep-days 7
 ```
 
 In this mode:
@@ -122,7 +125,8 @@ pnpm install
 pnpm build
 pnpm cli init
 pnpm cli skills list
-pnpm cli generate --theme "Summer sunscreen spray" --skill ecommerce --mode script
+pnpm cli generate --brief "Theme: Summer sunscreen spray; Content: lightweight, non-greasy; Mode: script; Aspect: 9:16; Duration: 30s"
+pnpm cli cleanup --keep-days 7
 ```
 
 After running `init`, the current directory will contain:
@@ -131,6 +135,39 @@ After running `init`, the current directory will contain:
 - `.env.example`
 
 Add API keys to `.env` to enable remote models. If no remote provider is configured, the CLI falls back to built-in local behavior.
+
+## Natural Language Input
+
+The recommended way to use the CLI is now a structured brief instead of many flags.
+
+Example:
+
+```text
+Theme: Summer sunscreen spray; Content: lightweight, non-greasy; Mode: video; Aspect: 9:16; Duration: 30s; Language: zh-CN; Platform: douyin
+```
+
+Chinese format also works:
+
+```text
+主题：夏季防晒喷雾；主要内容：清爽不油腻；输出模式：video；视频比例：9:16；视频时长：30s；语言：zh-CN；平台：douyin
+```
+
+CLI usage:
+
+```bash
+pnpm cli generate --brief "主题：夏季防晒喷雾；主要内容：清爽不油腻；输出模式：video；视频比例：9:16；视频时长：30s"
+pnpm cli generate --brief-file ./brief.txt --images ./assets/ref1.png,./assets/ref2.jpg
+pnpm cli create
+```
+
+Notes:
+
+- `create` supports pasting a structured brief directly, or you can press Enter to switch into step-by-step mode
+- `create` now defaults to `video` mode, so users do not need to provide an output mode during the guided flow
+- After the text questions, `create` will ask whether to upload reference images and will keep asking if more images should be added
+- If `language` is explicitly provided, the CLI uses that value; otherwise it auto-detects the language from user input and only falls back to the config default when detection is inconclusive
+- `--brief` and `--brief-file` support both Chinese and English keys
+- Images can still be provided separately through `--images`
 
 ## Deployment Options
 
@@ -183,13 +220,13 @@ docker compose run --rm aivideo providers test
 5. Run a generation task:
 
 ```bash
-docker compose run --rm aivideo generate --theme "Your topic" --skill auto --mode script --duration 30s
+docker compose run --rm aivideo generate --brief "Theme: Your topic; Mode: script; Duration: 30s"
 ```
 
 6. To export a final video:
 
 ```bash
-docker compose run --rm aivideo generate --theme "Your topic" --skill auto --mode video --duration 30s
+docker compose run --rm aivideo generate --brief "Theme: Your topic; Mode: video; Duration: 30s"
 ```
 
 Notes:
@@ -198,6 +235,13 @@ Notes:
 - You do not need a host-level Python virtual environment in this mode
 - `projects/` is mounted from the host, so generated assets remain available outside the container
 - `aivideo.config.yaml` is mounted read-only into the container
+- If you do not want to persist script/storyboard artifacts, add `--no-persist-artifacts`
+- If you want temporary render files removed after video export, add `--cleanup-after-render`
+- You can remove expired projects with:
+
+```bash
+docker compose run --rm aivideo cleanup --keep-days 7
+```
 
 ### Option 2: Local Deployment
 
@@ -244,14 +288,27 @@ pnpm cli providers test
 8. Run a generation task:
 
 ```bash
-pnpm cli generate --theme "Your topic" --skill auto --mode script --duration 30s
+pnpm cli generate --brief "Theme: Your topic; Mode: script; Duration: 30s"
 ```
 
 9. To export a final video, use `video` mode or re-render an existing project:
 
 ```bash
-pnpm cli generate --theme "Your topic" --skill auto --mode video --duration 30s
+pnpm cli generate --brief "Theme: Your topic; Mode: video; Duration: 30s"
 pnpm cli render --project <project-id>
+```
+
+Useful safety flags:
+
+- `--no-persist-artifacts`
+  - Remove script-oriented artifacts such as `brief.json`, `script.md`, and `storyboard.json` after generation
+- `--cleanup-after-render`
+  - Remove temporary render files such as audio, captions, and temporary render workspace after video export
+
+Cleanup expired projects:
+
+```bash
+pnpm cli cleanup --keep-days 7
 ```
 
 ### Option 3: Single Server Deployment
@@ -302,7 +359,7 @@ pnpm cli providers test
 Example:
 
 ```bash
-pnpm cli generate --theme "AI office assistant" --skill knowledge --mode video --duration 30s
+pnpm cli generate --brief "Theme: AI office assistant; Skill: knowledge; Mode: video; Duration: 30s"
 ```
 
 ### Deployment Notes
@@ -313,6 +370,15 @@ pnpm cli generate --theme "AI office assistant" --skill knowledge --mode video -
 - Generated assets are written under `projects/`, so the deployment user must have write permission there
 - In production-like environments, keep API keys only in `.env` or a server-side secret manager, not in committed files
 - In Docker mode, the host machine does not need a local Python virtual environment or host-level `ffmpeg`
+
+## Security Notes
+
+- Provider API keys are read from `.env`
+- By default, remote provider `baseURL` values are restricted to trusted hosts
+- If you need a custom provider gateway, you must explicitly set `allowCustomBaseURL: true` for that provider in `aivideo.config.yaml`
+- Input images are restricted to `png`, `jpg`, `jpeg`, and `webp`
+- Input images larger than 10 MB are rejected
+- Default workload limits are enforced for duration and image count
 
 ## Runtime Boundaries
 

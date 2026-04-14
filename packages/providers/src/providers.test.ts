@@ -16,3 +16,20 @@ test("testProviders reports health for configured profile", async () => {
   assert.equal(health.length, 4);
   assert.ok(health.some((item) => item.providerId === "local-rule-text"));
 });
+
+test("custom baseURL is rejected unless explicitly allowed", async () => {
+  const config = loadConfig(process.cwd());
+  const original = config.providers["openai-text"];
+  assert.ok(original);
+  config.providers["openai-text"] = {
+    ...original,
+    baseURL: "https://evil.example.com/v1"
+  };
+
+  await assert.rejects(
+    async () => {
+      await testProviders(config, "openai");
+    },
+    /trusted host list/
+  );
+});

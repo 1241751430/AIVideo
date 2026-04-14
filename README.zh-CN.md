@@ -15,9 +15,11 @@
 - `aivideo providers test`
   - 校验模型 provider 配置
 - `aivideo generate`
-  - 生成文案、分镜，并可选输出视频
+  - 通过结构化 brief 或显式参数生成文案、分镜，并可选输出视频
 - `aivideo render`
   - 基于已有项目重新渲染
+- `aivideo cleanup`
+  - 清理 `projects/` 目录中过期的项目产物
 
 ## 环境要求
 
@@ -105,7 +107,8 @@ cp .env.example .env
 docker compose build
 docker compose run --rm aivideo skills list
 docker compose run --rm aivideo providers test
-docker compose run --rm aivideo generate --theme "夏季防晒喷雾" --skill ecommerce --mode script
+docker compose run --rm aivideo generate --brief "主题：夏季防晒喷雾；主要内容：清爽不油腻；输出模式：script；视频比例：9:16；视频时长：30s"
+docker compose run --rm aivideo cleanup --keep-days 7
 ```
 
 这种模式下：
@@ -122,7 +125,8 @@ pnpm install
 pnpm build
 pnpm cli init
 pnpm cli skills list
-pnpm cli generate --theme "夏季防晒喷雾" --skill ecommerce --mode script
+pnpm cli generate --brief "主题：夏季防晒喷雾；主要内容：清爽不油腻；输出模式：script；视频比例：9:16；视频时长：30s"
+pnpm cli cleanup --keep-days 7
 ```
 
 执行 `init` 后，当前目录会生成：
@@ -131,6 +135,39 @@ pnpm cli generate --theme "夏季防晒喷雾" --skill ecommerce --mode script
 - `.env.example`
 
 如果需要远程模型能力，请把 API Key 写入 `.env`。如果没有配置远程 provider，CLI 会自动回退到内置本地能力。
+
+## 自然语言输入
+
+现在更推荐用结构化 brief，而不是一次记住很多命令参数。
+
+示例：
+
+```text
+主题：夏季防晒喷雾；主要内容：清爽不油腻；输出模式：video；视频比例：9:16；视频时长：30s；语言：zh-CN；平台：douyin
+```
+
+英文格式也支持：
+
+```text
+Theme: Summer sunscreen spray; Content: lightweight, non-greasy; Mode: video; Aspect: 9:16; Duration: 30s; Language: zh-CN; Platform: douyin
+```
+
+命令示例：
+
+```bash
+pnpm cli generate --brief "主题：夏季防晒喷雾；主要内容：清爽不油腻；输出模式：video；视频比例：9:16；视频时长：30s"
+pnpm cli generate --brief-file ./brief.txt --images ./assets/ref1.png,./assets/ref2.jpg
+pnpm cli create
+```
+
+说明：
+
+- `create` 支持直接粘贴结构化 brief，也可以回车切换到逐步模式
+- `create` 现在默认直接生成视频，不再要求用户手动输入输出模式
+- 文本问题问完后，`create` 会继续询问是否上传参考图片；每上传一张后，还会继续问是否继续上传
+- 如果用户显式填写了 `language`，CLI 就按该值执行；如果没有填写，就会根据用户输入内容自动识别语言，只有识别不出来时才回退到配置默认值
+- `--brief` 和 `--brief-file` 同时支持中英文 key
+- 图片仍然建议通过 `--images` 单独传入
 
 ## 部署方式
 
@@ -183,13 +220,13 @@ docker compose run --rm aivideo providers test
 5. 执行生成任务：
 
 ```bash
-docker compose run --rm aivideo generate --theme "你的主题" --skill auto --mode script --duration 30s
+docker compose run --rm aivideo generate --brief "主题：你的主题；输出模式：script；视频时长：30s"
 ```
 
 6. 如果要导出最终视频：
 
 ```bash
-docker compose run --rm aivideo generate --theme "你的主题" --skill auto --mode video --duration 30s
+docker compose run --rm aivideo generate --brief "主题：你的主题；输出模式：video；视频时长：30s"
 ```
 
 说明：
@@ -198,6 +235,13 @@ docker compose run --rm aivideo generate --theme "你的主题" --skill auto --m
 - 这种模式下不需要宿主机级别的 Python 虚拟环境
 - `projects/` 会从宿主机挂载进去，生成结果会保留在本地目录
 - `aivideo.config.yaml` 会以只读方式挂载到容器内部
+- 如果不想保留文案和分镜类中间产物，可以加 `--no-persist-artifacts`
+- 如果希望视频导出后自动清理临时渲染文件，可以加 `--cleanup-after-render`
+- 可以通过下面的命令清理过期项目：
+
+```bash
+docker compose run --rm aivideo cleanup --keep-days 7
+```
 
 ### 方式二：本地部署
 
@@ -244,14 +288,27 @@ pnpm cli providers test
 8. 执行生成任务：
 
 ```bash
-pnpm cli generate --theme "你的主题" --skill auto --mode script --duration 30s
+pnpm cli generate --brief "主题：你的主题；输出模式：script；视频时长：30s"
 ```
 
 9. 如果要导出最终视频，使用 `video` 模式或对已有项目重新渲染：
 
 ```bash
-pnpm cli generate --theme "你的主题" --skill auto --mode video --duration 30s
+pnpm cli generate --brief "主题：你的主题；输出模式：video；视频时长：30s"
 pnpm cli render --project <project-id>
+```
+
+常用安全选项：
+
+- `--no-persist-artifacts`
+  - 生成后删除 `brief.json`、`script.md`、`storyboard.json` 这类脚本与分镜产物
+- `--cleanup-after-render`
+  - 视频导出后删除音频、字幕和渲染临时目录
+
+清理过期项目：
+
+```bash
+pnpm cli cleanup --keep-days 7
 ```
 
 ### 方式三：单机服务器部署
@@ -302,7 +359,7 @@ pnpm cli providers test
 示例：
 
 ```bash
-pnpm cli generate --theme "AI 办公助手" --skill knowledge --mode video --duration 30s
+pnpm cli generate --brief "主题：AI 办公助手；skill：knowledge；输出模式：video；视频时长：30s"
 ```
 
 ### 部署说明
@@ -313,6 +370,15 @@ pnpm cli generate --theme "AI 办公助手" --skill knowledge --mode video --dur
 - 所有生成产物默认写入 `projects/`，部署用户需要对该目录具备写权限
 - 在生产环境中，请只在 `.env` 或服务器密钥管理系统中保存 API Key，不要写入版本库
 - 如果使用 Docker 模式，宿主机不需要本地 Python 虚拟环境，也不需要宿主机级别的 `ffmpeg`
+
+## 安全说明
+
+- Provider API Key 从 `.env` 读取
+- 默认情况下，远程 provider 的 `baseURL` 只允许使用受信任域名
+- 如果确实需要接自定义网关，必须在 `aivideo.config.yaml` 中为对应 provider 显式设置 `allowCustomBaseURL: true`
+- 输入图片只允许 `png`、`jpg`、`jpeg`、`webp`
+- 超过 10 MB 的输入图片会被拒绝
+- 默认会限制任务时长和图片数量，防止异常任务占满资源
 
 ## 运行边界
 

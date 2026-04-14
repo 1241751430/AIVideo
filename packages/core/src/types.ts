@@ -11,6 +11,8 @@ export interface GenerateRequest {
   durationSeconds: number;
   language?: string;
   platform?: string;
+  persistArtifacts?: boolean;
+  cleanupAfterRender?: boolean;
 }
 
 export interface SkillDefinition {
@@ -113,6 +115,7 @@ export interface ProviderConfig {
   vendor?: string;
   enabled?: boolean;
   baseURL?: string;
+  allowCustomBaseURL?: boolean;
   apiKeyEnv?: string;
   model?: string;
   description?: string;

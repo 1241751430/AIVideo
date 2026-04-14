@@ -18,6 +18,11 @@ import {
 
 const LIVE_TEST_TIMEOUT_MS = 10_000;
 const MODEL_REQUEST_TIMEOUT_MS = 45_000;
+const SAFE_PROVIDER_HOSTS = [
+  "api.openai.com",
+  "dashscope.aliyuncs.com",
+  "ark.cn-beijing.volces.com"
+];
 
 class LocalRuleTextProvider implements TextModelProvider {
   readonly id = "local-rule-text";
@@ -68,6 +73,7 @@ class OpenAICompatibleTextProvider implements TextModelProvider {
   ) {}
 
   async test(options?: { live?: boolean }): Promise<ProviderHealth> {
+    assertSafeBaseURL(this.config);
     const apiKey = this.getApiKey();
     if (!apiKey) {
       return {
@@ -109,6 +115,7 @@ class OpenAICompatibleTextProvider implements TextModelProvider {
   }
 
   async generateText(request: TextGenerationRequest): Promise<string> {
+    assertSafeBaseURL(this.config);
     const apiKey = this.getApiKey();
     if (!apiKey || !this.config.baseURL || !this.config.model) {
       throw new Error(`Provider ${this.id} is missing baseURL, model, or API key.`);
@@ -354,5 +361,18 @@ async function fetchWithTimeout(
     throw error;
   } finally {
     clearTimeout(timeout);
+  }
+}
+
+function assertSafeBaseURL(config: ProviderConfig): void {
+  if (!config.baseURL) {
+    throw new Error("Provider baseURL is missing.");
+  }
+  const parsed = new URL(config.baseURL);
+  const hostAllowed = SAFE_PROVIDER_HOSTS.includes(parsed.hostname);
+  if (!hostAllowed && config.allowCustomBaseURL !== true) {
+    throw new Error(
+      `Provider baseURL ${parsed.origin} is not in the trusted host list. Set allowCustomBaseURL=true only if you explicitly trust this endpoint.`
+    );
   }
 }

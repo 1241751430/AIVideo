@@ -9,7 +9,7 @@ from pathlib import Path
 
 
 def run(command: list[str]) -> None:
-    completed = subprocess.run(command, capture_output=True, text=True)
+    completed = subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
     if completed.returncode != 0:
         raise RuntimeError(completed.stderr.strip() or "command failed")
 
@@ -67,6 +67,8 @@ def build_clip_command(
         command = [
             "ffmpeg",
             "-y",
+            "-loglevel",
+            "error",
             "-loop",
             "1",
             "-i",
@@ -76,6 +78,8 @@ def build_clip_command(
         command = [
             "ffmpeg",
             "-y",
+            "-loglevel",
+            "error",
             "-f",
             "lavfi",
             "-i",
@@ -162,7 +166,7 @@ def render(project_dir: Path, manifest_path: Path) -> Path:
     concat_file = work_dir / "concat.txt"
     concat_file.write_text("".join(f"file '{clip.as_posix()}'\n" for clip in clips))
     merged = work_dir / "merged.mp4"
-    run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(concat_file), "-c", "copy", str(merged)])
+    run(["ffmpeg", "-y", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", str(concat_file), "-c", "copy", str(merged)])
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     if captions.exists():
@@ -170,6 +174,8 @@ def render(project_dir: Path, manifest_path: Path) -> Path:
             [
                 "ffmpeg",
                 "-y",
+                "-loglevel",
+                "error",
                 "-i",
                 str(merged),
                 "-vf",

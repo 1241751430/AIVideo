@@ -1,10 +1,14 @@
 import { execFile } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { createInterface } from "node:readline/promises";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
+import { stdin as input, stdout as output } from "node:process";
 import {
   BUILTIN_SKILLS,
   CONFIG_FILE,
   GenerateRequest,
+  cleanupRenderWorkspace,
+  cleanupExpiredProjects,
   createProjectId,
   generateArtifacts,
   getConfigTemplate,
@@ -13,7 +17,8 @@ import {
   loadDotEnv,
   materializeProject,
   resolveProjectDir,
-  selectSkill
+  selectSkill,
+  trimProjectArtifacts
 } from "@aivideo/core";
 import { createProviderSelection, testProviders } from "@aivideo/providers";
 
@@ -22,10 +27,64 @@ export interface ParsedArgs {
   options: Record<string, string | boolean>;
 }
 
+interface WizardStep {
+  key: string;
+  label: string;
+  prompt: string;
+  required: boolean;
+  defaultValue?: string;
+  validate?: (value: string) => string | undefined;
+}
+
+class WizardCancelledError extends Error {}
+
+const BRIEF_KEY_MAP: Record<string, string> = {
+  theme: "theme",
+  topic: "theme",
+  title: "theme",
+  "主题": "theme",
+  "标题": "theme",
+  content: "content",
+  brief: "content",
+  description: "content",
+  "内容": "content",
+  "主要内容": "content",
+  "补充内容": "content",
+  mode: "mode",
+  "模式": "mode",
+  "输出模式": "mode",
+  skill: "skill",
+  "模板": "skill",
+  "风格模板": "skill",
+  aspect: "aspect",
+  ratio: "aspect",
+  aspectratio: "aspect",
+  "比例": "aspect",
+  "视频比例": "aspect",
+  duration: "duration",
+  length: "duration",
+  "时长": "duration",
+  "视频时长": "duration",
+  language: "language",
+  lang: "language",
+  "语言": "language",
+  platform: "platform",
+  "平台": "platform",
+  profile: "provider-profile",
+  provider: "provider-profile",
+  providerprofile: "provider-profile",
+  "模型配置": "provider-profile",
+  "配置档": "provider-profile",
+  image: "images",
+  images: "images",
+  "图片": "images",
+  "参考图片": "images"
+};
+
 export async function main(argv = process.argv.slice(2), cwd = process.cwd()): Promise<void> {
   const parsed = parseArgs(argv);
 
-  if (parsed.command.length === 0 || parsed.command[0] === "help") {
+  if (parsed.command.length === 0 || parsed.command[0] === "help" || parsed.options.help === true) {
     printHelp();
     return;
   }
@@ -43,6 +102,12 @@ export async function main(argv = process.argv.slice(2), cwd = process.cwd()): P
       return;
     case "generate:":
       await runGenerate(cwd, parsed.options);
+      return;
+    case "create:":
+      await runCreate(cwd);
+      return;
+    case "cleanup:":
+      runCleanup(cwd, parsed.options);
       return;
     case "render:":
       await runRender(cwd, parsed.options);
@@ -82,6 +147,17 @@ function runSkillsList(): void {
   }
 }
 
+function runCleanup(cwd: string, options: Record<string, string | boolean>): void {
+  const config = loadConfig(cwd);
+  const keepDays = parseKeepDays(getStringOption(options, "keep-days")) ?? 7;
+  const projectsRoot = resolve(cwd, config.defaults.projectsDir);
+  const removed = cleanupExpiredProjects(projectsRoot, keepDays);
+  console.log(`Removed ${removed.length} expired project(s).`);
+  for (const item of removed) {
+    console.log(`- ${item}`);
+  }
+}
+
 async function runProvidersTest(cwd: string, options: Record<string, string | boolean>): Promise<void> {
   loadDotEnv(cwd);
   const config = loadConfig(cwd);
@@ -101,6 +177,7 @@ async function runGenerate(cwd: string, options: Record<string, string | boolean
   const config = loadConfig(cwd);
   const request = buildGenerateRequest(config, cwd, options);
   const providers = createProviderSelection(config, getStringOption(options, "provider-profile"));
+  console.log("Generating script and storyboard...");
   const skill = await selectSkill(request, providers);
   const artifacts = await generateArtifacts({ request, providers, skill });
   const seed = request.theme ?? request.content ?? skill.id;
@@ -108,12 +185,180 @@ async function runGenerate(cwd: string, options: Record<string, string | boolean
   const projectDir = resolveProjectDir(cwd, config.defaults.projectsDir, projectId);
 
   materializeProject(projectDir, artifacts);
+  if (request.persistArtifacts === false) {
+    trimProjectArtifacts(projectDir);
+  }
   console.log(`Project created: ${projectDir}`);
   console.log(`Selected skill: ${skill.id} (${skill.name})`);
 
   if (request.mode === "video") {
+    console.log("Preparing video assets...");
     await synthesizeNarration(projectDir, artifacts.storyboard.shots, providers.speech);
+    console.log("Starting video render. This may take a while...");
     await runRender(cwd, { project: projectDir });
+    if (request.cleanupAfterRender) {
+      cleanupRenderWorkspace(projectDir);
+    }
+  }
+}
+
+async function runCreate(cwd: string): Promise<void> {
+  const config = loadConfig(cwd);
+  const rl = createInterface({ input, output });
+  try {
+    console.log("Interactive create mode");
+    console.log("Commands: /back 上一步, /skip 跳过当前项, /cancel 取消, /help 查看帮助");
+    console.log(
+      "你也可以直接粘贴结构化 brief，例如：主题：夏季防晒喷雾；主要内容：清爽不油腻；视频比例：9:16；视频时长：30s"
+    );
+
+    const briefInput = (await rl.question("直接输入 structured brief，或回车进入逐步模式: ")).trim();
+    if (briefInput === "/cancel") {
+      throw new WizardCancelledError();
+    }
+    if (briefInput === "/help") {
+      console.log("Structured brief example:");
+      console.log("主题：夏季防晒喷雾；主要内容：清爽不油腻；视频比例：9:16；视频时长：30s");
+      console.log("如果需要参考图片，后面会继续询问是否上传。");
+    } else if (briefInput) {
+      const options = parseStructuredBrief(briefInput);
+      options.mode = "video";
+      const uploadedImages = await collectImagesInteractively(rl, cwd);
+      if (uploadedImages.length > 0) {
+        options.images = uploadedImages.join(",");
+      }
+      console.log("开始制作视频...");
+      await runGenerate(cwd, options);
+      return;
+    }
+
+    const answers: Record<string, string> = {};
+    const steps: WizardStep[] = [
+      {
+        key: "theme",
+        label: "主题",
+        prompt: "请输入视频主题",
+        required: true
+      },
+      {
+        key: "content",
+        label: "主要内容",
+        prompt: "请描述你想重点表达的内容，留空可跳过",
+        required: false
+      },
+      {
+        key: "skill",
+        label: "Skill",
+        prompt: `你想走哪种内容风格？留空自动选择。可选：${BUILTIN_SKILLS.map((skill) => skill.id).join("/")}`,
+        required: false,
+        defaultValue: "auto",
+        validate: (value) =>
+          value === "auto" || BUILTIN_SKILLS.some((skill) => skill.id === value) ? undefined : "skill 不合法"
+      },
+      {
+        key: "aspect",
+        label: "视频比例",
+        prompt: "你希望视频比例是什么？例如 9:16、16:9、1:1、4:5",
+        required: true,
+        defaultValue: config.defaults.aspectRatio
+      },
+      {
+        key: "duration",
+        label: "视频时长",
+        prompt: "你希望视频时长是多少？例如 15s、30s、60s",
+        required: true,
+        defaultValue: `${config.defaults.durationSeconds}s`,
+        validate: (value) => (parseDuration(value) ? undefined : "时长格式不正确")
+      },
+      {
+        key: "language",
+        label: "语言",
+        prompt: "内容语言是什么？留空自动识别",
+        required: false
+      },
+      {
+        key: "platform",
+        label: "平台",
+        prompt: "目标平台是什么？留空使用默认值",
+        required: false,
+        defaultValue: config.defaults.platform
+      }
+    ];
+
+    let index = 0;
+    while (index < steps.length) {
+      const step = steps[index]!;
+      const current = answers[step.key] ?? step.defaultValue ?? "";
+      const suffix = current ? ` [当前: ${current}]` : "";
+      const raw = (await rl.question(`(${index + 1}/${steps.length}) ${step.prompt}${suffix}: `)).trim();
+
+      if (raw === "/cancel") {
+        throw new WizardCancelledError();
+      }
+      if (raw === "/help") {
+        console.log("Commands: /back 上一步, /skip 跳过当前项, /cancel 取消");
+        continue;
+      }
+      if (raw === "/back") {
+        if (index > 0) {
+          index -= 1;
+        }
+        continue;
+      }
+      if (raw === "/skip") {
+        if (step.required && !step.defaultValue) {
+          console.log(`${step.label} 不能为空。`);
+          continue;
+        }
+        if (step.defaultValue) {
+          answers[step.key] = step.defaultValue;
+        } else {
+          delete answers[step.key];
+        }
+        index += 1;
+        continue;
+      }
+
+      const value = raw || step.defaultValue || "";
+      if (!value && step.required) {
+        console.log(`${step.label} 不能为空。`);
+        continue;
+      }
+      const error = step.validate?.(value);
+      if (error) {
+        console.log(error);
+        continue;
+      }
+      if (value) {
+        answers[step.key] = value;
+      }
+      index += 1;
+    }
+
+    const options: Record<string, string | boolean> = {};
+    for (const key of ["theme", "content", "skill", "aspect", "duration", "language", "platform"]) {
+      const value = answers[key];
+      if (value !== undefined) {
+        options[key] = value;
+      }
+    }
+    options.mode = "video";
+
+    const uploadedImages = await collectImagesInteractively(rl, cwd);
+    if (uploadedImages.length > 0) {
+      options.images = uploadedImages.join(",");
+    }
+
+    console.log("开始制作视频...");
+    await runGenerate(cwd, options);
+  } catch (error) {
+    if (error instanceof WizardCancelledError) {
+      console.log("Interactive create cancelled.");
+      return;
+    }
+    throw error;
+  } finally {
+    rl.close();
   }
 }
 
@@ -137,7 +382,11 @@ async function runRender(cwd: string, options: Record<string, string | boolean>)
   await ensureBinary("ffprobe");
 
   const workerPath = resolve(cwd, "workers", "media", "render.py");
-  await execFileAsync("python3", [workerPath, "--project-dir", projectDir, "--manifest", manifestPath]);
+  console.log(`Rendering project: ${basename(projectDir)}`);
+  await execFileAsync("python3", [workerPath, "--project-dir", projectDir, "--manifest", manifestPath], {
+    statusMessage: "ffmpeg is rendering video, please wait...",
+    heartbeatMs: 5000
+  });
   const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as { outputFile: string };
   console.log(`Rendered video: ${resolve(projectDir, manifest.outputFile)}`);
 }
@@ -147,17 +396,27 @@ function buildGenerateRequest(
   cwd: string,
   options: Record<string, string | boolean>
 ): GenerateRequest {
-  const images = parseImages(getStringOption(options, "images"), cwd);
+  const normalizedOptions = normalizeInputOptions(options, cwd);
+  const images = parseImages(getStringOption(normalizedOptions, "images"), cwd);
+  const inferredLanguage =
+    getStringOption(normalizedOptions, "language") ??
+    inferInputLanguage([
+      getStringOption(normalizedOptions, "theme"),
+      getStringOption(normalizedOptions, "content")
+    ]) ??
+    config.defaults.language;
   return {
-    theme: getStringOption(options, "theme"),
-    content: getStringOption(options, "content"),
+    theme: getStringOption(normalizedOptions, "theme"),
+    content: getStringOption(normalizedOptions, "content"),
     images,
-    skill: getStringOption(options, "skill") ?? "auto",
-    mode: (getStringOption(options, "mode") as GenerateRequest["mode"]) ?? "video",
-    aspectRatio: getStringOption(options, "aspect") ?? config.defaults.aspectRatio,
-    durationSeconds: parseDuration(getStringOption(options, "duration")) ?? config.defaults.durationSeconds,
-    language: getStringOption(options, "language") ?? config.defaults.language,
-    platform: getStringOption(options, "platform") ?? config.defaults.platform
+    skill: getStringOption(normalizedOptions, "skill") ?? "auto",
+    mode: (getStringOption(normalizedOptions, "mode") as GenerateRequest["mode"]) ?? "video",
+    aspectRatio: getStringOption(normalizedOptions, "aspect") ?? config.defaults.aspectRatio,
+    durationSeconds: parseDuration(getStringOption(normalizedOptions, "duration")) ?? config.defaults.durationSeconds,
+    language: inferredLanguage,
+    platform: getStringOption(normalizedOptions, "platform") ?? config.defaults.platform,
+    persistArtifacts: !getBooleanOption(normalizedOptions, "no-persist-artifacts"),
+    cleanupAfterRender: getBooleanOption(normalizedOptions, "cleanup-after-render")
   };
 }
 
@@ -171,8 +430,10 @@ async function synthesizeNarration(
     return;
   }
 
-  for (const shot of shots) {
+  console.log(`Synthesizing narration for ${shots.length} shot(s)...`);
+  for (const [index, shot] of shots.entries()) {
     const audioPath = join(projectDir, "audio", `${shot.id}.aiff`);
+    console.log(`- Narration ${index + 1}/${shots.length}: ${shot.id}`);
     try {
       await speechProvider.synthesizeSpeech({
         text: shot.narration,
@@ -223,6 +484,187 @@ function getBooleanOption(options: Record<string, string | boolean>, key: string
   return options[key] === true || options[key] === "true";
 }
 
+async function collectImagesInteractively(
+  rl: ReturnType<typeof createInterface>,
+  cwd: string
+): Promise<string[]> {
+  const images: string[] = [];
+  const wantsImages = await askYesNo(rl, "是否需要上传参考图片？(y/n，默认 n): ", false);
+  if (!wantsImages) {
+    return images;
+  }
+
+  while (true) {
+    const pathInput = (await rl.question("请输入图片路径: ")).trim();
+    if (pathInput === "/cancel") {
+      throw new WizardCancelledError();
+    }
+    if (pathInput === "/help") {
+      console.log("请输入本地图片路径，支持 png、jpg、jpeg、webp。");
+      continue;
+    }
+    if (!pathInput) {
+      console.log("图片路径不能为空。");
+      continue;
+    }
+    try {
+      const [imagePath] = parseImages(pathInput, cwd) ?? [];
+      if (imagePath) {
+        images.push(imagePath);
+        console.log(`已添加图片：${imagePath}`);
+      }
+    } catch (error) {
+      console.log((error as Error).message);
+      continue;
+    }
+
+    const continueUpload = await askYesNo(rl, "是否继续上传图片？(y/n，默认 n): ", false);
+    if (!continueUpload) {
+      return images;
+    }
+  }
+}
+
+async function askYesNo(
+  rl: ReturnType<typeof createInterface>,
+  prompt: string,
+  defaultValue: boolean
+): Promise<boolean> {
+  while (true) {
+    const raw = (await rl.question(prompt)).trim().toLowerCase();
+    if (!raw) {
+      return defaultValue;
+    }
+    if (raw === "/cancel") {
+      throw new WizardCancelledError();
+    }
+    if (raw === "/help") {
+      console.log("请输入 y/yes 或 n/no。");
+      continue;
+    }
+    if (raw === "y" || raw === "yes" || raw === "是") {
+      return true;
+    }
+    if (raw === "n" || raw === "no" || raw === "否") {
+      return false;
+    }
+    console.log("请输入 y 或 n。");
+  }
+}
+
+function normalizeInputOptions(
+  options: Record<string, string | boolean>,
+  cwd: string
+): Record<string, string | boolean> {
+  const merged: Record<string, string | boolean> = {};
+  const briefFile = getStringOption(options, "brief-file");
+  if (briefFile) {
+    const briefPath = isAbsolute(briefFile) ? briefFile : resolve(cwd, briefFile);
+    if (!existsSync(briefPath)) {
+      throw new Error(`Brief file not found: ${briefPath}`);
+    }
+    Object.assign(merged, parseStructuredBrief(readFileSync(briefPath, "utf8")));
+  }
+
+  const brief = getStringOption(options, "brief");
+  if (brief) {
+    Object.assign(merged, parseStructuredBrief(brief));
+  }
+
+  return {
+    ...merged,
+    ...options
+  };
+}
+
+export function parseStructuredBrief(input: string): Record<string, string> {
+  const normalized = input.replace(/\r/g, "\n");
+  const segments = normalized
+    .split(/[;\n；]+/)
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+
+  const parsed: Record<string, string> = {};
+
+  for (const segment of segments) {
+    const match = segment.match(/^([^:：]+)\s*[:：]\s*(.+)$/);
+    if (!match) {
+      continue;
+    }
+    const rawKey = normalizeBriefKey(match[1] ?? "");
+    const rawValue = (match[2] ?? "").trim();
+    const key = BRIEF_KEY_MAP[rawKey];
+    if (!key || !rawValue) {
+      continue;
+    }
+    parsed[key] = normalizeBriefValue(key, rawValue);
+  }
+
+  if (Object.keys(parsed).length === 0 && input.trim()) {
+    parsed.theme = input.trim();
+  }
+
+  return parsed;
+}
+
+export function inferInputLanguage(parts: Array<string | undefined>): string | undefined {
+  const text = parts
+    .filter((part): part is string => Boolean(part && part.trim()))
+    .join(" ")
+    .trim();
+  if (!text) {
+    return undefined;
+  }
+
+  if (/[一-龥]/u.test(text)) {
+    return "zh-CN";
+  }
+  if (/[ぁ-ゖァ-ヺ]/u.test(text)) {
+    return "ja-JP";
+  }
+  if (/[가-힣]/u.test(text)) {
+    return "ko-KR";
+  }
+  if (/[Ѐ-ӿ]/u.test(text)) {
+    return "ru-RU";
+  }
+  if (/[؀-ۿ]/u.test(text)) {
+    return "ar";
+  }
+  if (/[A-Za-z]/.test(text)) {
+    return "en-US";
+  }
+
+  return undefined;
+}
+
+function normalizeBriefKey(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "")
+    .replace(/[-_]/g, "");
+}
+
+function normalizeBriefValue(key: string, value: string): string {
+  if (key === "mode") {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === "脚本" || normalized === "文案") {
+      return "script";
+    }
+    if (normalized === "视频") {
+      return "video";
+    }
+    return normalized;
+  }
+
+  if (key === "skill") {
+    return value.trim().toLowerCase();
+  }
+
+  return value.trim();
+}
+
 function parseImages(value: string | undefined, cwd: string): string[] | undefined {
   if (!value) {
     return undefined;
@@ -235,6 +677,14 @@ function parseImages(value: string | undefined, cwd: string): string[] | undefin
   for (const entry of entries) {
     if (!existsSync(entry)) {
       throw new Error(`Image not found: ${entry}`);
+    }
+    const lower = entry.toLowerCase();
+    if (!lower.endsWith(".png") && !lower.endsWith(".jpg") && !lower.endsWith(".jpeg") && !lower.endsWith(".webp")) {
+      throw new Error(`Unsupported image format: ${entry}`);
+    }
+    const size = statSync(entry).size;
+    if (size > 10 * 1024 * 1024) {
+      throw new Error(`Image exceeds 10MB limit: ${entry}`);
     }
   }
   return entries;
@@ -249,6 +699,14 @@ export function parseDuration(value: string | undefined): number | undefined {
     ? Number.parseInt(normalized.slice(0, -1), 10)
     : Number.parseInt(normalized, 10);
   return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function parseKeepDays(value: string | undefined): number | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 }
 
 export function assertPathWithin(baseDir: string, candidatePath: string, label: string): void {
@@ -273,16 +731,50 @@ function printHelp(): void {
 
 Commands:
   aivideo init
+  aivideo create
   aivideo skills list
   aivideo providers test [--profile default] [--live]
-  aivideo generate --theme "..." [--content "..."] [--images a.png,b.png] [--skill auto] [--mode script|video] [--aspect 9:16] [--duration 30s] [--language zh-CN] [--platform douyin] [--provider-profile default]
+  aivideo generate --brief "主题：夏季防晒喷雾；主要内容：清爽不油腻；输出模式：video；视频比例：9:16；视频时长：30s" [--images a.png,b.png]
+  aivideo generate --brief-file ./brief.txt [--images a.png,b.png]
+  aivideo generate --theme "..." [--content "..."] [--images a.png,b.png] [--skill auto] [--mode script|video] [--aspect 9:16] [--duration 30s] [--language zh-CN] [--platform douyin] [--provider-profile default] [--no-persist-artifacts] [--cleanup-after-render]
+  aivideo cleanup [--keep-days 7]
   aivideo render --project <project-id|path>
+
+Interactive commands inside "aivideo create":
+  /back     Go back to previous step
+  /skip     Skip current optional step
+  /cancel   Cancel the wizard
+  /help     Show wizard help
+
+Notes:
+  - "aivideo create" defaults to video mode
+  - After the text questions, the wizard asks whether to upload reference images
 `);
 }
 
-function execFileAsync(command: string, args: string[]): Promise<void> {
+function execFileAsync(
+  command: string,
+  args: string[],
+  options?: {
+    statusMessage?: string;
+    heartbeatMs?: number;
+  }
+): Promise<void> {
   return new Promise((resolvePromise, rejectPromise) => {
+    let heartbeat: NodeJS.Timeout | undefined;
+    if (options?.statusMessage) {
+      console.log(options.statusMessage);
+      if (options.heartbeatMs && options.heartbeatMs > 0) {
+        heartbeat = setInterval(() => {
+          console.log(options.statusMessage);
+        }, options.heartbeatMs);
+      }
+    }
+
     execFile(command, args, (error, stdout, stderr) => {
+      if (heartbeat) {
+        clearInterval(heartbeat);
+      }
       if (error) {
         rejectPromise(new Error(stderr || error.message));
         return;

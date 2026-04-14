@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import {
   BriefDocument,
@@ -129,6 +129,48 @@ export function materializeProject(projectDir: string, artifacts: ProjectArtifac
   writeJson(join(projectDir, "storyboard.json"), artifacts.storyboard);
   writeJson(join(projectDir, "render-manifest.json"), artifacts.renderManifest);
   writeFileSync(join(projectDir, "captions", "captions.srt"), toSrt(artifacts.captions), "utf8");
+}
+
+export function trimProjectArtifacts(projectDir: string): void {
+  for (const name of ["brief.json", "script.md", "storyboard.json"]) {
+    const target = join(projectDir, name);
+    if (existsSync(target)) {
+      rmSync(target, { force: true });
+    }
+  }
+}
+
+export function cleanupRenderWorkspace(projectDir: string): void {
+  for (const name of ["audio", "captions", ".render_tmp"]) {
+    const target = join(projectDir, name);
+    if (existsSync(target)) {
+      rmSync(target, { recursive: true, force: true });
+    }
+  }
+}
+
+export function cleanupExpiredProjects(projectsDir: string, maxAgeDays: number): string[] {
+  if (!existsSync(projectsDir)) {
+    return [];
+  }
+
+  const now = Date.now()
+  const maxAgeMs = maxAgeDays * 24 * 60 * 60 * 1000;
+  const removed: string[] = [];
+
+  for (const entry of readdirSync(projectsDir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) {
+      continue;
+    }
+    const target = join(projectsDir, entry.name);
+    const stats = statSync(target);
+    if (now - stats.mtimeMs > maxAgeMs) {
+      rmSync(target, { recursive: true, force: true });
+      removed.push(target);
+    }
+  }
+
+  return removed;
 }
 
 export function createProjectId(seed?: string): string {

@@ -143,19 +143,19 @@ The recommended way to use the CLI is now a structured brief instead of many fla
 Example:
 
 ```text
-Theme: Summer sunscreen spray; Content: lightweight, non-greasy; Mode: video; Aspect: 9:16; Duration: 30s; Language: zh-CN; Platform: douyin
+Theme: Summer sunscreen spray; Content: lightweight, non-greasy; Aspect: 9:16; Duration: 30s; Language: zh-CN; Platform: douyin
 ```
 
 Chinese format also works:
 
 ```text
-主题：夏季防晒喷雾；主要内容：清爽不油腻；输出模式：video；视频比例：9:16；视频时长：30s；语言：zh-CN；平台：douyin
+主题：夏季防晒喷雾；主要内容：清爽不油腻；视频比例：9:16；视频时长：30s；语言：zh-CN；平台：douyin
 ```
 
 CLI usage:
 
 ```bash
-pnpm cli generate --brief "主题：夏季防晒喷雾；主要内容：清爽不油腻；输出模式：video；视频比例：9:16；视频时长：30s"
+pnpm cli generate --brief "主题：夏季防晒喷雾；主要内容：清爽不油腻；视频比例：9:16；视频时长：30s"
 pnpm cli generate --brief-file ./brief.txt --images ./assets/ref1.png,./assets/ref2.jpg
 pnpm cli create
 ```
@@ -166,6 +166,7 @@ Notes:
 - `create` now defaults to `video` mode, so users do not need to provide an output mode during the guided flow
 - After the text questions, `create` will ask whether to upload reference images and will keep asking if more images should be added
 - If `language` is explicitly provided, the CLI uses that value; otherwise it auto-detects the language from user input and only falls back to the config default when detection is inconclusive
+- When video generation finishes, the CLI prints the final video path and a clickable `file://` link, so no extra export command is required
 - `--brief` and `--brief-file` support both Chinese and English keys
 - Images can still be provided separately through `--images`
 
@@ -220,13 +221,13 @@ docker compose run --rm aivideo providers test
 5. Run a generation task:
 
 ```bash
-docker compose run --rm aivideo generate --brief "Theme: Your topic; Mode: script; Duration: 30s"
+docker compose run --rm aivideo create
 ```
 
-6. To export a final video:
+6. Or run a non-interactive video task directly:
 
 ```bash
-docker compose run --rm aivideo generate --brief "Theme: Your topic; Mode: video; Duration: 30s"
+docker compose run --rm aivideo generate --brief "Theme: Your topic; Duration: 30s"
 ```
 
 Notes:
@@ -235,6 +236,7 @@ Notes:
 - You do not need a host-level Python virtual environment in this mode
 - `projects/` is mounted from the host, so generated assets remain available outside the container
 - `aivideo.config.yaml` is mounted read-only into the container
+- Successful video runs print the final video path and a `file://` link immediately
 - If you do not want to persist script/storyboard artifacts, add `--no-persist-artifacts`
 - If you want temporary render files removed after video export, add `--cleanup-after-render`
 - You can remove expired projects with:
@@ -288,14 +290,13 @@ pnpm cli providers test
 8. Run a generation task:
 
 ```bash
-pnpm cli generate --brief "Theme: Your topic; Mode: script; Duration: 30s"
+pnpm cli create
 ```
 
-9. To export a final video, use `video` mode or re-render an existing project:
+9. Or run a non-interactive video task directly:
 
 ```bash
-pnpm cli generate --brief "Theme: Your topic; Mode: video; Duration: 30s"
-pnpm cli render --project <project-id>
+pnpm cli generate --brief "Theme: Your topic; Duration: 30s"
 ```
 
 Useful safety flags:
@@ -359,7 +360,7 @@ pnpm cli providers test
 Example:
 
 ```bash
-pnpm cli generate --brief "Theme: AI office assistant; Skill: knowledge; Mode: video; Duration: 30s"
+pnpm cli generate --brief "Theme: AI office assistant; Skill: knowledge; Duration: 30s"
 ```
 
 ### Deployment Notes

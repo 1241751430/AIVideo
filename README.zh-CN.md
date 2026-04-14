@@ -143,19 +143,19 @@ pnpm cli cleanup --keep-days 7
 示例：
 
 ```text
-主题：夏季防晒喷雾；主要内容：清爽不油腻；输出模式：video；视频比例：9:16；视频时长：30s；语言：zh-CN；平台：douyin
+主题：夏季防晒喷雾；主要内容：清爽不油腻；视频比例：9:16；视频时长：30s；语言：zh-CN；平台：douyin
 ```
 
 英文格式也支持：
 
 ```text
-Theme: Summer sunscreen spray; Content: lightweight, non-greasy; Mode: video; Aspect: 9:16; Duration: 30s; Language: zh-CN; Platform: douyin
+Theme: Summer sunscreen spray; Content: lightweight, non-greasy; Aspect: 9:16; Duration: 30s; Language: zh-CN; Platform: douyin
 ```
 
 命令示例：
 
 ```bash
-pnpm cli generate --brief "主题：夏季防晒喷雾；主要内容：清爽不油腻；输出模式：video；视频比例：9:16；视频时长：30s"
+pnpm cli generate --brief "主题：夏季防晒喷雾；主要内容：清爽不油腻；视频比例：9:16；视频时长：30s"
 pnpm cli generate --brief-file ./brief.txt --images ./assets/ref1.png,./assets/ref2.jpg
 pnpm cli create
 ```
@@ -166,6 +166,7 @@ pnpm cli create
 - `create` 现在默认直接生成视频，不再要求用户手动输入输出模式
 - 文本问题问完后，`create` 会继续询问是否上传参考图片；每上传一张后，还会继续问是否继续上传
 - 如果用户显式填写了 `language`，CLI 就按该值执行；如果没有填写，就会根据用户输入内容自动识别语言，只有识别不出来时才回退到配置默认值
+- 视频生成完成后，CLI 会直接输出最终视频路径和可点击的 `file://` 链接，不需要再额外执行导出命令
 - `--brief` 和 `--brief-file` 同时支持中英文 key
 - 图片仍然建议通过 `--images` 单独传入
 
@@ -220,13 +221,13 @@ docker compose run --rm aivideo providers test
 5. 执行生成任务：
 
 ```bash
-docker compose run --rm aivideo generate --brief "主题：你的主题；输出模式：script；视频时长：30s"
+docker compose run --rm aivideo create
 ```
 
-6. 如果要导出最终视频：
+6. 或者直接执行一条非交互视频生成命令：
 
 ```bash
-docker compose run --rm aivideo generate --brief "主题：你的主题；输出模式：video；视频时长：30s"
+docker compose run --rm aivideo generate --brief "主题：你的主题；视频时长：30s"
 ```
 
 说明：
@@ -235,6 +236,7 @@ docker compose run --rm aivideo generate --brief "主题：你的主题；输出
 - 这种模式下不需要宿主机级别的 Python 虚拟环境
 - `projects/` 会从宿主机挂载进去，生成结果会保留在本地目录
 - `aivideo.config.yaml` 会以只读方式挂载到容器内部
+- 视频成功生成后，会立即输出最终视频路径和 `file://` 链接
 - 如果不想保留文案和分镜类中间产物，可以加 `--no-persist-artifacts`
 - 如果希望视频导出后自动清理临时渲染文件，可以加 `--cleanup-after-render`
 - 可以通过下面的命令清理过期项目：
@@ -288,14 +290,13 @@ pnpm cli providers test
 8. 执行生成任务：
 
 ```bash
-pnpm cli generate --brief "主题：你的主题；输出模式：script；视频时长：30s"
+pnpm cli create
 ```
 
-9. 如果要导出最终视频，使用 `video` 模式或对已有项目重新渲染：
+9. 或者直接执行一条非交互视频生成命令：
 
 ```bash
-pnpm cli generate --brief "主题：你的主题；输出模式：video；视频时长：30s"
-pnpm cli render --project <project-id>
+pnpm cli generate --brief "主题：你的主题；视频时长：30s"
 ```
 
 常用安全选项：
@@ -359,7 +360,7 @@ pnpm cli providers test
 示例：
 
 ```bash
-pnpm cli generate --brief "主题：AI 办公助手；skill：knowledge；输出模式：video；视频时长：30s"
+pnpm cli generate --brief "主题：AI 办公助手；skill：knowledge；视频时长：30s"
 ```
 
 ### 部署说明

@@ -174,6 +174,7 @@ async function runProvidersTest(cwd: string, options: Record<string, string | bo
 }
 
 async function runGenerate(cwd: string, options: Record<string, string | boolean>): Promise<void> {
+  await autoInit(cwd);
   loadDotEnv(cwd);
   const config = loadConfig(cwd);
   const request = buildGenerateRequest(config, cwd, options);
@@ -203,27 +204,56 @@ async function runGenerate(cwd: string, options: Record<string, string | boolean
   }
 }
 
+async function autoInit(cwd: string): Promise<void> {
+  const configPath = resolve(cwd, CONFIG_FILE);
+  if (!existsSync(configPath)) {
+    console.log("首次运行，自动初始化项目配置...");
+    await runInit(cwd);
+  }
+}
+
 async function runCreate(cwd: string): Promise<void> {
+  await autoInit(cwd);
   const config = loadConfig(cwd);
   const rl = createInterface({ input, output });
   try {
-    console.log("Interactive create mode");
-    console.log("Commands: /back 上一步, /skip 跳过当前项, /cancel 取消, /help 查看帮助");
-    console.log(
-      "你也可以直接粘贴结构化 brief，例如：主题：夏季防晒喷雾；主要内容：清爽不油腻；视频比例：9:16；视频时长：30s"
-    );
+    console.log("AI Video 快速创建");
+    console.log("输入 /more 进入高级模式（逐项配置），/cancel 取消，/help 查看帮助\n");
 
-    const briefInput = (await rl.question("直接输入 structured brief，或回车进入逐步模式: ")).trim();
+    const briefInput = (
+      await rl.question("描述你想做的视频（支持结构化 brief 或自由描述）: ")
+    ).trim();
+
     if (briefInput === "/cancel") {
       throw new WizardCancelledError();
     }
     if (briefInput === "/help") {
       console.log("Structured brief example:");
       console.log("主题：夏季防晒喷雾；主要内容：清爽不油腻；视频比例：9:16；视频时长：30s");
-      console.log("如果需要参考图片，后面会继续询问是否上传。");
+      console.log("你也可以直接描述，如：做一个 30 秒的夏季防晒产品视频。");
+      console.log("如果需要参考图片，后面会继续询问是否上传。\n");
+    } else if (briefInput === "/more") {
+      await runCreateAdvanced(config, rl, cwd);
+      return;
     } else if (briefInput) {
       const options = parseStructuredBrief(briefInput);
       options.mode = "video";
+      const defaultDuration = `${config.defaults.durationSeconds}s`;
+      if (!options.duration) {
+        const durationInput = (
+          await rl.question(`视频时长 [${defaultDuration}]: `)
+        ).trim();
+        if (durationInput === "/cancel") {
+          throw new WizardCancelledError();
+        }
+        if (durationInput) {
+          if (!parseDuration(durationInput)) {
+            console.log("时长格式不正确，使用默认值。");
+          } else {
+            options.duration = durationInput;
+          }
+        }
+      }
       const uploadedImages = await collectImagesInteractively(rl, cwd);
       if (uploadedImages.length > 0) {
         options.images = uploadedImages.join(",");
@@ -233,125 +263,7 @@ async function runCreate(cwd: string): Promise<void> {
       return;
     }
 
-    const answers: Record<string, string> = {};
-    const steps: WizardStep[] = [
-      {
-        key: "theme",
-        label: "主题",
-        prompt: "请输入视频主题",
-        required: true
-      },
-      {
-        key: "content",
-        label: "主要内容",
-        prompt: "请描述你想重点表达的内容，留空可跳过",
-        required: false
-      },
-      {
-        key: "skill",
-        label: "Skill",
-        prompt: `你想走哪种内容风格？留空自动选择。可选：${BUILTIN_SKILLS.map((skill) => skill.id).join("/")}`,
-        required: false,
-        defaultValue: "auto",
-        validate: (value) =>
-          value === "auto" || BUILTIN_SKILLS.some((skill) => skill.id === value) ? undefined : "skill 不合法"
-      },
-      {
-        key: "aspect",
-        label: "视频比例",
-        prompt: "你希望视频比例是什么？例如 9:16、16:9、1:1、4:5",
-        required: true,
-        defaultValue: config.defaults.aspectRatio
-      },
-      {
-        key: "duration",
-        label: "视频时长",
-        prompt: "你希望视频时长是多少？例如 15s、30s、60s",
-        required: true,
-        defaultValue: `${config.defaults.durationSeconds}s`,
-        validate: (value) => (parseDuration(value) ? undefined : "时长格式不正确")
-      },
-      {
-        key: "language",
-        label: "语言",
-        prompt: "内容语言是什么？留空自动识别",
-        required: false
-      },
-      {
-        key: "platform",
-        label: "平台",
-        prompt: "目标平台是什么？留空使用默认值",
-        required: false,
-        defaultValue: config.defaults.platform
-      }
-    ];
-
-    let index = 0;
-    while (index < steps.length) {
-      const step = steps[index]!;
-      const current = answers[step.key] ?? step.defaultValue ?? "";
-      const suffix = current ? ` [当前: ${current}]` : "";
-      const raw = (await rl.question(`(${index + 1}/${steps.length}) ${step.prompt}${suffix}: `)).trim();
-
-      if (raw === "/cancel") {
-        throw new WizardCancelledError();
-      }
-      if (raw === "/help") {
-        console.log("Commands: /back 上一步, /skip 跳过当前项, /cancel 取消");
-        continue;
-      }
-      if (raw === "/back") {
-        if (index > 0) {
-          index -= 1;
-        }
-        continue;
-      }
-      if (raw === "/skip") {
-        if (step.required && !step.defaultValue) {
-          console.log(`${step.label} 不能为空。`);
-          continue;
-        }
-        if (step.defaultValue) {
-          answers[step.key] = step.defaultValue;
-        } else {
-          delete answers[step.key];
-        }
-        index += 1;
-        continue;
-      }
-
-      const value = raw || step.defaultValue || "";
-      if (!value && step.required) {
-        console.log(`${step.label} 不能为空。`);
-        continue;
-      }
-      const error = step.validate?.(value);
-      if (error) {
-        console.log(error);
-        continue;
-      }
-      if (value) {
-        answers[step.key] = value;
-      }
-      index += 1;
-    }
-
-    const options: Record<string, string | boolean> = {};
-    for (const key of ["theme", "content", "skill", "aspect", "duration", "language", "platform"]) {
-      const value = answers[key];
-      if (value !== undefined) {
-        options[key] = value;
-      }
-    }
-    options.mode = "video";
-
-    const uploadedImages = await collectImagesInteractively(rl, cwd);
-    if (uploadedImages.length > 0) {
-      options.images = uploadedImages.join(",");
-    }
-
-    console.log("开始制作视频...");
-    await runGenerate(cwd, options);
+    await runCreateAdvanced(config, rl, cwd);
   } catch (error) {
     if (error instanceof WizardCancelledError) {
       console.log("Interactive create cancelled.");
@@ -361,6 +273,135 @@ async function runCreate(cwd: string): Promise<void> {
   } finally {
     rl.close();
   }
+}
+
+async function runCreateAdvanced(
+  config: ReturnType<typeof loadConfig>,
+  rl: ReturnType<typeof createInterface>,
+  cwd: string
+): Promise<void> {
+  console.log("高级模式：逐项配置");
+  console.log("Commands: /back 上一步, /skip 跳过, /cancel 取消\n");
+
+  const answers: Record<string, string> = {};
+  const steps: WizardStep[] = [
+    {
+      key: "theme",
+      label: "主题",
+      prompt: "请输入视频主题",
+      required: true
+    },
+    {
+      key: "content",
+      label: "主要内容",
+      prompt: "请描述你想重点表达的内容，留空可跳过",
+      required: false
+    },
+    {
+      key: "skill",
+      label: "Skill",
+      prompt: `你想走哪种内容风格？留空自动选择。可选：${BUILTIN_SKILLS.map((skill) => skill.id).join("/")}`,
+      required: false,
+      defaultValue: "auto",
+      validate: (value) =>
+        value === "auto" || BUILTIN_SKILLS.some((skill) => skill.id === value) ? undefined : "skill 不合法"
+    },
+    {
+      key: "aspect",
+      label: "视频比例",
+      prompt: "你希望视频比例是什么？例如 9:16、16:9、1:1、4:5",
+      required: true,
+      defaultValue: config.defaults.aspectRatio
+    },
+    {
+      key: "duration",
+      label: "视频时长",
+      prompt: "你希望视频时长是多少？例如 15s、30s、60s",
+      required: true,
+      defaultValue: `${config.defaults.durationSeconds}s`,
+      validate: (value) => (parseDuration(value) ? undefined : "时长格式不正确")
+    },
+    {
+      key: "language",
+      label: "语言",
+      prompt: "内容语言是什么？留空自动识别",
+      required: false
+    },
+    {
+      key: "platform",
+      label: "平台",
+      prompt: "目标平台是什么？留空使用默认值",
+      required: false,
+      defaultValue: config.defaults.platform
+    }
+  ];
+
+  let index = 0;
+  while (index < steps.length) {
+    const step = steps[index]!;
+    const current = answers[step.key] ?? step.defaultValue ?? "";
+    const suffix = current ? ` [当前: ${current}]` : "";
+    const raw = (await rl.question(`(${index + 1}/${steps.length}) ${step.prompt}${suffix}: `)).trim();
+
+    if (raw === "/cancel") {
+      throw new WizardCancelledError();
+    }
+    if (raw === "/help") {
+      console.log("Commands: /back 上一步, /skip 跳过当前项, /cancel 取消");
+      continue;
+    }
+    if (raw === "/back") {
+      if (index > 0) {
+        index -= 1;
+      }
+      continue;
+    }
+    if (raw === "/skip") {
+      if (step.required && !step.defaultValue) {
+        console.log(`${step.label} 不能为空。`);
+        continue;
+      }
+      if (step.defaultValue) {
+        answers[step.key] = step.defaultValue;
+      } else {
+        delete answers[step.key];
+      }
+      index += 1;
+      continue;
+    }
+
+    const value = raw || step.defaultValue || "";
+    if (!value && step.required) {
+      console.log(`${step.label} 不能为空。`);
+      continue;
+    }
+    const error = step.validate?.(value);
+    if (error) {
+      console.log(error);
+      continue;
+    }
+    if (value) {
+      answers[step.key] = value;
+    }
+    index += 1;
+  }
+
+  const options: Record<string, string | boolean> = {};
+  for (const key of ["theme", "content", "skill", "aspect", "duration", "language", "platform"]) {
+    const value = answers[key];
+    if (value !== undefined) {
+      options[key] = value;
+    }
+  }
+  options.mode = "video";
+
+  const uploadedImages = await collectImagesInteractively(rl, cwd);
+  if (uploadedImages.length > 0) {
+    options.images = uploadedImages.join(",");
+  }
+
+  console.log("开始制作视频...");
+  await runGenerate(cwd, options);
 }
 
 async function runRender(cwd: string, options: Record<string, string | boolean>): Promise<string> {
@@ -381,6 +422,7 @@ async function runRender(cwd: string, options: Record<string, string | boolean>)
 
   await ensureBinary("ffmpeg");
   await ensureBinary("ffprobe");
+  await ensureBinary("python3");
 
   const workerPath = resolve(cwd, "workers", "media", "render.py");
   console.log(`Rendering project: ${basename(projectDir)}`);
@@ -647,7 +689,10 @@ export function getVideoReadySummary(projectDir: string, videoPath: string): str
     `Project directory: ${projectDir}`,
     `Final video: ${videoPath}`,
     `Open file: ${pathToFileURL(videoPath).href}`,
-    "No extra export command is required."
+    "",
+    "Next steps:",
+    "  Re-render:  ./aivideo render --project " + basename(projectDir),
+    "  Cleanup:    ./aivideo cleanup --keep-days 7"
   ];
 }
 
@@ -732,7 +777,7 @@ export function assertPathWithin(baseDir: string, candidatePath: string, label: 
   const resolvedBase = resolve(baseDir);
   const resolvedCandidate = resolve(candidatePath);
   const rel = relative(resolvedBase, resolvedCandidate);
-  if (rel === ".." || rel.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`)) {
+  if (rel === ".." || rel.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) || isAbsolute(rel)) {
     throw new Error(`${label} must stay within ${baseDir}.`);
   }
 }
@@ -748,26 +793,30 @@ async function ensureBinary(command: string): Promise<void> {
 function printHelp(): void {
   console.log(`AI Video Agent CLI
 
+Quick start:
+  ./aivideo create                          Interactive quick create (recommended)
+  ./aivideo generate --brief "主题：夏季防晒喷雾；视频时长：30s"
+
 Commands:
-  aivideo init
-  aivideo create
-  aivideo skills list
-  aivideo providers test [--profile default] [--live]
-  aivideo generate --brief "主题：夏季防晒喷雾；主要内容：清爽不油腻；输出模式：video；视频比例：9:16；视频时长：30s" [--images a.png,b.png]
-  aivideo generate --brief-file ./brief.txt [--images a.png,b.png]
-  aivideo generate --theme "..." [--content "..."] [--images a.png,b.png] [--skill auto] [--mode script|video] [--aspect 9:16] [--duration 30s] [--language zh-CN] [--platform douyin] [--provider-profile default] [--no-persist-artifacts] [--cleanup-after-render]
-  aivideo cleanup [--keep-days 7]
-  aivideo render --project <project-id|path>
+  aivideo init                              Initialize project config (auto-runs on first create/generate)
+  aivideo create                            Interactive video creation (quick mode by default, /more for advanced)
+  aivideo skills list                       Show built-in content skills
+  aivideo providers test [--profile name] [--live]
+  aivideo generate --brief "..."            Non-interactive generation
+  aivideo generate --brief-file ./brief.txt
+  aivideo cleanup [--keep-days 7]           Remove expired projects
+  aivideo render --project <id|path>        Re-render an existing project
+
+Advanced generate flags:
+  --theme --content --images --skill --mode --aspect --duration
+  --language --platform --provider-profile --no-persist-artifacts --cleanup-after-render
 
 Interactive commands inside "aivideo create":
+  /more     Switch to advanced step-by-step mode
   /back     Go back to previous step
   /skip     Skip current optional step
   /cancel   Cancel the wizard
-  /help     Show wizard help
-
-Notes:
-  - "aivideo create" defaults to video mode
-  - After the text questions, the wizard asks whether to upload reference images
+  /help     Show help
 `);
 }
 
@@ -790,12 +839,13 @@ function execFileAsync(
       }
     }
 
-    execFile(command, args, (error, stdout, stderr) => {
+    execFile(command, args, { maxBuffer: 64 * 1024 * 1024 }, (error, stdout, stderr) => {
       if (heartbeat) {
         clearInterval(heartbeat);
       }
       if (error) {
-        rejectPromise(new Error(stderr || error.message));
+        const detail = [stderr, stdout].filter(Boolean).join("\n").trim();
+        rejectPromise(new Error(detail || error.message));
         return;
       }
       if (stdout) {

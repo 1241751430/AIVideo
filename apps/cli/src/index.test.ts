@@ -85,5 +85,7 @@ test("getVideoReadySummary includes direct video path and file link", () => {
   assert.match(lines[1] ?? "", /Project directory: \/tmp\/projects\/demo/);
   assert.match(lines[2] ?? "", /Final video: \/tmp\/projects\/demo\/output\/final\.mp4/);
   assert.match(lines[3] ?? "", /^Open file: file:\/\/\/tmp\/projects\/demo\/output\/final\.mp4$/);
-  assert.equal(lines[4], "No extra export command is required.");
+  assert.match(lines[5] ?? "", /Next steps/);
+  assert.match(lines[6] ?? "", /Re-render/);
+  assert.match(lines[7] ?? "", /Cleanup/);
 });

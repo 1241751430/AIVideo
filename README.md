@@ -2,388 +2,147 @@
 
 [English](./README.md) | [简体中文](./README.zh-CN.md)
 
-AI Video Agent CLI is a local AI-powered video production tool. Users only need to provide a topic, key content, or reference images. The agent can then choose a suitable content skill, generate copy, build a storyboard, prepare render assets, and export a video when `ffmpeg` is available.
+AI Video Agent CLI is a local AI-powered video production tool. Provide a topic, key content, or reference images — the agent picks a content skill, generates copy & storyboard, prepares render assets, and exports a video when `ffmpeg` is available.
 
-Recommended runtime mode: Docker first. Host-level execution remains available, but containerized runtime is the preferred path for both local usage and deployment because it provides a stable Node.js, Python, and `ffmpeg` environment.
+## 30-Second Quick Start
 
-## Features
+```bash
+# Clone, then run one command
+./aivideo create
+```
 
-- `aivideo init`
-  - Initialize project config and sample environment files
-- `aivideo skills list`
-  - Show built-in content skills
-- `aivideo providers test`
-  - Validate provider configuration
-- `aivideo generate`
-  - Generate scripts, storyboards, and optionally render a video from structured brief text or explicit flags
-- `aivideo render`
-  - Re-render an existing project
-- `aivideo cleanup`
-  - Remove expired project artifacts from `projects/`
+The launcher script handles everything automatically:
+
+- First run: creates `.env`, builds the Docker image (if Docker is available) or runs `pnpm install && pnpm build`
+- First `create`/`generate`: auto-runs `init` to generate `aivideo.config.yaml`
+- Enters interactive mode — just describe the video you want
+
+> To use remote models (OpenAI / Qwen / Doubao etc.), add API keys to `.env` first.
+
+Non-interactive example:
+
+```bash
+./aivideo generate --brief "Theme: Summer sunscreen spray; Content: lightweight; Duration: 30s"
+```
 
 ## Requirements
 
-Recommended:
+**Recommended: Docker + Docker Compose** (no host-level Node.js / Python / ffmpeg needed)
 
-- Docker
-- Docker Compose
+Alternative host-level: Node.js 20+ · pnpm 10+ · Python 3.10+ · ffmpeg/ffprobe
 
-Alternative host-level runtime:
+> Without `ffmpeg` you can still generate scripts, storyboards, and subtitles, but cannot export the final video.
 
-- Node.js 20+
-- pnpm 10+
-- Python 3.10+
-- `ffmpeg` and `ffprobe`
+<details>
+<summary>Installing ffmpeg (host-level only)</summary>
 
-In Docker mode, you do not need to install `ffmpeg` on the host machine, and you do not need to create a local Python virtual environment.
+**macOS**: `brew install ffmpeg`
 
-If `ffmpeg` is not installed, the project can still generate intermediate assets such as copy, storyboard, subtitles, and render manifests, but it cannot export the final video file.
+**Ubuntu / Debian**: `sudo apt update && sudo apt install -y ffmpeg`
 
-## Hardware Requirements
+**CentOS / Rocky**: install from your distro's package source; ensure both `ffmpeg` and `ffprobe` are in `PATH`.
 
-The current version mainly relies on cloud AI models, local orchestration, and local `ffmpeg` rendering, so a local GPU is not required.
+Verify: `ffmpeg -version && ffprobe -version`
+</details>
 
-Minimum recommended:
+## Commands
 
-- CPU: 4 cores
-- RAM: 8 GB
-- Free disk space: 10 GB
-- Storage: SSD
+| Command | Description |
+|---------|-------------|
+| `./aivideo create` | Interactive quick-create (recommended) |
+| `./aivideo generate --brief "..."` | One-line non-interactive generation |
+| `./aivideo generate --brief-file ./brief.txt` | Generate from a brief file |
+| `./aivideo skills list` | Show built-in skills |
+| `./aivideo providers test [--live]` | Validate provider config |
+| `./aivideo render --project <id\|path>` | Re-render an existing project |
+| `./aivideo cleanup --keep-days 7` | Remove expired projects |
+| `./aivideo init` | Manually initialize config (usually automatic) |
 
-Recommended:
+`create` interactive commands: `/more` advanced step-by-step · `/back` · `/skip` · `/cancel` · `/help`
 
-- CPU: 8 cores or more
-- RAM: 16 GB or more
-- Free disk space: 20 GB+
-- Storage: SSD
+## Structured Brief Input
 
-Notes:
+`--brief` and `create` both accept structured briefs (Chinese & English keys):
 
-- Copy, script, and storyboard generation have very low hardware pressure
-- Image-based video assembly depends more on CPU, memory, and disk IO
-- The current version does not depend on local GPU inference; if local open-source image or video models are added later, GPU requirements should be raised separately
+```
+Theme: Summer sunscreen spray; Content: lightweight, non-greasy; Aspect: 9:16; Duration: 30s
+```
 
-## Install ffmpeg
+Free-form descriptions also work. Images can be passed via `--images` or uploaded during `create`.
 
-You must install both `ffmpeg` and `ffprobe` to use `video` mode and export final videos.
+## Deployment
 
-### macOS
-
-If you use Homebrew:
+<details>
+<summary>Option 1: Docker (recommended)</summary>
 
 ```bash
-brew install ffmpeg
+# Edit .env with API keys if needed
+./aivideo create
 ```
 
-Verify installation:
+The launcher auto-builds on first run or when `Dockerfile` changes.
+
+- Container includes ffmpeg / Node.js / Python
+- `projects/` mounted from host
+- `aivideo.config.yaml` mounted read-only
+
+</details>
+
+<details>
+<summary>Option 2: Host-level</summary>
+
+Ensure Node.js 20+, pnpm, Python 3, and ffmpeg are installed, then:
 
 ```bash
-ffmpeg -version
-ffprobe -version
+./aivideo create
 ```
 
-### Ubuntu / Debian
+The script auto-runs `pnpm install && pnpm build` on first use and auto-runs `init`.
+
+Manual alternative:
 
 ```bash
-sudo apt update
-sudo apt install -y ffmpeg
-```
-
-### CentOS / Rocky / AlmaLinux
-
-Install `ffmpeg` from the appropriate package source for your distribution and make sure both `ffmpeg` and `ffprobe` are available in `PATH`.
-
-### Common Issues
-
-- If `aivideo generate --mode video` or `aivideo render` reports `ffmpeg is required`, then `ffmpeg` is either not installed or not visible in `PATH`
-- If the shell still cannot find it after installation, restart the terminal and check `which ffmpeg` and `which ffprobe`
-
-## Quick Start
-
-### Recommended: Docker
-
-```bash
-cp .env.example .env
-docker compose build
-docker compose run --rm aivideo skills list
-docker compose run --rm aivideo providers test
-docker compose run --rm aivideo generate --brief "Theme: Summer sunscreen spray; Content: lightweight, non-greasy; Mode: script; Aspect: 9:16; Duration: 30s"
-docker compose run --rm aivideo cleanup --keep-days 7
-```
-
-In this mode:
-
-- `ffmpeg` is provided inside the container
-- Python runs inside the container
-- The host machine only needs Docker and Docker Compose
-- Generated assets are still written to the local `projects/` directory through the mounted volume
-
-### Alternative: Run On Host
-
-```bash
-pnpm install
-pnpm build
-pnpm cli init
-pnpm cli skills list
-pnpm cli generate --brief "Theme: Summer sunscreen spray; Content: lightweight, non-greasy; Mode: script; Aspect: 9:16; Duration: 30s"
-pnpm cli cleanup --keep-days 7
-```
-
-After running `init`, the current directory will contain:
-
-- `aivideo.config.yaml`
-- `.env.example`
-
-Add API keys to `.env` to enable remote models. If no remote provider is configured, the CLI falls back to built-in local behavior.
-
-## Natural Language Input
-
-The recommended way to use the CLI is now a structured brief instead of many flags.
-
-Example:
-
-```text
-Theme: Summer sunscreen spray; Content: lightweight, non-greasy; Aspect: 9:16; Duration: 30s; Language: zh-CN; Platform: douyin
-```
-
-Chinese format also works:
-
-```text
-主题：夏季防晒喷雾；主要内容：清爽不油腻；视频比例：9:16；视频时长：30s；语言：zh-CN；平台：douyin
-```
-
-CLI usage:
-
-```bash
-pnpm cli generate --brief "主题：夏季防晒喷雾；主要内容：清爽不油腻；视频比例：9:16；视频时长：30s"
-pnpm cli generate --brief-file ./brief.txt --images ./assets/ref1.png,./assets/ref2.jpg
+pnpm install && pnpm build
 pnpm cli create
 ```
 
-Notes:
+</details>
 
-- `create` supports pasting a structured brief directly, or you can press Enter to switch into step-by-step mode
-- `create` now defaults to `video` mode, so users do not need to provide an output mode during the guided flow
-- After the text questions, `create` will ask whether to upload reference images and will keep asking if more images should be added
-- If `language` is explicitly provided, the CLI uses that value; otherwise it auto-detects the language from user input and only falls back to the config default when detection is inconclusive
-- When video generation finishes, the CLI prints the final video path and a clickable `file://` link, so no extra export command is required
-- `--brief` and `--brief-file` support both Chinese and English keys
-- Images can still be provided separately through `--images`
+<details>
+<summary>Option 3: Single Linux server</summary>
 
-## Deployment Options
-
-The current project is CLI-first. Recommended deployment modes:
-
-- Docker deployment
-- Local workstation deployment
-- Single Linux server deployment
-
-The repository now includes:
-
-- [Dockerfile](./Dockerfile)
-- [docker-compose.yml](./docker-compose.yml)
-- [.dockerignore](./.dockerignore)
-
-## Deployment Steps
-
-### Option 1: Docker Deployment
-
-Use this when you want a reproducible runtime and do not want to install Node.js, Python, or `ffmpeg` on the host system. This is the recommended option for both local usage and deployment.
-
-Requirements:
-
-- Docker
-- Docker Compose
-
-Steps:
-
-1. Prepare the environment file:
+Recommended: 4 vCPU / 8 GB RAM / SSD / stable outbound network.
 
 ```bash
-cp .env.example .env
+# Clone repo, edit .env
+./aivideo providers test --live
+./aivideo generate --brief "Theme: AI office assistant; Duration: 30s"
 ```
 
-2. Edit `.env` and add provider API keys if remote models are needed.
+Schedule via cron or CI.
 
-3. Build the image:
+</details>
 
-```bash
-docker compose build
-```
+<details>
+<summary>Advanced flags</summary>
 
-4. Verify the container runtime:
+- `--no-persist-artifacts`: remove brief.json / script.md / storyboard.json after generation
+- `--cleanup-after-render`: remove audio, captions, and temp render files after export
+- `--provider-profile <name>`: select a provider profile
+- Env var `AIVIDEO_MODE=docker|host` forces the launcher's runtime mode
 
-```bash
-docker compose run --rm aivideo skills list
-docker compose run --rm aivideo providers test
-```
-
-5. Run a generation task:
-
-```bash
-docker compose run --rm aivideo create
-```
-
-6. Or run a non-interactive video task directly:
-
-```bash
-docker compose run --rm aivideo generate --brief "Theme: Your topic; Duration: 30s"
-```
-
-Notes:
-
-- The container already includes `ffmpeg`, `ffprobe`, Node.js, pnpm, and Python
-- You do not need a host-level Python virtual environment in this mode
-- `projects/` is mounted from the host, so generated assets remain available outside the container
-- `aivideo.config.yaml` is mounted read-only into the container
-- Successful video runs print the final video path and a `file://` link immediately
-- If you do not want to persist script/storyboard artifacts, add `--no-persist-artifacts`
-- If you want temporary render files removed after video export, add `--cleanup-after-render`
-- You can remove expired projects with:
-
-```bash
-docker compose run --rm aivideo cleanup --keep-days 7
-```
-
-### Option 2: Local Deployment
-
-Use this when the operator generates content on the same machine.
-
-1. Install runtime dependencies and verify versions:
-
-```bash
-node -v
-pnpm -v
-python3 --version
-ffmpeg -version
-ffprobe -version
-```
-
-2. Clone the repository or copy the project directory to the local machine.
-
-3. Install dependencies:
-
-```bash
-pnpm install
-```
-
-4. Build the project:
-
-```bash
-pnpm build
-```
-
-5. Initialize runtime files:
-
-```bash
-pnpm cli init
-```
-
-6. Edit `.env` and add provider API keys if remote model access is needed.
-
-7. Verify providers:
-
-```bash
-pnpm cli providers test
-```
-
-8. Run a generation task:
-
-```bash
-pnpm cli create
-```
-
-9. Or run a non-interactive video task directly:
-
-```bash
-pnpm cli generate --brief "Theme: Your topic; Duration: 30s"
-```
-
-Useful safety flags:
-
-- `--no-persist-artifacts`
-  - Remove script-oriented artifacts such as `brief.json`, `script.md`, and `storyboard.json` after generation
-- `--cleanup-after-render`
-  - Remove temporary render files such as audio, captions, and temporary render workspace after video export
-
-Cleanup expired projects:
-
-```bash
-pnpm cli cleanup --keep-days 7
-```
-
-### Option 3: Single Server Deployment
-
-Use this when a dedicated Linux server handles centralized generation or scheduled tasks.
-
-Recommended server baseline:
-
-- 4 vCPU minimum
-- 8 GB RAM minimum
-- SSD storage
-- Stable outbound network access to external model APIs
-
-Deployment steps:
-
-1. Prepare the server and install Node.js 20+, pnpm, Python 3, and `ffmpeg`.
-
-2. Upload or clone the repository to the server.
-
-3. Install dependencies:
-
-```bash
-pnpm install
-```
-
-4. Build the project:
-
-```bash
-pnpm build
-```
-
-5. Initialize configuration files:
-
-```bash
-pnpm cli init
-```
-
-6. Edit `.env` and `aivideo.config.yaml` for the server environment.
-
-7. Verify providers and runtime readiness:
-
-```bash
-pnpm cli providers test
-```
-
-8. Run generation commands directly, or trigger them through cron, a scheduler, or a CI workflow.
-
-Example:
-
-```bash
-pnpm cli generate --brief "Theme: AI office assistant; Skill: knowledge; Duration: 30s"
-```
-
-### Deployment Notes
-
-- The current project does not expose an HTTP API by default
-- The current deployment model is command-driven, so scheduling is usually handled by cron, CI, or an external workflow system
-- Docker is the recommended default runtime for day-to-day usage and deployment
-- Generated assets are written under `projects/`, so the deployment user must have write permission there
-- In production-like environments, keep API keys only in `.env` or a server-side secret manager, not in committed files
-- In Docker mode, the host machine does not need a local Python virtual environment or host-level `ffmpeg`
+</details>
 
 ## Security Notes
 
-- Provider API keys are read from `.env`
-- By default, remote provider `baseURL` values are restricted to trusted hosts
-- If you need a custom provider gateway, you must explicitly set `allowCustomBaseURL: true` for that provider in `aivideo.config.yaml`
-- Input images are restricted to `png`, `jpg`, `jpeg`, and `webp`
-- Input images larger than 10 MB are rejected
-- Default workload limits are enforced for duration and image count
+- API keys are read from `.env` only — never commit them
+- Remote provider `baseURL` values are restricted to trusted hosts by default; custom gateways require `allowCustomBaseURL: true` in `aivideo.config.yaml`
+- Input images: png / jpg / jpeg / webp, max 10 MB each
+- Default workload limits on duration and image count
 
 ## Runtime Boundaries
 
-- The current version is optimized for short-form video and image-based assembly
-- Long videos are not assumed to be generated in one pass by a single model; instead, the intended workflow is `script -> storyboard -> segmented assets -> local composition`
-- If remote image or video models are not configured, the system can still produce copy, storyboard, subtitles, and a base render structure
-- Automatic publishing to Douyin, WeChat Channels, Bilibili, or other platforms is not included in the current version
+- Optimized for short-form video and image-based assembly
+- Long videos follow `script → storyboard → segmented assets → local composition`
+- Without remote models, the system still produces copy, storyboard, subtitles, and render structure
+- No automatic publishing to Douyin, WeChat Channels, Bilibili, or other platforms

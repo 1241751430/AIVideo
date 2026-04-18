@@ -7,3 +7,4 @@ projects
 coverage
 *.log
 __pycache__
+.aivideo

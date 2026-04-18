@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# AI Video Agent launcher.
+# Usage: ./aivideo <command> [args...]
+#
+# Behavior:
+#   - Prefer Docker Compose when Docker is available (first run auto-builds the image).
+#   - Fallback to host-level Node (pnpm) when Docker is not available.
+#   - Bootstraps .env on first run so users don't need a separate `init` step.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
+
+STATE_DIR=".aivideo"
+DOCKER_STAMP="$STATE_DIR/.docker-built"
+
+ensure_env_file() {
+  if [ ! -f ".env" ] && [ -f ".env.example" ]; then
+    cp .env.example .env
+    echo "[aivideo] Created .env from .env.example. Add API keys there if you need remote models." >&2
+  fi
+}
+
+have_cmd() { command -v "$1" >/dev/null 2>&1; }
+
+docker_available() {
+  have_cmd docker || return 1
+  docker info >/dev/null 2>&1 || return 1
+  if docker compose version >/dev/null 2>&1; then return 0; fi
+  return 1
+}
+
+run_docker() {
+  mkdir -p "$STATE_DIR"
+  if [ ! -f "$DOCKER_STAMP" ] || [ "Dockerfile" -nt "$DOCKER_STAMP" ] || [ "docker-compose.yml" -nt "$DOCKER_STAMP" ]; then
+    echo "[aivideo] Building Docker image (first run or Dockerfile changed)..." >&2
+    docker compose build
+    touch "$DOCKER_STAMP"
+  fi
+  exec docker compose run --rm aivideo "$@"
+}
+
+run_host() {
+  if ! have_cmd node; then
+    echo "[aivideo] Node.js 20+ is required but was not found." >&2
+    exit 1
+  fi
+  if [ ! -f "apps/cli/dist/index.js" ]; then
+    if ! have_cmd pnpm; then
+      echo "[aivideo] pnpm is required to build the project. Install pnpm 10+ first." >&2
+      exit 1
+    fi
+    echo "[aivideo] First run: installing dependencies and building..." >&2
+    pnpm install
+    pnpm build
+  fi
+  exec node apps/cli/dist/index.js "$@"
+}
+
+ensure_env_file
+
+MODE="${AIVIDEO_MODE:-auto}"
+case "$MODE" in
+  docker) run_docker "$@" ;;
+  host|local) run_host "$@" ;;
+  auto|*)
+    if docker_available; then
+      run_docker "$@"
+    else
+      run_host "$@"
+    fi
+    ;;
+esac

@@ -125,13 +125,13 @@ export async function runInit(cwd: string): Promise<void> {
   const projectsDir = resolve(cwd, "projects");
 
   if (!existsSync(configPath)) {
-    writeFileSync(configPath, getConfigTemplate(), "utf8");
+    writeFileSync(configPath, getConfigTemplate(cwd), "utf8");
   }
   if (!existsSync(envExamplePath)) {
-    writeFileSync(envExamplePath, getEnvTemplate(), "utf8");
+    writeFileSync(envExamplePath, getEnvTemplate(cwd), "utf8");
   }
   if (!existsSync(envPath)) {
-    writeFileSync(envPath, getEnvTemplate(), "utf8");
+    writeFileSync(envPath, getEnvTemplate(cwd), "utf8");
   }
   mkdirSync(projectsDir, { recursive: true });
 

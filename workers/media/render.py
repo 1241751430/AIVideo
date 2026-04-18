@@ -37,7 +37,12 @@ def resolve_project_path(project_dir: Path, value: str, label: str) -> Path:
 
 
 def escape_drawtext(value: str) -> str:
-    return value.replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
+    return (
+        value.replace("\\", "\\\\")
+        .replace(":", "\\:")
+        .replace("'", "\\'")
+        .replace("%", "%%")
+    )
 
 
 def escape_filter_path(value: str) -> str:
@@ -164,7 +169,12 @@ def render(project_dir: Path, manifest_path: Path) -> Path:
         clips.append(make_clip(project_dir, work_dir, shot, manifest["width"], manifest["height"], index))
 
     concat_file = work_dir / "concat.txt"
-    concat_file.write_text("".join(f"file '{clip.as_posix()}'\n" for clip in clips))
+    concat_file.write_text(
+        "".join(
+            f"file '{clip.as_posix().replace(chr(39), chr(39) + chr(92) + chr(39) + chr(39))}'\n"
+            for clip in clips
+        )
+    )
     merged = work_dir / "merged.mp4"
     run(["ffmpeg", "-y", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", str(concat_file), "-c", "copy", str(merged)])
 

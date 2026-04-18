@@ -1,7 +1,16 @@
 import { existsSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { isAbsolute, relative, resolve } from "node:path";
 import YAML from "yaml";
 import { AppConfig, ProviderProfileConfig } from "./types.js";
+
+const ALLOWED_ENV_PREFIXES = [
+  "OPENAI_",
+  "DASHSCOPE_",
+  "ARK_",
+  "AIVIDEO_",
+  "VOLCENGINE_",
+  "ALIYUN_"
+];
 
 export const CONFIG_FILE = "aivideo.config.yaml";
 
@@ -103,7 +112,7 @@ export function loadConfig(cwd: string): AppConfig {
   }
 
   const loaded = YAML.parse(readFileSync(configPath, "utf8")) as Partial<AppConfig> | null;
-  return {
+  const config: AppConfig = {
     defaults: {
       ...DEFAULT_CONFIG.defaults,
       ...(loaded?.defaults ?? {})
@@ -117,6 +126,19 @@ export function loadConfig(cwd: string): AppConfig {
       ...(loaded?.profiles ?? {})
     }
   };
+  assertSafeProjectsDir(cwd, config.defaults.projectsDir);
+  return config;
+}
+
+function assertSafeProjectsDir(cwd: string, projectsDir: string): void {
+  if (isAbsolute(projectsDir)) {
+    throw new Error(`projectsDir must be a relative path, got: ${projectsDir}`);
+  }
+  const resolved = resolve(cwd, projectsDir);
+  const rel = relative(resolve(cwd), resolved);
+  if (rel.startsWith("..")) {
+    throw new Error(`projectsDir must stay within the project root, got: ${projectsDir}`);
+  }
 }
 
 export function resolveProfile(config: AppConfig, requestedProfile?: string): ProviderProfileConfig {
@@ -145,6 +167,9 @@ export function loadDotEnv(cwd: string): void {
       continue;
     }
     const key = trimmed.slice(0, separator).trim();
+    if (!ALLOWED_ENV_PREFIXES.some((prefix) => key.startsWith(prefix))) {
+      continue;
+    }
     const value = trimmed.slice(separator + 1).trim().replace(/^"(.*)"$/, "$1");
     if (!(key in process.env)) {
       process.env[key] = value;
@@ -152,10 +177,10 @@ export function loadDotEnv(cwd: string): void {
   }
 }
 
-export function getConfigTemplate(): string {
-  return readFileSync(resolve(process.cwd(), "aivideo.config.yaml"), "utf8");
+export function getConfigTemplate(cwd?: string): string {
+  return readFileSync(resolve(cwd ?? process.cwd(), "aivideo.config.yaml"), "utf8");
 }
 
-export function getEnvTemplate(): string {
-  return readFileSync(resolve(process.cwd(), ".env.example"), "utf8");
+export function getEnvTemplate(cwd?: string): string {
+  return readFileSync(resolve(cwd ?? process.cwd(), ".env.example"), "utf8");
 }

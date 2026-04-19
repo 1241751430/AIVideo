@@ -170,7 +170,7 @@ export function loadDotEnv(cwd: string): void {
     if (!ALLOWED_ENV_PREFIXES.some((prefix) => key.startsWith(prefix))) {
       continue;
     }
-    const value = trimmed.slice(separator + 1).trim().replace(/^"(.*)"$/, "$1");
+    const value = trimmed.slice(separator + 1).trim().replace(/^(["'])(.*)\1$/, "$2");
     if (!(key in process.env)) {
       process.env[key] = value;
     }
@@ -178,9 +178,27 @@ export function loadDotEnv(cwd: string): void {
 }
 
 export function getConfigTemplate(cwd?: string): string {
-  return readFileSync(resolve(cwd ?? process.cwd(), "aivideo.config.yaml"), "utf8");
+  const target = resolve(cwd ?? process.cwd(), "aivideo.config.yaml");
+  if (existsSync(target)) {
+    return readFileSync(target, "utf8");
+  }
+  return YAML.stringify(DEFAULT_CONFIG);
 }
 
 export function getEnvTemplate(cwd?: string): string {
-  return readFileSync(resolve(cwd ?? process.cwd(), ".env.example"), "utf8");
+  const target = resolve(cwd ?? process.cwd(), ".env.example");
+  if (existsSync(target)) {
+    return readFileSync(target, "utf8");
+  }
+  return DEFAULT_ENV_TEMPLATE;
 }
+
+const DEFAULT_ENV_TEMPLATE = `# OpenAI
+OPENAI_API_KEY=
+
+# 阿里 DashScope
+DASHSCOPE_API_KEY=
+
+# 火山引擎 Ark
+ARK_API_KEY=
+`;

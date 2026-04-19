@@ -8,6 +8,7 @@ import {
   BUILTIN_SKILLS,
   CONFIG_FILE,
   GenerateRequest,
+  SUPPORTED_ASPECT_RATIOS,
   cleanupRenderWorkspace,
   cleanupExpiredProjects,
   createProjectId,
@@ -197,7 +198,7 @@ async function runGenerate(cwd: string, options: Record<string, string | boolean
     console.log("Preparing video assets...");
     await synthesizeNarration(projectDir, artifacts.storyboard.shots, providers.speech);
     console.log("Starting video render. This may take a while...");
-    await runRender(cwd, { project: projectDir });
+    await runRender(cwd, { project: projectDir }, config);
     if (request.cleanupAfterRender) {
       cleanupRenderWorkspace(projectDir);
     }
@@ -220,22 +221,30 @@ async function runCreate(cwd: string): Promise<void> {
     console.log("AI Video 快速创建");
     console.log("输入 /more 进入高级模式（逐项配置），/cancel 取消，/help 查看帮助\n");
 
-    const briefInput = (
-      await rl.question("描述你想做的视频（支持结构化 brief 或自由描述）: ")
-    ).trim();
+    while (true) {
+      const briefInput = (
+        await rl.question("描述你想做的视频（支持结构化 brief 或自由描述）: ")
+      ).trim();
 
-    if (briefInput === "/cancel") {
-      throw new WizardCancelledError();
-    }
-    if (briefInput === "/help") {
-      console.log("Structured brief example:");
-      console.log("主题：夏季防晒喷雾；主要内容：清爽不油腻；视频比例：9:16；视频时长：30s");
-      console.log("你也可以直接描述，如：做一个 30 秒的夏季防晒产品视频。");
-      console.log("如果需要参考图片，后面会继续询问是否上传。\n");
-    } else if (briefInput === "/more") {
-      await runCreateAdvanced(config, rl, cwd);
-      return;
-    } else if (briefInput) {
+      if (briefInput === "/cancel") {
+        throw new WizardCancelledError();
+      }
+      if (briefInput === "/help") {
+        console.log("Structured brief example:");
+        console.log("主题：夏季防晒喷雾；主要内容：清爽不油腻；视频比例：9:16；视频时长：30s");
+        console.log("你也可以直接描述，如：做一个 30 秒的夏季防晒产品视频。");
+        console.log("如果需要参考图片，后面会继续询问是否上传。\n");
+        continue;
+      }
+      if (briefInput === "/more") {
+        await runCreateAdvanced(config, rl, cwd);
+        return;
+      }
+      if (!briefInput) {
+        await runCreateAdvanced(config, rl, cwd);
+        return;
+      }
+
       const options = parseStructuredBrief(briefInput);
       options.mode = "video";
       const defaultDuration = `${config.defaults.durationSeconds}s`;
@@ -262,8 +271,6 @@ async function runCreate(cwd: string): Promise<void> {
       await runGenerate(cwd, options);
       return;
     }
-
-    await runCreateAdvanced(config, rl, cwd);
   } catch (error) {
     if (error instanceof WizardCancelledError) {
       console.log("Interactive create cancelled.");
@@ -309,7 +316,7 @@ async function runCreateAdvanced(
     {
       key: "aspect",
       label: "视频比例",
-      prompt: "你希望视频比例是什么？例如 9:16、16:9、1:1、4:5",
+      prompt: `你希望视频比例是什么？可选：${SUPPORTED_ASPECT_RATIOS.join("、")}`,
       required: true,
       defaultValue: config.defaults.aspectRatio
     },
@@ -404,12 +411,12 @@ async function runCreateAdvanced(
   await runGenerate(cwd, options);
 }
 
-async function runRender(cwd: string, options: Record<string, string | boolean>): Promise<string> {
+async function runRender(cwd: string, options: Record<string, string | boolean>, preloadedConfig?: ReturnType<typeof loadConfig>): Promise<string> {
   const projectArg = getStringOption(options, "project");
   if (!projectArg) {
     throw new Error("render requires --project <project-id|path>");
   }
-  const config = loadConfig(cwd);
+  const config = preloadedConfig ?? loadConfig(cwd);
   const projectsRoot = resolve(cwd, config.defaults.projectsDir);
   const projectDir = isAbsolute(projectArg)
     ? projectArg
@@ -420,9 +427,7 @@ async function runRender(cwd: string, options: Record<string, string | boolean>)
     throw new Error(`render-manifest.json not found in ${projectDir}`);
   }
 
-  await ensureBinary("ffmpeg");
-  await ensureBinary("ffprobe");
-  await ensureBinary("python3");
+  await Promise.all([ensureBinary("ffmpeg"), ensureBinary("ffprobe"), ensureBinary("python3")]);
 
   const workerPath = resolve(cwd, "workers", "media", "render.py");
   console.log(`Rendering project: ${basename(projectDir)}`);
@@ -729,6 +734,9 @@ function normalizeBriefValue(key: string, value: string): string {
   return value.trim();
 }
 
+const ALLOWED_IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp"]);
+const MAX_IMAGE_SIZE_BYTES = 10 * 1024 * 1024;
+
 function parseImages(value: string | undefined, cwd: string): string[] | undefined {
   if (!value) {
     return undefined;
@@ -742,12 +750,12 @@ function parseImages(value: string | undefined, cwd: string): string[] | undefin
     if (!existsSync(entry)) {
       throw new Error(`Image not found: ${entry}`);
     }
-    const lower = entry.toLowerCase();
-    if (!lower.endsWith(".png") && !lower.endsWith(".jpg") && !lower.endsWith(".jpeg") && !lower.endsWith(".webp")) {
+    const ext = entry.slice(entry.lastIndexOf(".")).toLowerCase();
+    if (!ALLOWED_IMAGE_EXTENSIONS.has(ext)) {
       throw new Error(`Unsupported image format: ${entry}`);
     }
     const size = statSync(entry).size;
-    if (size > 10 * 1024 * 1024) {
+    if (size > MAX_IMAGE_SIZE_BYTES) {
       throw new Error(`Image exceeds 10MB limit: ${entry}`);
     }
   }

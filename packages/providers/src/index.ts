@@ -13,7 +13,8 @@ import {
   TextGenerationRequest,
   TextModelProvider,
   VideoGenerationRequest,
-  VideoModelProvider
+  VideoModelProvider,
+  resolveProfile
 } from "@aivideo/core";
 
 const LIVE_TEST_TIMEOUT_MS = 10_000;
@@ -238,11 +239,7 @@ class LocalSaySpeechProvider implements SpeechProvider {
 }
 
 export function createProviderSelection(config: AppConfig, profileName?: string): ProviderSelection {
-  const profileId = profileName ?? config.defaults.profile;
-  const profile = config.profiles[profileId];
-  if (!profile) {
-    throw new Error(`Unknown provider profile: ${profileId}`);
-  }
+  const profile = resolveProfile(config, profileName);
 
   return {
     text: instantiateTextProvider(config, profile.text),
@@ -257,11 +254,7 @@ export async function testProviders(
   profileName?: string,
   live = false
 ): Promise<ProviderHealth[]> {
-  const profileId = profileName ?? config.defaults.profile;
-  const profile = config.profiles[profileId];
-  if (!profile) {
-    throw new Error(`Unknown provider profile: ${profileId}`);
-  }
+  const profile = resolveProfile(config, profileName);
 
   const checks = [
     instantiateTextProvider(config, profile.text),
@@ -369,6 +362,11 @@ function assertSafeBaseURL(config: ProviderConfig): void {
     throw new Error("Provider baseURL is missing.");
   }
   const parsed = new URL(config.baseURL);
+  if (parsed.protocol !== "https:") {
+    throw new Error(
+      `Provider baseURL must use HTTPS to protect API keys in transit, got: ${parsed.protocol}`
+    );
+  }
   const hostAllowed = SAFE_PROVIDER_HOSTS.includes(parsed.hostname);
   if (!hostAllowed && config.allowCustomBaseURL !== true) {
     throw new Error(

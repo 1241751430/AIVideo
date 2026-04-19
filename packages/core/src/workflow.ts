@@ -21,6 +21,7 @@ const ASPECT_SIZES: Record<string, { width: number; height: number }> = {
   "1:1": { width: 1080, height: 1080 },
   "4:5": { width: 1080, height: 1350 }
 };
+export const SUPPORTED_ASPECT_RATIOS: readonly string[] = Object.keys(ASPECT_SIZES);
 const MAX_DURATION_SECONDS = 600;
 const MAX_INPUT_IMAGES = 20;
 
@@ -150,6 +151,9 @@ export function cleanupRenderWorkspace(projectDir: string): void {
 }
 
 export function cleanupExpiredProjects(projectsDir: string, maxAgeDays: number): string[] {
+  if (!Number.isFinite(maxAgeDays) || maxAgeDays <= 0) {
+    throw new Error(`maxAgeDays must be a positive number, got: ${maxAgeDays}`);
+  }
   if (!existsSync(projectsDir)) {
     return [];
   }

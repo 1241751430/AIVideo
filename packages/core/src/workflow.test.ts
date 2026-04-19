@@ -71,6 +71,11 @@ test("generateArtifacts builds storyboard and captions", async () => {
   assert.equal(artifacts.captions.length, artifacts.storyboard.shots.length);
 });
 
+test("cleanupExpiredProjects rejects non-positive maxAgeDays", () => {
+  assert.throws(() => cleanupExpiredProjects("/tmp", 0), /positive number/);
+  assert.throws(() => cleanupExpiredProjects("/tmp", -1), /positive number/);
+});
+
 test("cleanupExpiredProjects removes only expired directories", () => {
   const root = mkdtempSync(join(tmpdir(), "aivideo-projects-"));
   const expired = join(root, "expired-project");

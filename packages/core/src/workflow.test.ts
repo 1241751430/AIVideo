@@ -3,9 +3,10 @@ import { mkdtempSync, mkdirSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { validateConfig } from "./config.js";
 import { autoSelectSkill } from "./skills.js";
 import { GenerateRequest, ProviderSelection } from "./types.js";
-import { cleanupExpiredProjects, generateArtifacts, validateGenerateRequest } from "./workflow.js";
+import { cleanupExpiredProjects, createProjectId, generateArtifacts, toScriptMarkdown, toSrt, validateGenerateRequest } from "./workflow.js";
 
 test("autoSelectSkill chooses ecommerce for shopping intent", () => {
   const skill = autoSelectSkill({
@@ -74,6 +75,71 @@ test("generateArtifacts builds storyboard and captions", async () => {
 test("cleanupExpiredProjects rejects non-positive maxAgeDays", () => {
   assert.throws(() => cleanupExpiredProjects("/tmp", 0), /positive number/);
   assert.throws(() => cleanupExpiredProjects("/tmp", -1), /positive number/);
+});
+
+test("toSrt generates valid SRT output", () => {
+  const captions = [
+    { startSeconds: 0, endSeconds: 5, text: "Hello" },
+    { startSeconds: 5, endSeconds: 10.5, text: "World" }
+  ];
+  const srt = toSrt(captions);
+  assert.match(srt, /^1\n00:00:00,000 --> 00:00:05,000\nHello/);
+  assert.match(srt, /2\n00:00:05,000 --> 00:00:10,500\nWorld/);
+});
+
+test("toScriptMarkdown includes title and scenes", () => {
+  const script = {
+    title: "Test Title",
+    summary: "A summary",
+    openingHook: "Hook",
+    voiceover: "Full voiceover",
+    scenes: [
+      {
+        id: "scene-1",
+        heading: "Opening",
+        narration: "Narration text",
+        visualPrompt: "Visual",
+        shotType: "medium",
+        durationSeconds: 5,
+        caption: "Caption"
+      }
+    ],
+    bgmStyle: "upbeat",
+    cta: "Subscribe",
+    hashtags: ["test"]
+  };
+  const md = toScriptMarkdown(script);
+  assert.match(md, /# Test Title/);
+  assert.match(md, /## 镜头 1: Opening/);
+  assert.match(md, /#test/);
+});
+
+test("createProjectId generates unique slugified id", () => {
+  const id1 = createProjectId("夏季防晒");
+  const id2 = createProjectId("夏季防晒");
+  assert.ok(id1.includes("夏季防晒"));
+  assert.notEqual(id1, id2);
+});
+
+test("validateConfig detects missing profile references", () => {
+  const warnings = validateConfig({
+    defaults: { profile: "missing", aspectRatio: "9:16", durationSeconds: 30, language: "zh-CN", platform: "douyin", projectsDir: "projects" },
+    providers: {},
+    profiles: { broken: { text: "nonexistent" } }
+  });
+  assert.ok(warnings.some((w) => w.includes("missing")));
+  assert.ok(warnings.some((w) => w.includes("nonexistent")));
+});
+
+test("validateConfig detects incomplete openai-compatible provider", () => {
+  const warnings = validateConfig({
+    defaults: { profile: "default", aspectRatio: "9:16", durationSeconds: 30, language: "zh-CN", platform: "douyin", projectsDir: "projects" },
+    providers: { bad: { type: "openai-compatible", capability: "text", enabled: true } },
+    profiles: { default: { text: "bad" } }
+  });
+  assert.ok(warnings.some((w) => w.includes("baseURL")));
+  assert.ok(warnings.some((w) => w.includes("model")));
+  assert.ok(warnings.some((w) => w.includes("apiKeyEnv")));
 });
 
 test("cleanupExpiredProjects removes only expired directories", () => {

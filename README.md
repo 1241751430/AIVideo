@@ -128,6 +128,7 @@ Schedule via cron or CI.
 
 - `--no-persist-artifacts`: remove brief.json / script.md / storyboard.json after generation
 - `--cleanup-after-render`: remove audio, captions, and temp render files after export
+- `--dry-run`: generate script and storyboard without rendering the final video
 - `--provider-profile <name>`: select a provider profile
 - Env var `AIVIDEO_MODE=docker|host` forces the launcher's runtime mode
 

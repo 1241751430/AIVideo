@@ -128,6 +128,7 @@ pnpm cli create
 
 - `--no-persist-artifacts`：生成后删除 brief.json / script.md / storyboard.json
 - `--cleanup-after-render`：视频导出后删除音频、字幕、临时渲染文件
+- `--dry-run`：仅生成文案和分镜，不执行视频渲染
 - `--provider-profile <name>`：指定 provider 配置档
 - 环境变量 `AIVIDEO_MODE=docker|host` 可强制指定 `./aivideo` 脚本的运行模式
 

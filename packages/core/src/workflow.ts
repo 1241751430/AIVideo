@@ -65,8 +65,8 @@ export async function selectSkill(
       if (selected) {
         return selected;
       }
-    } catch {
-      // Fall back to heuristic selection.
+    } catch (error) {
+      console.warn(`Skill selection via model failed, falling back to heuristic: ${(error as Error).message}`);
     }
   }
 
@@ -225,8 +225,8 @@ async function buildScriptPackage(
       if (parsed && parsed.title && Array.isArray(parsed.scenes) && parsed.scenes.length > 0) {
         return normalizeScriptPackage(parsed, brief);
       }
-    } catch {
-      // Fall through to local generator.
+    } catch (error) {
+      console.warn(`Remote script generation failed, falling back to local: ${(error as Error).message}`);
     }
   }
 
@@ -449,6 +449,11 @@ function writeJson(target: string, value: unknown): void {
 }
 
 function safeParseJson<T>(value: string): T | null {
+  try {
+    return JSON.parse(value) as T;
+  } catch {
+    // Model may wrap JSON in markdown or extra text; extract the outermost block.
+  }
   try {
     const match = value.match(/\{[\s\S]*\}|\[[\s\S]*\]/);
     return match ? (JSON.parse(match[0]) as T) : null;

@@ -19,11 +19,29 @@ import {
 
 const LIVE_TEST_TIMEOUT_MS = 10_000;
 const MODEL_REQUEST_TIMEOUT_MS = 45_000;
+const RETRY_ATTEMPTS = 3;
+const RETRY_BASE_MS = 1000;
 const SAFE_PROVIDER_HOSTS = [
   "api.openai.com",
   "dashscope.aliyuncs.com",
   "ark.cn-beijing.volces.com"
 ];
+
+async function withRetry<T>(fn: () => Promise<T>, attempts = RETRY_ATTEMPTS, baseMs = RETRY_BASE_MS): Promise<T> {
+  let lastError: Error | undefined;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await fn();
+    } catch (error) {
+      lastError = error as Error;
+      if (i < attempts - 1) {
+        const delay = baseMs * Math.pow(2, i);
+        await new Promise((resolve) => setTimeout(resolve, delay));
+      }
+    }
+  }
+  throw lastError;
+}
 
 class LocalRuleTextProvider implements TextModelProvider {
   readonly id = "local-rule-text";
@@ -122,38 +140,40 @@ class OpenAICompatibleTextProvider implements TextModelProvider {
       throw new Error(`Provider ${this.id} is missing baseURL, model, or API key.`);
     }
 
-    const response = await fetchWithTimeout(
-      `${this.config.baseURL}/chat/completions`,
-      {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          Authorization: `Bearer ${apiKey}`
+    return withRetry(async () => {
+      const response = await fetchWithTimeout(
+        `${this.config.baseURL}/chat/completions`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            Authorization: `Bearer ${apiKey}`
+          },
+          body: JSON.stringify({
+            model: this.config.model,
+            temperature: 0.7,
+            messages: [
+              { role: "system", content: request.systemPrompt },
+              { role: "user", content: request.userPrompt }
+            ]
+          })
         },
-        body: JSON.stringify({
-          model: this.config.model,
-          temperature: 0.7,
-          messages: [
-            { role: "system", content: request.systemPrompt },
-            { role: "user", content: request.userPrompt }
-          ]
-        })
-      },
-      MODEL_REQUEST_TIMEOUT_MS
-    );
+        MODEL_REQUEST_TIMEOUT_MS
+      );
 
-    if (!response.ok) {
-      throw new Error(`Provider ${this.id} failed with HTTP ${response.status}`);
-    }
+      if (!response.ok) {
+        throw new Error(`Provider ${this.id} failed with HTTP ${response.status}`);
+      }
 
-    const payload = (await response.json()) as {
-      choices?: Array<{ message?: { content?: string } }>;
-    };
-    const content = payload.choices?.[0]?.message?.content;
-    if (!content) {
-      throw new Error(`Provider ${this.id} returned an empty response.`);
-    }
-    return content;
+      const payload = (await response.json()) as {
+        choices?: Array<{ message?: { content?: string } }>;
+      };
+      const content = payload.choices?.[0]?.message?.content;
+      if (!content) {
+        throw new Error(`Provider ${this.id} returned an empty response.`);
+      }
+      return content;
+    });
   }
 
   private getApiKey(): string | undefined {
@@ -203,49 +223,121 @@ class NoopVideoProvider implements VideoModelProvider {
   }
 }
 
-class LocalSaySpeechProvider implements SpeechProvider {
+class LocalSpeechProvider implements SpeechProvider {
   readonly capability = "speech" as const;
   readonly isRemote = false;
 
   constructor(readonly id: string) {}
 
-  async test(): Promise<ProviderHealth> {
+  private async detectEngine(): Promise<"say" | "espeak-ng" | null> {
     try {
       await execFileAsync("say", ["-v", "?"]);
+      return "say";
+    } catch {
+      // not macOS or say unavailable
+    }
+    try {
+      await execFileAsync("espeak-ng", ["--version"]);
+      return "espeak-ng";
+    } catch {
+      // espeak-ng unavailable
+    }
+    return null;
+  }
+
+  async test(): Promise<ProviderHealth> {
+    const engine = await this.detectEngine();
+    if (engine) {
       return {
         providerId: this.id,
         capability: this.capability,
         ok: true,
-        message: "macOS say is available.",
-        liveChecked: false
-      };
-    } catch {
-      return {
-        providerId: this.id,
-        capability: this.capability,
-        ok: false,
-        message: "macOS say command not found.",
+        message: `Local speech engine available: ${engine}.`,
         liveChecked: false
       };
     }
+    return {
+      providerId: this.id,
+      capability: this.capability,
+      ok: false,
+      message: "No speech engine found (requires macOS say or espeak-ng).",
+      liveChecked: false
+    };
   }
 
   async synthesizeSpeech(request: SpeechGenerationRequest): Promise<{ outputPath: string }> {
     mkdirSync(dirname(request.outputPath), { recursive: true });
-    const voice = request.voice ?? "Tingting";
-    await execFileAsync("say", ["-v", voice, "-o", request.outputPath, request.text]);
+    const engine = await this.detectEngine();
+    if (engine === "say") {
+      const voice = request.voice ?? "Tingting";
+      await execFileAsync("say", ["-v", voice, "-o", request.outputPath, request.text]);
+    } else if (engine === "espeak-ng") {
+      const voice = request.voice ?? "zh";
+      await execFileAsync("espeak-ng", ["-v", voice, "-w", request.outputPath, request.text]);
+    } else {
+      throw new Error("No speech engine available (requires macOS say or espeak-ng).");
+    }
     return { outputPath: request.outputPath };
   }
+}
+
+type ProviderFactory<T> = (id: string, config: ProviderConfig) => T;
+
+const textProviderRegistry = new Map<string, ProviderFactory<TextModelProvider>>();
+const imageProviderRegistry = new Map<string, ProviderFactory<ImageModelProvider>>();
+const videoProviderRegistry = new Map<string, ProviderFactory<VideoModelProvider>>();
+const speechProviderRegistry = new Map<string, ProviderFactory<SpeechProvider>>();
+
+textProviderRegistry.set("local-rule-text", () => new LocalRuleTextProvider());
+textProviderRegistry.set("openai-compatible", (id, cfg) => new OpenAICompatibleTextProvider(id, cfg));
+imageProviderRegistry.set("noop-image", (id) => new NoopImageProvider(id));
+videoProviderRegistry.set("noop-video", (id) => new NoopVideoProvider(id));
+speechProviderRegistry.set("local-say", (id) => new LocalSpeechProvider(id));
+
+export function registerTextProvider(type: string, factory: ProviderFactory<TextModelProvider>): void {
+  textProviderRegistry.set(type, factory);
+}
+
+export function registerImageProvider(type: string, factory: ProviderFactory<ImageModelProvider>): void {
+  imageProviderRegistry.set(type, factory);
+}
+
+export function registerVideoProvider(type: string, factory: ProviderFactory<VideoModelProvider>): void {
+  videoProviderRegistry.set(type, factory);
+}
+
+export function registerSpeechProvider(type: string, factory: ProviderFactory<SpeechProvider>): void {
+  speechProviderRegistry.set(type, factory);
+}
+
+function instantiateFromRegistry<T>(
+  registry: Map<string, ProviderFactory<T>>,
+  config: AppConfig,
+  providerId: string | undefined,
+  capabilityLabel: string
+): T | undefined {
+  if (!providerId) {
+    return undefined;
+  }
+  const providerConfig = config.providers[providerId];
+  if (!providerConfig || providerConfig.enabled === false) {
+    return undefined;
+  }
+  const factory = registry.get(providerConfig.type);
+  if (!factory) {
+    throw new Error(`Unsupported ${capabilityLabel} provider type: ${providerConfig.type}`);
+  }
+  return factory(providerId, providerConfig);
 }
 
 export function createProviderSelection(config: AppConfig, profileName?: string): ProviderSelection {
   const profile = resolveProfile(config, profileName);
 
   return {
-    text: instantiateTextProvider(config, profile.text),
-    image: instantiateImageProvider(config, profile.image),
-    video: instantiateVideoProvider(config, profile.video),
-    speech: instantiateSpeechProvider(config, profile.speech)
+    text: instantiateFromRegistry(textProviderRegistry, config, profile.text, "text"),
+    image: instantiateFromRegistry(imageProviderRegistry, config, profile.image, "image"),
+    video: instantiateFromRegistry(videoProviderRegistry, config, profile.video, "video"),
+    speech: instantiateFromRegistry(speechProviderRegistry, config, profile.speech, "speech")
   };
 }
 
@@ -257,73 +349,13 @@ export async function testProviders(
   const profile = resolveProfile(config, profileName);
 
   const checks = [
-    instantiateTextProvider(config, profile.text),
-    instantiateImageProvider(config, profile.image),
-    instantiateVideoProvider(config, profile.video),
-    instantiateSpeechProvider(config, profile.speech)
+    instantiateFromRegistry(textProviderRegistry, config, profile.text, "text"),
+    instantiateFromRegistry(imageProviderRegistry, config, profile.image, "image"),
+    instantiateFromRegistry(videoProviderRegistry, config, profile.video, "video"),
+    instantiateFromRegistry(speechProviderRegistry, config, profile.speech, "speech")
   ].filter(Boolean);
 
   return Promise.all(checks.map((provider) => provider!.test({ live })));
-}
-
-function instantiateTextProvider(config: AppConfig, providerId?: string): TextModelProvider | undefined {
-  if (!providerId) {
-    return undefined;
-  }
-  const provider = config.providers[providerId];
-  if (!provider || provider.enabled === false) {
-    return undefined;
-  }
-  switch (provider.type) {
-    case "local-rule-text":
-      return new LocalRuleTextProvider();
-    case "openai-compatible":
-      return new OpenAICompatibleTextProvider(providerId, provider);
-    default:
-      throw new Error(`Unsupported text provider type: ${provider.type}`);
-  }
-}
-
-function instantiateImageProvider(config: AppConfig, providerId?: string): ImageModelProvider | undefined {
-  if (!providerId) {
-    return undefined;
-  }
-  const provider = config.providers[providerId];
-  if (!provider || provider.enabled === false) {
-    return undefined;
-  }
-  if (provider.type === "noop-image") {
-    return new NoopImageProvider(providerId);
-  }
-  throw new Error(`Unsupported image provider type: ${provider.type}`);
-}
-
-function instantiateVideoProvider(config: AppConfig, providerId?: string): VideoModelProvider | undefined {
-  if (!providerId) {
-    return undefined;
-  }
-  const provider = config.providers[providerId];
-  if (!provider || provider.enabled === false) {
-    return undefined;
-  }
-  if (provider.type === "noop-video") {
-    return new NoopVideoProvider(providerId);
-  }
-  throw new Error(`Unsupported video provider type: ${provider.type}`);
-}
-
-function instantiateSpeechProvider(config: AppConfig, providerId?: string): SpeechProvider | undefined {
-  if (!providerId) {
-    return undefined;
-  }
-  const provider = config.providers[providerId];
-  if (!provider || provider.enabled === false) {
-    return undefined;
-  }
-  if (provider.type === "local-say") {
-    return new LocalSaySpeechProvider(providerId);
-  }
-  throw new Error(`Unsupported speech provider type: ${provider.type}`);
 }
 
 function execFileAsync(command: string, args: string[]): Promise<void> {

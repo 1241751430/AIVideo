@@ -9,3 +9,4 @@ coverage
 projects
 *.log
 __pycache__
+.aivideo

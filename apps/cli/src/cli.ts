@@ -20,7 +20,8 @@ import {
   materializeProject,
   resolveProjectDir,
   selectSkill,
-  trimProjectArtifacts
+  trimProjectArtifacts,
+  validateConfig
 } from "@aivideo/core";
 import { createProviderSelection, testProviders } from "@aivideo/providers";
 
@@ -178,6 +179,9 @@ async function runGenerate(cwd: string, options: Record<string, string | boolean
   await autoInit(cwd);
   loadDotEnv(cwd);
   const config = loadConfig(cwd);
+  for (const warning of validateConfig(config)) {
+    console.warn(`[config] ${warning}`);
+  }
   const request = buildGenerateRequest(config, cwd, options);
   const providers = createProviderSelection(config, getStringOption(options, "provider-profile"));
   console.log("Generating script and storyboard...");
@@ -193,6 +197,11 @@ async function runGenerate(cwd: string, options: Record<string, string | boolean
   }
   console.log(`Project created: ${projectDir}`);
   console.log(`Selected skill: ${skill.id} (${skill.name})`);
+
+  if (getBooleanOption(options, "dry-run")) {
+    console.log("Dry run complete. Script and storyboard generated. Render skipped.");
+    return;
+  }
 
   if (request.mode === "video") {
     console.log("Preparing video assets...");
@@ -481,7 +490,7 @@ async function synthesizeNarration(
   }
 
   console.log(`Synthesizing narration for ${shots.length} shot(s)...`);
-  for (const [index, shot] of shots.entries()) {
+  const tasks = shots.map((shot, index) => async () => {
     const audioPath = join(projectDir, "audio", `${shot.id}.aiff`);
     console.log(`- Narration ${index + 1}/${shots.length}: ${shot.id}`);
     try {
@@ -492,7 +501,19 @@ async function synthesizeNarration(
     } catch (error) {
       console.log(`Speech synthesis skipped for ${shot.id}: ${(error as Error).message}`);
     }
+  });
+  await runConcurrent(tasks, 3);
+}
+
+async function runConcurrent(tasks: Array<() => Promise<void>>, limit: number): Promise<void> {
+  let index = 0;
+  async function worker(): Promise<void> {
+    while (index < tasks.length) {
+      const current = index++;
+      await tasks[current]!();
+    }
   }
+  await Promise.all(Array.from({ length: Math.min(limit, tasks.length) }, () => worker()));
 }
 
 export function parseArgs(argv: string[]): ParsedArgs {
@@ -814,10 +835,10 @@ Commands:
   aivideo generate --brief-file ./brief.txt
   aivideo cleanup [--keep-days 7]           Remove expired projects
   aivideo render --project <id|path>        Re-render an existing project
-
 Advanced generate flags:
   --theme --content --images --skill --mode --aspect --duration
   --language --platform --provider-profile --no-persist-artifacts --cleanup-after-render
+  --dry-run                                 Generate script and storyboard without rendering
 
 Interactive commands inside "aivideo create":
   /more     Switch to advanced step-by-step mode

@@ -79,6 +79,11 @@ test("inferInputLanguage prefers input language when not explicitly provided", (
   assert.equal(inferInputLanguage([]), undefined);
 });
 
+test("parseArgs supports dry-run flag", () => {
+  const parsed = parseArgs(["generate", "--brief", "test", "--dry-run"]);
+  assert.equal(parsed.options["dry-run"], true);
+});
+
 test("getVideoReadySummary includes direct video path and file link", () => {
   const lines = getVideoReadySummary("/tmp/projects/demo", "/tmp/projects/demo/output/final.mp4");
   assert.equal(lines[0], "Video generation complete.");

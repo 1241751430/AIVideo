@@ -5,6 +5,7 @@ import os
 import shutil
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 
@@ -76,6 +77,8 @@ def build_clip_command(
             "error",
             "-loop",
             "1",
+            "-t",
+            duration,
             "-i",
             image_path,
         ]
@@ -164,9 +167,20 @@ def render(project_dir: Path, manifest_path: Path) -> Path:
         if audio_path:
             resolve_project_path(project_dir, audio_path, "Audio file")
 
-    clips: list[Path] = []
-    for index, shot in enumerate(manifest["shots"]):
-        clips.append(make_clip(project_dir, work_dir, shot, manifest["width"], manifest["height"], index))
+    total_shots = len(manifest["shots"])
+    clips: list[Path | None] = [None] * total_shots
+    max_workers = min(4, total_shots) if total_shots > 1 else 1
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(
+                make_clip, project_dir, work_dir, shot, manifest["width"], manifest["height"], index
+            ): index
+            for index, shot in enumerate(manifest["shots"])
+        }
+        for future in as_completed(futures):
+            idx = futures[future]
+            clips[idx] = future.result()
+            print(f"Clip {idx + 1}/{total_shots} rendered", flush=True)
 
     concat_file = work_dir / "concat.txt"
     concat_file.write_text(
@@ -198,7 +212,44 @@ def render(project_dir: Path, manifest_path: Path) -> Path:
     else:
         shutil.copyfile(merged, output_path)
 
+    bgm = find_bgm(project_dir)
+    if bgm:
+        print(f"Mixing BGM: {bgm.name}", flush=True)
+        with_bgm = work_dir / "with_bgm.mp4"
+        run(
+            [
+                "ffmpeg",
+                "-y",
+                "-loglevel",
+                "error",
+                "-i",
+                str(output_path),
+                "-i",
+                str(bgm),
+                "-filter_complex",
+                "[1:a]volume=0.3[bgm];[0:a][bgm]amix=inputs=2:duration=first[aout]",
+                "-map",
+                "0:v",
+                "-map",
+                "[aout]",
+                "-c:v",
+                "copy",
+                "-c:a",
+                "aac",
+                str(with_bgm),
+            ]
+        )
+        shutil.move(str(with_bgm), str(output_path))
+
     return output_path
+
+
+def find_bgm(project_dir: Path) -> Path | None:
+    for ext in ("mp3", "wav", "aac", "m4a", "ogg"):
+        candidate = project_dir / "audio" / f"bgm.{ext}"
+        if candidate.exists():
+            return candidate
+    return None
 
 
 def main() -> int:

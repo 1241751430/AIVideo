@@ -31,14 +31,15 @@ ENV PATH="$PNPM_HOME:$PATH"
 WORKDIR /app
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends python3 ffmpeg ca-certificates \
+  && apt-get install -y --no-install-recommends python3 ffmpeg ca-certificates espeak-ng \
   && rm -rf /var/lib/apt/lists/*
 
 RUN corepack enable
 
 COPY --from=build /app/package.json /app/pnpm-lock.yaml /app/pnpm-workspace.yaml ./
 COPY --from=build /app/node_modules ./node_modules
-COPY --from=build /app/apps/cli/package.json /app/apps/cli/dist ./apps/cli/dist/
+COPY --from=build /app/apps/cli/package.json ./apps/cli/package.json
+COPY --from=build /app/apps/cli/dist ./apps/cli/dist
 COPY --from=build /app/packages/core/package.json ./packages/core/package.json
 COPY --from=build /app/packages/core/dist ./packages/core/dist
 COPY --from=build /app/packages/providers/package.json ./packages/providers/package.json

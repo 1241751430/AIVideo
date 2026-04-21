@@ -193,6 +193,38 @@ export function getEnvTemplate(cwd?: string): string {
   return DEFAULT_ENV_TEMPLATE;
 }
 
+export function validateConfig(config: AppConfig): string[] {
+  const warnings: string[] = [];
+
+  if (!config.profiles[config.defaults.profile]) {
+    warnings.push(`Default profile "${config.defaults.profile}" is not defined in profiles.`);
+  }
+
+  for (const [profileId, profile] of Object.entries(config.profiles)) {
+    for (const [capability, providerId] of Object.entries(profile)) {
+      if (providerId && !config.providers[providerId]) {
+        warnings.push(`Profile "${profileId}" references unknown provider "${providerId}" for ${capability}.`);
+      }
+    }
+  }
+
+  for (const [id, provider] of Object.entries(config.providers)) {
+    if (provider.type === "openai-compatible") {
+      if (!provider.baseURL) {
+        warnings.push(`Provider "${id}" (openai-compatible) is missing baseURL.`);
+      }
+      if (!provider.model) {
+        warnings.push(`Provider "${id}" (openai-compatible) is missing model.`);
+      }
+      if (!provider.apiKeyEnv) {
+        warnings.push(`Provider "${id}" (openai-compatible) is missing apiKeyEnv.`);
+      }
+    }
+  }
+
+  return warnings;
+}
+
 const DEFAULT_ENV_TEMPLATE = `# OpenAI
 OPENAI_API_KEY=
 

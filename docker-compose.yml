@@ -7,6 +7,8 @@ services:
     working_dir: /app
     entrypoint: ["node", "apps/cli/dist/index.js"]
     command: ["help"]
+    stdin_open: true
+    tty: true
     env_file:
       - path: .env
         required: false

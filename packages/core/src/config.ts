@@ -21,7 +21,8 @@ const DEFAULT_CONFIG: AppConfig = {
     durationSeconds: 30,
     language: "zh-CN",
     platform: "douyin",
-    projectsDir: "projects"
+    projectsDir: "projects",
+    gpu: false
   },
   providers: {
     "local-rule-text": {

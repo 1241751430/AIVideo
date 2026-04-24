@@ -129,10 +129,38 @@ pnpm cli create
 - `--no-persist-artifacts`：生成后删除 brief.json / script.md / storyboard.json
 - `--cleanup-after-render`：视频导出后删除音频、字幕、临时渲染文件
 - `--dry-run`：仅生成文案和分镜，不执行视频渲染
+- `--gpu`：启用 GPU 加速视频编码（自动检测硬件编码器）
 - `--provider-profile <name>`：指定 provider 配置档
 - 环境变量 `AIVIDEO_MODE=docker|host` 可强制指定 `./aivideo` 脚本的运行模式
 
 </details>
+
+## GPU 加速
+
+渲染管线支持通过 ffmpeg 硬件编码器进行 GPU 加速视频编码。启用后，系统会自动检测当前平台可用的最佳编码器：
+
+| 平台 | 编码器 | 要求 |
+|------|--------|------|
+| macOS | `h264_videotoolbox` | Apple Silicon 或支持 VideoToolbox 的 Intel Mac |
+| Linux (NVIDIA) | `h264_nvenc` | NVIDIA GPU + CUDA 驱动 |
+| Linux (Intel/AMD) | `h264_vaapi` | 支持 VA-API 的 GPU + 驱动 |
+| Windows | `h264_nvenc` / `h264_amf` | NVIDIA 或 AMD GPU + 驱动 |
+
+**按命令启用 GPU：**
+
+```bash
+./aivideo generate --brief "主题：夏季防晒喷雾" --gpu
+./aivideo render --project <id> --gpu
+```
+
+**在配置中默认启用 GPU**（`aivideo.config.yaml`）：
+
+```yaml
+defaults:
+  gpu: true
+```
+
+> 如果启用了 `--gpu` 但未检测到硬件编码器，系统会自动回退到 `libx264`（CPU 编码）并打印警告。
 
 ## 安全说明
 

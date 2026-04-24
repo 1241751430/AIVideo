@@ -129,10 +129,38 @@ Schedule via cron or CI.
 - `--no-persist-artifacts`: remove brief.json / script.md / storyboard.json after generation
 - `--cleanup-after-render`: remove audio, captions, and temp render files after export
 - `--dry-run`: generate script and storyboard without rendering the final video
+- `--gpu`: enable GPU-accelerated video encoding (auto-detects hardware encoder)
 - `--provider-profile <name>`: select a provider profile
 - Env var `AIVIDEO_MODE=docker|host` forces the launcher's runtime mode
 
 </details>
+
+## GPU Acceleration
+
+The render pipeline supports GPU-accelerated video encoding via ffmpeg hardware encoders. When enabled, the system auto-detects the best available encoder for your platform:
+
+| Platform | Encoder | Requirement |
+|----------|---------|-------------|
+| macOS | `h264_videotoolbox` | Apple Silicon or Intel with VideoToolbox |
+| Linux (NVIDIA) | `h264_nvenc` | NVIDIA GPU + CUDA drivers |
+| Linux (Intel/AMD) | `h264_vaapi` | VA-API compatible GPU + drivers |
+| Windows | `h264_nvenc` / `h264_amf` | NVIDIA or AMD GPU + drivers |
+
+**Enable GPU per command:**
+
+```bash
+./aivideo generate --brief "Theme: Summer sunscreen spray" --gpu
+./aivideo render --project <id> --gpu
+```
+
+**Enable GPU by default** in `aivideo.config.yaml`:
+
+```yaml
+defaults:
+  gpu: true
+```
+
+> If `--gpu` is enabled but no hardware encoder is detected, the system falls back to `libx264` (CPU) automatically with a warning.
 
 ## Security Notes
 

@@ -438,9 +438,14 @@ async function runRender(cwd: string, options: Record<string, string | boolean>,
 
   await Promise.all([ensureBinary("ffmpeg"), ensureBinary("ffprobe"), ensureBinary("python3")]);
 
+  const useGpu = getBooleanOption(options, "gpu") || config.defaults.gpu === true;
   const workerPath = resolve(cwd, "workers", "media", "render.py");
-  console.log(`Rendering project: ${basename(projectDir)}`);
-  await execFileAsync("python3", [workerPath, "--project-dir", projectDir, "--manifest", manifestPath], {
+  const workerArgs = [workerPath, "--project-dir", projectDir, "--manifest", manifestPath];
+  if (useGpu) {
+    workerArgs.push("--gpu");
+  }
+  console.log(`Rendering project: ${basename(projectDir)}${useGpu ? " (GPU accelerated)" : ""}`);
+  await execFileAsync("python3", workerArgs, {
     statusMessage: "ffmpeg is rendering video, please wait...",
     heartbeatMs: 5000
   });
@@ -839,6 +844,7 @@ Advanced generate flags:
   --theme --content --images --skill --mode --aspect --duration
   --language --platform --provider-profile --no-persist-artifacts --cleanup-after-render
   --dry-run                                 Generate script and storyboard without rendering
+  --gpu                                     Enable GPU-accelerated video encoding (auto-detects encoder)
 
 Interactive commands inside "aivideo create":
   /more     Switch to advanced step-by-step mode

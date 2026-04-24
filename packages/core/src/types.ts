@@ -136,6 +136,7 @@ export interface AppConfig {
     language: string;
     platform: string;
     projectsDir: string;
+    gpu?: boolean;
   };
   providers: Record<string, ProviderConfig>;
   profiles: Record<string, ProviderProfileConfig>;

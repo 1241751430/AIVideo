@@ -2,6 +2,7 @@
 import argparse
 import json
 import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -18,6 +19,62 @@ def run(command: list[str]) -> None:
 def ensure_binary(name: str) -> None:
     if shutil.which(name) is None:
         raise RuntimeError(f"{name} is required but not found in PATH")
+
+
+def detect_gpu_encoder() -> str | None:
+    """Detect available hardware video encoder via ffmpeg.
+
+    Returns the encoder name if a supported GPU encoder is found,
+    or None if only CPU encoding is available.
+
+    Detection order:
+    - macOS: h264_videotoolbox (Apple VideoToolbox)
+    - Linux/Windows NVIDIA: h264_nvenc
+    - Linux VAAPI: h264_vaapi
+    """
+    candidates: list[str]
+    if platform.system() == "Darwin":
+        candidates = ["h264_videotoolbox"]
+    elif platform.system() == "Linux":
+        candidates = ["h264_nvenc", "h264_vaapi"]
+    elif platform.system() == "Windows":
+        candidates = ["h264_nvenc", "h264_amf"]
+    else:
+        candidates = ["h264_nvenc"]
+
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-encoders"],
+            capture_output=True,
+            text=True,
+        )
+        encoder_output = result.stdout
+    except Exception:
+        return None
+
+    for encoder in candidates:
+        if encoder in encoder_output:
+            return encoder
+    return None
+
+
+def resolve_video_encoder(gpu_flag: bool) -> str:
+    """Return the video encoder to use.
+
+    When *gpu_flag* is True the function tries to auto-detect a hardware
+    encoder.  If detection fails it falls back to ``libx264`` and prints
+    a warning.
+    """
+    if not gpu_flag:
+        return "libx264"
+
+    encoder = detect_gpu_encoder()
+    if encoder:
+        print(f"GPU encoder detected: {encoder}", flush=True)
+        return encoder
+
+    print("WARNING: --gpu enabled but no hardware encoder found, falling back to libx264", flush=True)
+    return "libx264"
 
 
 def resolve_media_path(project_dir: Path, value: str | None) -> str | None:
@@ -65,6 +122,7 @@ def build_clip_command(
     title: str,
     image_path: str | None,
     audio_path: str | None,
+    video_encoder: str = "libx264",
 ) -> list[str]:
     has_image = bool(image_path and os.path.exists(image_path))
     has_audio = bool(audio_path and os.path.exists(audio_path))
@@ -131,7 +189,7 @@ def build_clip_command(
             "-map",
             "1:a:0",
             "-c:v",
-            "libx264",
+            video_encoder,
             "-c:a",
             "aac",
             "-pix_fmt",
@@ -142,20 +200,21 @@ def build_clip_command(
     return command
 
 
-def make_clip(project_dir: Path, work_dir: Path, shot: dict, width: int, height: int, index: int) -> Path:
+def make_clip(project_dir: Path, work_dir: Path, shot: dict, width: int, height: int, index: int, video_encoder: str = "libx264") -> Path:
     duration = str(shot["durationSeconds"])
     clip_path = work_dir / f"clip_{index:03d}.mp4"
     image_path = resolve_media_path(project_dir, shot.get("assetPath"))
     audio_path = resolve_media_path(project_dir, shot.get("audioPath"))
     title = escape_drawtext(shot.get("overlayText") or shot.get("title") or "AI Video")
-    run(build_clip_command(clip_path, width, height, duration, title, image_path, audio_path))
+    run(build_clip_command(clip_path, width, height, duration, title, image_path, audio_path, video_encoder))
     return clip_path
 
 
-def render(project_dir: Path, manifest_path: Path) -> Path:
+def render(project_dir: Path, manifest_path: Path, gpu: bool = False) -> Path:
     ensure_binary("ffmpeg")
     ensure_binary("ffprobe")
 
+    video_encoder = resolve_video_encoder(gpu)
     manifest = json.loads(manifest_path.read_text())
     work_dir = project_dir / ".render_tmp"
     work_dir.mkdir(parents=True, exist_ok=True)
@@ -173,7 +232,7 @@ def render(project_dir: Path, manifest_path: Path) -> Path:
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {
             executor.submit(
-                make_clip, project_dir, work_dir, shot, manifest["width"], manifest["height"], index
+                make_clip, project_dir, work_dir, shot, manifest["width"], manifest["height"], index, video_encoder
             ): index
             for index, shot in enumerate(manifest["shots"])
         }
@@ -256,13 +315,14 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--project-dir", required=True)
     parser.add_argument("--manifest", required=True)
+    parser.add_argument("--gpu", action="store_true", default=False, help="Enable GPU-accelerated encoding")
     args = parser.parse_args()
 
     project_dir = Path(args.project_dir).resolve()
     manifest_path = Path(args.manifest).resolve()
 
     try:
-        output = render(project_dir, manifest_path)
+        output = render(project_dir, manifest_path, gpu=args.gpu)
     except Exception as exc:  # noqa: BLE001
         print(str(exc), file=sys.stderr)
         return 1

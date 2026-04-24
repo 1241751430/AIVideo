@@ -72,6 +72,48 @@ test("generateArtifacts builds storyboard and captions", async () => {
   assert.equal(artifacts.captions.length, artifacts.storyboard.shots.length);
 });
 
+test("generateArtifacts normalizes remote script durations to requested total", async () => {
+  const request: GenerateRequest = {
+    theme: "AI 智能体介绍",
+    skill: "knowledge",
+    mode: "script",
+    aspectRatio: "16:9",
+    durationSeconds: 30
+  };
+  const providers: ProviderSelection = {
+    text: {
+      id: "mock-text",
+      capability: "text",
+      isRemote: false,
+      async test() {
+        return { providerId: "mock-text", capability: "text", ok: true, message: "ok", liveChecked: false };
+      },
+      async generateText() {
+        return JSON.stringify({
+          title: "",
+          summary: "",
+          openingHook: "",
+          voiceover: "",
+          scenes: [
+            { id: "", heading: "", narration: "A", visualPrompt: "", shotType: "", durationSeconds: 100, caption: "" },
+            { id: "scene-2", heading: "B", narration: "B", visualPrompt: "B", shotType: "wide", durationSeconds: 50, caption: "B" }
+          ],
+          bgmStyle: "",
+          cta: "",
+          hashtags: []
+        });
+      }
+    }
+  };
+  const skill = autoSelectSkill({ theme: request.theme });
+  const artifacts = await generateArtifacts({ request, providers, skill });
+  const totalDuration = artifacts.storyboard.shots.reduce((sum, shot) => sum + shot.durationSeconds, 0);
+  assert.equal(totalDuration, 30);
+  assert.equal(artifacts.storyboard.shots[0]?.title, "镜头 1");
+  assert.equal(artifacts.script.title.length > 0, true);
+  assert.equal(artifacts.storyboard.shots.length, 2);
+});
+
 test("cleanupExpiredProjects rejects non-positive maxAgeDays", () => {
   assert.throws(() => cleanupExpiredProjects("/tmp", 0), /positive number/);
   assert.throws(() => cleanupExpiredProjects("/tmp", -1), /positive number/);

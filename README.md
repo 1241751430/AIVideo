@@ -162,6 +162,18 @@ defaults:
 
 > If `--gpu` is enabled but no hardware encoder is detected, the system falls back to `libx264` (CPU) automatically with a warning.
 
+## Render Reliability
+
+The renderer validates the render manifest before starting ffmpeg work and checks the final output with `ffprobe`.
+When possible, non-critical failures are downgraded so the project can still export a usable video:
+
+- Hardware encoding failure falls back to `libx264`
+- Invalid image or audio clips fall back to silent title cards
+- Concat stream-copy failure retries with re-encoding
+- Subtitle burn-in failure keeps the video without burned subtitles
+- BGM mixing failure keeps the video without BGM
+- Final output is checked for video stream, duration, and expected resolution
+
 ## Security Notes
 
 - API keys are read from `.env` only — never commit them

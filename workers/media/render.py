@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+from __future__ import annotations
+
 import argparse
 import json
 import os
@@ -14,6 +16,10 @@ def run(command: list[str]) -> None:
     completed = subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
     if completed.returncode != 0:
         raise RuntimeError(completed.stderr.strip() or "command failed")
+
+
+def warn(message: str) -> None:
+    print(f"WARNING: {message}", flush=True)
 
 
 def ensure_binary(name: str) -> None:
@@ -200,14 +206,165 @@ def build_clip_command(
     return command
 
 
+def build_title_card_fallback_command(
+    clip_path: Path,
+    width: int,
+    height: int,
+    duration: str,
+    audio_path: str | None,
+    video_encoder: str = "libx264",
+) -> list[str]:
+    command = [
+        "ffmpeg",
+        "-y",
+        "-loglevel",
+        "error",
+        "-f",
+        "lavfi",
+        "-i",
+        f"color=c=0x101826:s={width}x{height}:d={duration}",
+    ]
+    if audio_path and os.path.exists(audio_path):
+        command.extend(["-i", audio_path])
+    else:
+        command.extend(
+            [
+                "-f",
+                "lavfi",
+                "-t",
+                duration,
+                "-i",
+                "anullsrc=channel_layout=stereo:sample_rate=44100",
+            ]
+        )
+    command.extend(
+        [
+            "-shortest",
+            "-map",
+            "0:v:0",
+            "-map",
+            "1:a:0",
+            "-vf",
+            "format=yuv420p",
+            "-c:v",
+            video_encoder,
+            "-c:a",
+            "aac",
+            "-pix_fmt",
+            "yuv420p",
+            str(clip_path),
+        ]
+    )
+    return command
+
+
 def make_clip(project_dir: Path, work_dir: Path, shot: dict, width: int, height: int, index: int, video_encoder: str = "libx264") -> Path:
-    duration = str(shot["durationSeconds"])
+    duration_seconds = normalize_positive_number(shot.get("durationSeconds"), f"Shot {index + 1} duration")
+    duration = str(duration_seconds)
     clip_path = work_dir / f"clip_{index:03d}.mp4"
     image_path = resolve_media_path(project_dir, shot.get("assetPath"))
     audio_path = resolve_media_path(project_dir, shot.get("audioPath"))
     title = escape_drawtext(shot.get("overlayText") or shot.get("title") or "AI Video")
-    run(build_clip_command(clip_path, width, height, duration, title, image_path, audio_path, video_encoder))
+    errors: list[str] = []
+    try:
+        run(build_clip_command(clip_path, width, height, duration, title, image_path, audio_path, video_encoder))
+        return clip_path
+    except RuntimeError as exc:
+        errors.append(str(exc))
+    if video_encoder != "libx264":
+        try:
+            run(build_clip_command(clip_path, width, height, duration, title, image_path, audio_path, "libx264"))
+            return clip_path
+        except RuntimeError as exc:
+            errors.append(str(exc))
+
+    fallback_reason = "image/audio processing failed" if image_path else "drawtext failed"
+    warn(f"{fallback_reason} for shot {index + 1}; rendering plain title card with silent audio")
+    try:
+        run(build_title_card_fallback_command(clip_path, width, height, duration, None, "libx264"))
+    except RuntimeError:
+        raise RuntimeError(f"Shot {index + 1} failed after fallback attempts: {' | '.join(errors)}")
     return clip_path
+
+
+def validate_manifest(manifest: dict) -> None:
+    width = normalize_positive_int(manifest.get("width"), "Manifest width")
+    height = normalize_positive_int(manifest.get("height"), "Manifest height")
+    shots = manifest.get("shots")
+    if not isinstance(shots, list) or len(shots) == 0:
+        raise RuntimeError("Manifest must contain at least one shot")
+    manifest["width"] = width
+    manifest["height"] = height
+    for index, shot in enumerate(shots):
+        if not isinstance(shot, dict):
+            raise RuntimeError(f"Shot {index + 1} must be an object")
+        shot["durationSeconds"] = normalize_positive_number(shot.get("durationSeconds"), f"Shot {index + 1} duration")
+
+
+def normalize_positive_int(value: object, label: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise RuntimeError(f"{label} must be a positive integer")
+    return value
+
+
+def normalize_positive_number(value: object, label: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+        raise RuntimeError(f"{label} must be a positive number")
+    return round(float(value), 3)
+
+
+def probe_video(path: Path) -> dict:
+    completed = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-print_format",
+            "json",
+            "-show_format",
+            "-show_streams",
+            str(path),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(completed.stderr.strip() or "ffprobe failed")
+    try:
+        return json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"ffprobe returned invalid JSON: {exc}") from exc
+
+
+def validate_output_video(path: Path, width: int, height: int) -> None:
+    if not path.exists() or path.stat().st_size <= 0:
+        raise RuntimeError(f"Rendered video is missing or empty: {path}")
+    probe = probe_video(path)
+    streams = probe.get("streams")
+    if not isinstance(streams, list):
+        raise RuntimeError("Rendered video has no readable streams")
+    video_stream = next((stream for stream in streams if stream.get("codec_type") == "video"), None)
+    if not video_stream:
+        raise RuntimeError("Rendered video has no video stream")
+    if video_stream.get("width") != width or video_stream.get("height") != height:
+        raise RuntimeError(
+            f"Rendered video resolution mismatch: expected {width}x{height}, got {video_stream.get('width')}x{video_stream.get('height')}"
+        )
+    duration = parse_probe_duration(probe, video_stream)
+    if duration <= 0:
+        raise RuntimeError("Rendered video duration is zero")
+
+
+def parse_probe_duration(probe: dict, video_stream: dict) -> float:
+    for value in (probe.get("format", {}).get("duration"), video_stream.get("duration")):
+        try:
+            duration = float(value)
+        except (TypeError, ValueError):
+            continue
+        if duration > 0:
+            return duration
+    return 0.0
 
 
 def render(project_dir: Path, manifest_path: Path, gpu: bool = False) -> Path:
@@ -216,6 +373,7 @@ def render(project_dir: Path, manifest_path: Path, gpu: bool = False) -> Path:
 
     video_encoder = resolve_video_encoder(gpu)
     manifest = json.loads(manifest_path.read_text())
+    validate_manifest(manifest)
     work_dir = project_dir / ".render_tmp"
     work_dir.mkdir(parents=True, exist_ok=True)
 
@@ -249,25 +407,53 @@ def render(project_dir: Path, manifest_path: Path, gpu: bool = False) -> Path:
         )
     )
     merged = work_dir / "merged.mp4"
-    run(["ffmpeg", "-y", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", str(concat_file), "-c", "copy", str(merged)])
-
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    if captions.exists():
+    try:
+        run(["ffmpeg", "-y", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", str(concat_file), "-c", "copy", str(merged)])
+    except RuntimeError:
+        warn("stream-copy concat failed; retrying with re-encode")
         run(
             [
                 "ffmpeg",
                 "-y",
                 "-loglevel",
                 "error",
+                "-f",
+                "concat",
+                "-safe",
+                "0",
                 "-i",
-                str(merged),
-                "-vf",
-                f"subtitles='{escape_filter_path(captions.as_posix())}'",
+                str(concat_file),
+                "-c:v",
+                "libx264",
                 "-c:a",
-                "copy",
-                str(output_path),
+                "aac",
+                "-pix_fmt",
+                "yuv420p",
+                str(merged),
             ]
         )
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    if captions.exists():
+        try:
+            run(
+                [
+                    "ffmpeg",
+                    "-y",
+                    "-loglevel",
+                    "error",
+                    "-i",
+                    str(merged),
+                    "-vf",
+                    f"subtitles='{escape_filter_path(captions.as_posix())}'",
+                    "-c:a",
+                    "copy",
+                    str(output_path),
+                ]
+            )
+        except RuntimeError as exc:
+            warn(f"subtitle burn-in failed; continuing without subtitles: {exc}")
+            shutil.copyfile(merged, output_path)
     else:
         shutil.copyfile(merged, output_path)
 
@@ -275,30 +461,35 @@ def render(project_dir: Path, manifest_path: Path, gpu: bool = False) -> Path:
     if bgm:
         print(f"Mixing BGM: {bgm.name}", flush=True)
         with_bgm = work_dir / "with_bgm.mp4"
-        run(
-            [
-                "ffmpeg",
-                "-y",
-                "-loglevel",
-                "error",
-                "-i",
-                str(output_path),
-                "-i",
-                str(bgm),
-                "-filter_complex",
-                "[1:a]volume=0.3[bgm];[0:a][bgm]amix=inputs=2:duration=first[aout]",
-                "-map",
-                "0:v",
-                "-map",
-                "[aout]",
-                "-c:v",
-                "copy",
-                "-c:a",
-                "aac",
-                str(with_bgm),
-            ]
-        )
-        shutil.move(str(with_bgm), str(output_path))
+        try:
+            run(
+                [
+                    "ffmpeg",
+                    "-y",
+                    "-loglevel",
+                    "error",
+                    "-i",
+                    str(output_path),
+                    "-i",
+                    str(bgm),
+                    "-filter_complex",
+                    "[1:a]volume=0.3[bgm];[0:a][bgm]amix=inputs=2:duration=first[aout]",
+                    "-map",
+                    "0:v",
+                    "-map",
+                    "[aout]",
+                    "-c:v",
+                    "copy",
+                    "-c:a",
+                    "aac",
+                    str(with_bgm),
+                ]
+            )
+            shutil.move(str(with_bgm), str(output_path))
+        except RuntimeError as exc:
+            warn(f"BGM mix failed; keeping video without BGM: {exc}")
+
+    validate_output_video(output_path, manifest["width"], manifest["height"])
 
     return output_path
 

@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
+import { randomUUID } from "node:crypto";
 import {
   BriefDocument,
   CaptionCue,
@@ -24,6 +25,8 @@ const ASPECT_SIZES: Record<string, { width: number; height: number }> = {
 export const SUPPORTED_ASPECT_RATIOS: readonly string[] = Object.keys(ASPECT_SIZES);
 const MAX_DURATION_SECONDS = 600;
 const MAX_INPUT_IMAGES = 20;
+const MAX_SCENES = 24;
+const MIN_SHOT_DURATION_SECONDS = 1;
 
 export function validateGenerateRequest(request: GenerateRequest): void {
   if (!request.theme && !request.content && (!request.images || request.images.length === 0)) {
@@ -31,6 +34,9 @@ export function validateGenerateRequest(request: GenerateRequest): void {
   }
   if (!Number.isFinite(request.durationSeconds) || request.durationSeconds <= 0) {
     throw new Error("Duration must be greater than 0 seconds.");
+  }
+  if (request.durationSeconds < MIN_SHOT_DURATION_SECONDS) {
+    throw new Error(`Duration must be at least ${MIN_SHOT_DURATION_SECONDS} second.`);
   }
   if (request.mode !== "script" && request.mode !== "video") {
     throw new Error(`Unsupported mode: ${request.mode}`);
@@ -180,7 +186,7 @@ export function cleanupExpiredProjects(projectsDir: string, maxAgeDays: number):
 export function createProjectId(seed?: string): string {
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   const slug = slugify(seed || "project");
-  return `${stamp}-${slug}`;
+  return `${stamp}-${slug}-${randomUUID().slice(0, 8)}`;
 }
 
 export function resolveProjectDir(cwd: string, projectsDir: string, projectId: string): string {
@@ -222,7 +228,7 @@ async function buildScriptPackage(
         userPrompt: buildScriptUserPrompt(brief)
       });
       const parsed = safeParseJson<ScriptPackage>(raw);
-      if (parsed && parsed.title && Array.isArray(parsed.scenes) && parsed.scenes.length > 0) {
+      if (parsed && Array.isArray(parsed.scenes) && parsed.scenes.length > 0) {
         return normalizeScriptPackage(parsed, brief);
       }
     } catch (error) {
@@ -303,24 +309,41 @@ function buildLocalScriptPackage(brief: BriefDocument, skill: SkillDefinition): 
 }
 
 function normalizeScriptPackage(script: ScriptPackage, brief: BriefDocument): ScriptPackage {
-  const scenes = script.scenes.map((scene, index) => ({
-    ...scene,
-    id: scene.id || `scene-${index + 1}`,
-    caption: scene.caption || scene.heading,
-    shotType: scene.shotType || "medium"
-  }));
+  const fallback = buildLocalScriptPackage(brief, getSkillById(brief.selectedSkillId)!);
+  const rawScenes = Array.isArray(script.scenes) ? script.scenes.slice(0, MAX_SCENES) : [];
+  const scenes = rawScenes.map((scene, index) => {
+    const heading = sanitizeText(scene.heading, `镜头 ${index + 1}`);
+    const narration = sanitizeText(scene.narration, heading);
+    return {
+      ...scene,
+      id: sanitizeId(scene.id, index + 1),
+      heading,
+      narration,
+      visualPrompt: sanitizeText(scene.visualPrompt, heading),
+      caption: sanitizeText(scene.caption, heading),
+      shotType: sanitizeText(scene.shotType, "medium"),
+      durationSeconds: normalizeDurationValue(scene.durationSeconds)
+    };
+  });
 
-  const total = scenes.reduce((sum, scene) => sum + Number(scene.durationSeconds || 0), 0);
-  if (total <= 0) {
-    const durations = splitDuration(brief.durationSeconds, scenes.length || 1);
-    scenes.forEach((scene, index) => {
-      scene.durationSeconds = durations[index] ?? 1;
-    });
-  }
+  const usableScenes = scenes.length > 0 ? scenes : fallback.scenes;
+  const durations = normalizeDurations(
+    usableScenes.map((scene) => scene.durationSeconds),
+    brief.durationSeconds
+  );
+  usableScenes.forEach((scene, index) => {
+    scene.durationSeconds = durations[index] ?? MIN_SHOT_DURATION_SECONDS;
+  });
 
   return {
-    ...script,
-    scenes
+    title: sanitizeText(script.title, fallback.title),
+    summary: sanitizeText(script.summary, fallback.summary),
+    openingHook: sanitizeText(script.openingHook, fallback.openingHook),
+    voiceover: sanitizeText(script.voiceover, usableScenes.map((scene) => scene.narration).join(" ")),
+    scenes: usableScenes,
+    bgmStyle: sanitizeText(script.bgmStyle, fallback.bgmStyle),
+    cta: sanitizeText(script.cta, fallback.cta),
+    hashtags: Array.isArray(script.hashtags) && script.hashtags.length > 0 ? script.hashtags : fallback.hashtags
   };
 }
 
@@ -463,11 +486,12 @@ function safeParseJson<T>(value: string): T | null {
 }
 
 function slugify(value: string): string {
-  return value
+  const slug = value
     .toLowerCase()
     .replace(/[^a-z0-9\u4e00-\u9fa5]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 32);
+  return slug || "ai-video";
 }
 
 function computeShotCount(durationSeconds: number): number {
@@ -491,6 +515,56 @@ function splitDuration(total: number, segments: number): number[] {
   const lastIndex = result.length - 1;
   result[lastIndex] = Math.round(((result[lastIndex] ?? 0) + delta) * 10) / 10;
   return result;
+}
+
+function normalizeDurations(values: number[], total: number): number[] {
+  if (values.length === 0) {
+    return [];
+  }
+  const minimumTotal = values.length * MIN_SHOT_DURATION_SECONDS;
+  if (total < minimumTotal) {
+    return splitDuration(total, values.length);
+  }
+
+  const normalized = values.map((value) =>
+    Number.isFinite(value) && value > 0 ? Math.max(value, MIN_SHOT_DURATION_SECONDS) : MIN_SHOT_DURATION_SECONDS
+  );
+  const currentTotal = normalized.reduce((sum, value) => sum + value, 0);
+  if (currentTotal <= 0) {
+    return splitDuration(total, values.length);
+  }
+
+  const scale = total / currentTotal;
+  const scaled = normalized.map((value) => Math.max(MIN_SHOT_DURATION_SECONDS, Math.round(value * scale * 10) / 10));
+  let delta = Math.round((total - scaled.reduce((sum, value) => sum + value, 0)) * 10) / 10;
+  let index = scaled.length - 1;
+  while (Math.abs(delta) >= 0.1 && index >= 0) {
+    const next = Math.round(((scaled[index] ?? MIN_SHOT_DURATION_SECONDS) + delta) * 10) / 10;
+    if (next >= MIN_SHOT_DURATION_SECONDS) {
+      scaled[index] = next;
+      delta = 0;
+    } else {
+      delta = Math.round((delta + ((scaled[index] ?? MIN_SHOT_DURATION_SECONDS) - MIN_SHOT_DURATION_SECONDS)) * 10) / 10;
+      scaled[index] = MIN_SHOT_DURATION_SECONDS;
+      index -= 1;
+    }
+  }
+  return scaled;
+}
+
+function normalizeDurationValue(value: number): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : MIN_SHOT_DURATION_SECONDS;
+}
+
+function sanitizeText(value: unknown, fallback: string): string {
+  return typeof value === "string" && value.trim() ? value.trim() : fallback;
+}
+
+function sanitizeId(value: unknown, index: number): string {
+  const raw = sanitizeText(value, `scene-${index}`);
+  const id = slugify(raw);
+  return id || `scene-${index}`;
 }
 
 function buildSceneHeading(step: number, total: number): string {

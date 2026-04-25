@@ -1,18 +1,21 @@
 #!/usr/bin/env python3
 """Unit tests for render.py pure functions (no ffmpeg required)."""
 import unittest
-from tempfile import NamedTemporaryFile
+from tempfile import NamedTemporaryFile, TemporaryDirectory
 from pathlib import Path
 from unittest.mock import patch
 
 from render import (
     build_clip_command,
+    build_image_prepare_command,
     build_title_card_fallback_command,
     escape_drawtext,
     escape_filter_path,
     find_bgm,
+    has_audio_stream,
     make_clip,
     normalize_positive_number,
+    prepare_manifest_media,
     resolve_media_path,
     resolve_project_path,
     validate_output_video,
@@ -93,6 +96,12 @@ class TestBuildClipCommand(unittest.TestCase):
         self.assertNotIn("drawtext", " ".join(cmd))
         self.assertIn("libx264", cmd)
 
+    def test_image_prepare_command_outputs_png(self):
+        cmd = build_image_prepare_command("/tmp/input.webp", Path("/tmp/out.png"))
+        self.assertIn("-frames:v", cmd)
+        self.assertIn("format=rgba", cmd)
+        self.assertEqual(cmd[-1], "/tmp/out.png")
+
 
 class TestManifestValidation(unittest.TestCase):
     def test_rejects_empty_shots(self):
@@ -129,6 +138,38 @@ class TestFallbacks(unittest.TestCase):
         self.assertNotIn("bad.aiff", fallback_command)
         self.assertIn("anullsrc", fallback_command)
 
+    @patch("render.run")
+    @patch("render.has_audio_stream", return_value=False)
+    def test_prepare_manifest_media_normalizes_images_and_drops_bad_audio(self, _audio_mock, run_mock):
+        with TemporaryDirectory() as tmp:
+            project_dir = Path(tmp) / "project"
+            work_dir = project_dir / ".render_tmp"
+            image = project_dir / "assets" / "ref.webp"
+            audio = project_dir / "audio" / "bad.aiff"
+            image.parent.mkdir(parents=True)
+            audio.parent.mkdir(parents=True)
+            image.write_bytes(b"image")
+            audio.write_bytes(b"audio")
+            manifest = {
+                "shots": [
+                    {
+                        "assetPath": "assets/ref.webp",
+                        "audioPath": "audio/bad.aiff",
+                    }
+                ]
+            }
+            prepare_manifest_media(project_dir, work_dir, manifest)
+            self.assertTrue(str(manifest["shots"][0]["assetPath"]).endswith("shot_000.png"))
+            self.assertIsNone(manifest["shots"][0]["audioPath"])
+            self.assertEqual(run_mock.call_count, 1)
+
+    def test_prepare_manifest_media_drops_missing_image(self):
+        with TemporaryDirectory() as tmp:
+            project_dir = Path(tmp) / "project"
+            manifest = {"shots": [{"assetPath": "assets/missing.png"}]}
+            prepare_manifest_media(project_dir, project_dir / ".render_tmp", manifest)
+            self.assertIsNone(manifest["shots"][0]["assetPath"])
+
 
 class TestOutputValidation(unittest.TestCase):
     def test_accepts_valid_video_probe(self):
@@ -157,6 +198,16 @@ class TestOutputValidation(unittest.TestCase):
             ):
                 with self.assertRaises(RuntimeError):
                     validate_output_video(Path(tmp.name), 1080, 1920)
+
+    def test_has_audio_stream_requires_positive_duration(self):
+        with patch(
+            "render.probe_media",
+            return_value={
+                "format": {"duration": "0"},
+                "streams": [{"codec_type": "audio", "duration": "0"}],
+            },
+        ):
+            self.assertFalse(has_audio_stream(Path("/tmp/audio.aiff")))
 
 
 class TestFindBgm(unittest.TestCase):

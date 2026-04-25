@@ -15,6 +15,7 @@ The launcher script handles everything automatically:
 
 - First run: creates `.env`, builds the Docker image (if Docker is available) or runs `pnpm install && pnpm build`
 - First `create`/`generate`: auto-runs `init` to generate `aivideo.config.yaml`
+- First-run guidance is shown once; later runs skip setup prompts unless dependencies or Docker files need rebuilding
 - Enters interactive mode — just describe the video you want
 
 > To use remote models (OpenAI / Qwen / Doubao etc.), add API keys to `.env` first.
@@ -32,6 +33,7 @@ Non-interactive example:
 Alternative host-level: Node.js 20+ · pnpm 10+ · Python 3.10+ · ffmpeg/ffprobe
 
 > Without `ffmpeg` you can still generate scripts, storyboards, and subtitles, but cannot export the final video.
+> Video commands preflight these binaries before rendering. If they are missing, use Docker or add `--dry-run` to generate only scripts and storyboards.
 
 <details>
 <summary>Installing ffmpeg (host-level only)</summary>
@@ -80,7 +82,7 @@ Free-form descriptions also work. Images can be passed via `--images` or uploade
 ./aivideo create
 ```
 
-The launcher auto-builds on first run or when `Dockerfile` changes.
+The launcher auto-builds on first run or when Docker files change. After the first successful setup, repeated commands run directly.
 
 - Container includes ffmpeg / Node.js / Python
 - `projects/` mounted from host
@@ -168,6 +170,8 @@ The renderer validates the render manifest before starting ffmpeg work and check
 When possible, non-critical failures are downgraded so the project can still export a usable video:
 
 - Hardware encoding failure falls back to `libx264`
+- Reference images are normalized to temporary PNG files before clip rendering
+- Invalid or unreadable narration audio is replaced with silence
 - Invalid image or audio clips fall back to silent title cards
 - Concat stream-copy failure retries with re-encoding
 - Subtitle burn-in failure keeps the video without burned subtitles

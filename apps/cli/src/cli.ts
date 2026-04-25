@@ -183,6 +183,9 @@ async function runGenerate(cwd: string, options: Record<string, string | boolean
     console.warn(`[config] ${warning}`);
   }
   const request = buildGenerateRequest(config, cwd, options);
+  if (request.mode === "video" && !getBooleanOption(options, "dry-run")) {
+    await ensureRenderEnvironmentReady();
+  }
   const providers = createProviderSelection(config, getStringOption(options, "provider-profile"));
   console.log("Generating script and storyboard...");
   const skill = await selectSkill(request, providers);
@@ -436,7 +439,7 @@ async function runRender(cwd: string, options: Record<string, string | boolean>,
     throw new Error(`render-manifest.json not found in ${projectDir}`);
   }
 
-  await Promise.all([ensureBinary("ffmpeg"), ensureBinary("ffprobe"), ensureBinary("python3")]);
+  await ensureRenderEnvironmentReady();
 
   const useGpu = getBooleanOption(options, "gpu") || config.defaults.gpu === true;
   const workerPath = resolve(cwd, "workers", "media", "render.py");
@@ -816,12 +819,40 @@ export function assertPathWithin(baseDir: string, candidatePath: string, label: 
   }
 }
 
-async function ensureBinary(command: string): Promise<void> {
-  try {
-    await execFileAsync(command, ["-version"]);
-  } catch {
-    throw new Error(`${command} is required for rendering but was not found in PATH.`);
+async function ensureRenderEnvironmentReady(): Promise<void> {
+  const required = ["ffmpeg", "ffprobe", "python3"];
+  const checks = await Promise.all(
+    required.map(async (command) => {
+      try {
+        await execFileCheck(command, command === "python3" ? ["--version"] : ["-version"]);
+        return undefined;
+      } catch {
+        return command;
+      }
+    })
+  );
+  const missing = checks.filter((command): command is string => Boolean(command));
+  if (missing.length > 0) {
+    throw new Error(
+      [
+        `Video rendering requires ${required.join(", ")}.`,
+        `Missing or unavailable: ${missing.join(", ")}.`,
+        "Install the missing tools, run with Docker, or add --dry-run to generate only scripts and storyboards."
+      ].join("\n")
+    );
   }
+}
+
+function execFileCheck(command: string, args: string[]): Promise<void> {
+  return new Promise((resolvePromise, rejectPromise) => {
+    execFile(command, args, (error) => {
+      if (error) {
+        rejectPromise(error);
+        return;
+      }
+      resolvePromise();
+    });
+  });
 }
 
 function printHelp(): void {

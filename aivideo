@@ -14,6 +14,24 @@ cd "$SCRIPT_DIR"
 
 STATE_DIR=".aivideo"
 DOCKER_STAMP="$STATE_DIR/.docker-built"
+FIRST_RUN_STAMP="$STATE_DIR/.first-run-complete"
+
+is_first_run() {
+  [ ! -f "$FIRST_RUN_STAMP" ]
+}
+
+print_first_run_notice() {
+  local mode="$1"
+  if is_first_run; then
+    echo "[aivideo] First run setup (${mode} mode)." >&2
+    echo "[aivideo] One-time setup may create .env and prepare dependencies; later runs skip these steps unless files change." >&2
+  fi
+}
+
+mark_first_run_complete() {
+  mkdir -p "$STATE_DIR"
+  touch "$FIRST_RUN_STAMP"
+}
 
 ensure_env_file() {
   if [ ! -f ".env" ] && [ -f ".env.example" ]; then
@@ -33,15 +51,19 @@ docker_available() {
 
 run_docker() {
   mkdir -p "$STATE_DIR"
+  print_first_run_notice "Docker"
   if [ ! -f "$DOCKER_STAMP" ] || [ "Dockerfile" -nt "$DOCKER_STAMP" ] || [ "docker-compose.yml" -nt "$DOCKER_STAMP" ]; then
-    echo "[aivideo] Building Docker image (first run or Dockerfile changed)..." >&2
+    echo "[aivideo] Preparing Docker image (first run or Docker files changed)..." >&2
     docker compose build
     touch "$DOCKER_STAMP"
   fi
+  mark_first_run_complete
   exec docker compose run --rm aivideo "$@"
 }
 
 run_host() {
+  mkdir -p "$STATE_DIR"
+  print_first_run_notice "host"
   if ! have_cmd node; then
     echo "[aivideo] Node.js 20+ is required but was not found." >&2
     exit 1
@@ -55,6 +77,7 @@ run_host() {
     pnpm install
     pnpm build
   fi
+  mark_first_run_complete
   exec node apps/cli/dist/index.js "$@"
 }
 

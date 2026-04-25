@@ -15,6 +15,7 @@
 
 - 首次运行：创建 `.env`、构建 Docker 镜像（如有 Docker）或执行 `pnpm install && pnpm build`
 - 首次 `create`/`generate`：自动执行 `init`，生成 `aivideo.config.yaml` 等配置文件
+- 首次引导只展示一次；后续运行会跳过上手提示，除非依赖或 Docker 文件需要重建
 - 进入交互模式，只需描述你想做的视频，回车即可
 
 > 如果需要远程模型能力（OpenAI / 通义千问 / 豆包等），请先在 `.env` 中填入对应 API Key。
@@ -32,6 +33,7 @@
 备选宿主机直跑：Node.js 20+ · pnpm 10+ · Python 3.10+ · ffmpeg/ffprobe
 
 > 没有 `ffmpeg` 也能生成文案、分镜、字幕等中间产物，但无法导出最终视频。
+> 视频渲染命令会在开始前预检这些依赖；如果缺失，可以使用 Docker，或添加 `--dry-run` 仅生成文案和分镜。
 
 <details>
 <summary>安装 ffmpeg（宿主机直跑时需要）</summary>
@@ -80,7 +82,7 @@
 ./aivideo create
 ```
 
-`./aivideo` 脚本会自动 `docker compose build`（首次或 Dockerfile 变更时），后续直接执行。
+`./aivideo` 脚本会自动 `docker compose build`（首次或 Docker 文件变更时）。首次成功配置后，后续命令会直接执行。
 
 - 容器内已包含 ffmpeg / Node.js / Python
 - `projects/` 通过挂载卷保留在宿主机
@@ -168,6 +170,8 @@ defaults:
 在可降级的非关键失败场景中，系统会尽量继续导出可用视频：
 
 - 硬件编码失败时回退到 `libx264`
+- 参考图片会在 clip 渲染前转为临时安全 PNG
+- 旁白音频不可读时自动替换为静音
 - 图片或音频素材不可用时回退为静音标题卡片
 - concat 直拷贝失败时自动改为重编码拼接
 - 字幕烧录失败时保留无烧录字幕的视频

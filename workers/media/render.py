@@ -258,6 +258,63 @@ def build_title_card_fallback_command(
     return command
 
 
+def build_image_prepare_command(source_path: str, target_path: Path) -> list[str]:
+    return [
+        "ffmpeg",
+        "-y",
+        "-loglevel",
+        "error",
+        "-i",
+        source_path,
+        "-frames:v",
+        "1",
+        "-vf",
+        "format=rgba",
+        str(target_path),
+    ]
+
+
+def prepare_manifest_media(project_dir: Path, work_dir: Path, manifest: dict) -> None:
+    assets_dir = work_dir / "assets"
+    assets_dir.mkdir(parents=True, exist_ok=True)
+    for index, shot in enumerate(manifest["shots"]):
+        prepare_shot_image(project_dir, assets_dir, shot, index)
+        prepare_shot_audio(project_dir, shot, index)
+
+
+def prepare_shot_image(project_dir: Path, assets_dir: Path, shot: dict, index: int) -> None:
+    image_path = resolve_media_path(project_dir, shot.get("assetPath"))
+    if not image_path:
+        return
+    if not os.path.exists(image_path):
+        warn(f"image asset missing for shot {index + 1}; using title card")
+        shot["assetPath"] = None
+        return
+    prepared_path = assets_dir / f"shot_{index:03d}.png"
+    try:
+        run(build_image_prepare_command(image_path, prepared_path))
+        shot["assetPath"] = str(prepared_path)
+    except RuntimeError as exc:
+        warn(f"image asset could not be normalized for shot {index + 1}; using title card: {exc}")
+        shot["assetPath"] = None
+
+
+def prepare_shot_audio(project_dir: Path, shot: dict, index: int) -> None:
+    audio_path = resolve_media_path(project_dir, shot.get("audioPath"))
+    if not audio_path:
+        return
+    if not os.path.exists(audio_path):
+        shot["audioPath"] = None
+        return
+    try:
+        if not has_audio_stream(Path(audio_path)):
+            warn(f"audio has no readable stream for shot {index + 1}; using silence")
+            shot["audioPath"] = None
+    except RuntimeError as exc:
+        warn(f"audio could not be probed for shot {index + 1}; using silence: {exc}")
+        shot["audioPath"] = None
+
+
 def make_clip(project_dir: Path, work_dir: Path, shot: dict, width: int, height: int, index: int, video_encoder: str = "libx264") -> Path:
     duration_seconds = normalize_positive_number(shot.get("durationSeconds"), f"Shot {index + 1} duration")
     duration = str(duration_seconds)
@@ -313,7 +370,7 @@ def normalize_positive_number(value: object, label: str) -> float:
     return round(float(value), 3)
 
 
-def probe_video(path: Path) -> dict:
+def probe_media(path: Path) -> dict:
     completed = subprocess.run(
         [
             "ffprobe",
@@ -335,6 +392,21 @@ def probe_video(path: Path) -> dict:
         return json.loads(completed.stdout)
     except json.JSONDecodeError as exc:
         raise RuntimeError(f"ffprobe returned invalid JSON: {exc}") from exc
+
+
+def probe_video(path: Path) -> dict:
+    return probe_media(path)
+
+
+def has_audio_stream(path: Path) -> bool:
+    probe = probe_media(path)
+    streams = probe.get("streams")
+    if not isinstance(streams, list):
+        return False
+    audio_stream = next((stream for stream in streams if stream.get("codec_type") == "audio"), None)
+    if not audio_stream:
+        return False
+    return parse_probe_duration(probe, audio_stream) > 0
 
 
 def validate_output_video(path: Path, width: int, height: int) -> None:
@@ -383,6 +455,7 @@ def render(project_dir: Path, manifest_path: Path, gpu: bool = False) -> Path:
         audio_path = shot.get("audioPath")
         if audio_path:
             resolve_project_path(project_dir, audio_path, "Audio file")
+    prepare_manifest_media(project_dir, work_dir, manifest)
 
     total_shots = len(manifest["shots"])
     clips: list[Path | None] = [None] * total_shots

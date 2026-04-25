@@ -7,7 +7,7 @@ AI Video Agent CLI is a local AI-powered video production tool. Provide a topic,
 ## 30-Second Quick Start
 
 ```bash
-# Clone, then run one command
+# Clone, then run with Docker by default
 ./aivideo create
 ```
 
@@ -18,7 +18,7 @@ The launcher script handles everything automatically:
 - First-run guidance is shown once; later runs skip setup prompts unless dependencies or Docker files need rebuilding
 - Enters interactive mode — just describe the video you want
 
-> To use remote models (OpenAI / Qwen / Doubao etc.), add API keys to `.env` first.
+> To use remote models (OpenAI / Qwen / Doubao etc.), add API keys to `.env` first. The app picks a provider profile from the API key you filled in.
 
 Non-interactive example:
 
@@ -28,7 +28,7 @@ Non-interactive example:
 
 ## Requirements
 
-**Recommended: Docker + Docker Compose** (no host-level Node.js / Python / ffmpeg needed)
+**Recommended: Docker + Docker Compose** (no host-level Node.js / Python / ffmpeg needed). The `./aivideo` launcher prefers Docker automatically; set `AIVIDEO_MODE=docker` to force Docker.
 
 Alternative host-level: Node.js 20+ · pnpm 10+ · Python 3.10+ · ffmpeg/ffprobe
 
@@ -77,16 +77,51 @@ Free-form descriptions also work. Images can be passed via `--images` or uploade
 <details>
 <summary>Option 1: Docker (recommended)</summary>
 
+Use Docker for both local development and normal usage. The host only needs Docker Desktop; Node.js, Python, and ffmpeg are provided by the image.
+
 ```bash
-# Edit .env with API keys if needed
+# First run: creates .env, builds the image, and starts interactive creation
 ./aivideo create
+```
+
+For remote models, edit `.env` first:
+
+```env
+# Volcengine Ark example
+ARK_API_KEY=your-key
+ARK_MODEL=doubao-seed-2-0-pro-260215
+```
+
+Common Docker runs:
+
+```bash
+# Interactive video creation
+./aivideo create
+
+# Non-interactive video generation
+./aivideo generate --brief "Theme: Summer sunscreen spray; Duration: 30s"
+
+# Test configured providers
+./aivideo providers test --live
+
+# Force Docker even if Node.js is installed on the host
+AIVIDEO_MODE=docker ./aivideo create
+```
+
+You can also call Docker Compose directly:
+
+```bash
+docker compose build
+docker compose run --rm aivideo create
+docker compose run --rm aivideo generate --brief "Theme: Summer sunscreen spray; Duration: 30s"
 ```
 
 The launcher auto-builds on first run or when Docker files change. After the first successful setup, repeated commands run directly.
 
 - Container includes ffmpeg / Node.js / Python
-- `projects/` mounted from host
-- `aivideo.config.yaml` mounted read-only
+- `project/` mounted from host
+- `.env` is injected through Docker Compose; `aivideo.config.yaml` is baked into the image, and `./aivideo` rebuilds automatically when it changes
+- Final videos are written to `project/<project-id>/output/final.mp4`
 
 </details>
 
@@ -132,7 +167,8 @@ Schedule via cron or CI.
 - `--cleanup-after-render`: remove audio, captions, and temp render files after export
 - `--dry-run`: generate script and storyboard without rendering the final video
 - `--gpu`: enable GPU-accelerated video encoding (auto-detects hardware encoder)
-- `--provider-profile <name>`: select a provider profile
+- `--provider-profile <name>`: select a provider profile; when multiple API keys are filled, use it to force `default|openai|china|volcengine`
+- `.env` `OPENAI_MODEL` / `DASHSCOPE_MODEL` / `ARK_MODEL` switches the matching text model, for example `ARK_MODEL=doubao-seed-2-0-pro-260215`
 - Env var `AIVIDEO_MODE=docker|host` forces the launcher's runtime mode
 
 </details>

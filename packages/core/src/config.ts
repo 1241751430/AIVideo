@@ -21,7 +21,7 @@ const DEFAULT_CONFIG: AppConfig = {
     durationSeconds: 30,
     language: "zh-CN",
     platform: "douyin",
-    projectsDir: "projects",
+    projectsDir: "project",
     gpu: false
   },
   providers: {
@@ -60,6 +60,7 @@ const DEFAULT_CONFIG: AppConfig = {
       enabled: true,
       baseURL: "https://api.openai.com/v1",
       apiKeyEnv: "OPENAI_API_KEY",
+      modelEnv: "OPENAI_MODEL",
       model: "gpt-4.1-mini",
       description: "OpenAI 文案模型"
     },
@@ -70,6 +71,7 @@ const DEFAULT_CONFIG: AppConfig = {
       enabled: true,
       baseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1",
       apiKeyEnv: "DASHSCOPE_API_KEY",
+      modelEnv: "DASHSCOPE_MODEL",
       model: "qwen-plus",
       description: "阿里 DashScope 兼容文案模型"
     },
@@ -80,6 +82,7 @@ const DEFAULT_CONFIG: AppConfig = {
       enabled: true,
       baseURL: "https://ark.cn-beijing.volces.com/api/v3",
       apiKeyEnv: "ARK_API_KEY",
+      modelEnv: "ARK_MODEL",
       model: "doubao-1.5-pro-32k-250115",
       description: "火山引擎 Ark 文案模型"
     }
@@ -102,6 +105,12 @@ const DEFAULT_CONFIG: AppConfig = {
       image: "noop-image",
       video: "noop-video",
       speech: "local-say"
+    },
+    volcengine: {
+      text: "volcengine-text",
+      image: "noop-image",
+      video: "noop-video",
+      speech: "local-say"
     }
   }
 };
@@ -109,7 +118,9 @@ const DEFAULT_CONFIG: AppConfig = {
 export function loadConfig(cwd: string): AppConfig {
   const configPath = resolve(cwd, CONFIG_FILE);
   if (!existsSync(configPath)) {
-    return DEFAULT_CONFIG;
+    const config = cloneDefaultConfig();
+    applyProviderEnvOverrides(config);
+    return config;
   }
 
   const loaded = YAML.parse(readFileSync(configPath, "utf8")) as Partial<AppConfig> | null;
@@ -127,8 +138,33 @@ export function loadConfig(cwd: string): AppConfig {
       ...(loaded?.profiles ?? {})
     }
   };
+  applyProviderEnvOverrides(config);
   assertSafeProjectsDir(cwd, config.defaults.projectsDir);
   return config;
+}
+
+function cloneDefaultConfig(): AppConfig {
+  return {
+    defaults: { ...DEFAULT_CONFIG.defaults },
+    providers: Object.fromEntries(
+      Object.entries(DEFAULT_CONFIG.providers).map(([id, provider]) => [id, { ...provider }])
+    ),
+    profiles: Object.fromEntries(
+      Object.entries(DEFAULT_CONFIG.profiles).map(([id, profile]) => [id, { ...profile }])
+    )
+  };
+}
+
+function applyProviderEnvOverrides(config: AppConfig): void {
+  for (const provider of Object.values(config.providers)) {
+    if (!provider.modelEnv) {
+      continue;
+    }
+    const modelFromEnv = process.env[provider.modelEnv]?.trim();
+    if (modelFromEnv) {
+      provider.model = modelFromEnv;
+    }
+  }
 }
 
 function assertSafeProjectsDir(cwd: string, projectsDir: string): void {
@@ -143,12 +179,46 @@ function assertSafeProjectsDir(cwd: string, projectsDir: string): void {
 }
 
 export function resolveProfile(config: AppConfig, requestedProfile?: string): ProviderProfileConfig {
-  const profileId = requestedProfile ?? config.defaults.profile;
+  const profileId = resolveProfileId(config, requestedProfile);
   const profile = config.profiles[profileId];
   if (!profile) {
     throw new Error(`Unknown provider profile: ${profileId}`);
   }
   return profile;
+}
+
+export function resolveProfileId(config: AppConfig, requestedProfile?: string): string {
+  const explicitProfile = normalizeProfileValue(requestedProfile);
+  if (explicitProfile) {
+    return explicitProfile;
+  }
+
+  return inferProfileFromConfiguredKeys(config) ?? config.defaults.profile;
+}
+
+function normalizeProfileValue(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed || trimmed.toLowerCase() === "auto") {
+    return undefined;
+  }
+  return trimmed;
+}
+
+function inferProfileFromConfiguredKeys(config: AppConfig): string | undefined {
+  for (const [profileId, profile] of Object.entries(config.profiles)) {
+    const textProviderId = profile.text;
+    if (!textProviderId) {
+      continue;
+    }
+    const provider = config.providers[textProviderId];
+    if (!provider || provider.enabled === false || provider.capability !== "text" || !provider.apiKeyEnv) {
+      continue;
+    }
+    if (process.env[provider.apiKeyEnv]?.trim()) {
+      return profileId;
+    }
+  }
+  return undefined;
 }
 
 export function loadDotEnv(cwd: string): void {
@@ -215,7 +285,7 @@ export function validateConfig(config: AppConfig): string[] {
         warnings.push(`Provider "${id}" (openai-compatible) is missing baseURL.`);
       }
       if (!provider.model) {
-        warnings.push(`Provider "${id}" (openai-compatible) is missing model.`);
+        warnings.push(`Provider "${id}" (openai-compatible) is missing model or modelEnv override.`);
       }
       if (!provider.apiKeyEnv) {
         warnings.push(`Provider "${id}" (openai-compatible) is missing apiKeyEnv.`);
@@ -228,10 +298,13 @@ export function validateConfig(config: AppConfig): string[] {
 
 const DEFAULT_ENV_TEMPLATE = `# OpenAI
 OPENAI_API_KEY=
+OPENAI_MODEL=gpt-4.1-mini
 
 # 阿里 DashScope
 DASHSCOPE_API_KEY=
+DASHSCOPE_MODEL=qwen-plus
 
 # 火山引擎 Ark
 ARK_API_KEY=
+ARK_MODEL=doubao-seed-2-0-pro-260215
 `;

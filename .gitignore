@@ -4,6 +4,8 @@ dist
 .env
 .venv
 projects
+project/*
+!project/.gitkeep
 coverage
 *.log
 __pycache__

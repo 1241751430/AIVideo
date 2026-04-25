@@ -46,9 +46,7 @@ RUN mkdir -p /app/node_modules/@aivideo \
   && test -n "$YAML_DIR" \
   && ln -sfn "$YAML_DIR/node_modules/yaml" /app/node_modules/yaml
 
-RUN groupadd --system aivideo && useradd --system --gid aivideo aivideo \
-  && mkdir -p /app/projects && chown -R aivideo:aivideo /app/projects
-USER aivideo
+RUN mkdir -p /app/project
 
 ENTRYPOINT ["node", "apps/cli/dist/index.js"]
 CMD ["help"]

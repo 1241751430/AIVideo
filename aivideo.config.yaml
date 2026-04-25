@@ -4,7 +4,7 @@ defaults:
   durationSeconds: 30
   language: zh-CN
   platform: douyin
-  projectsDir: projects
+  projectsDir: project
 
 providers:
   local-rule-text:
@@ -42,6 +42,7 @@ providers:
     enabled: true
     baseURL: https://api.openai.com/v1
     apiKeyEnv: OPENAI_API_KEY
+    modelEnv: OPENAI_MODEL
     model: gpt-4.1-mini
 
   aliyun-text:
@@ -51,6 +52,7 @@ providers:
     enabled: true
     baseURL: https://dashscope.aliyuncs.com/compatible-mode/v1
     apiKeyEnv: DASHSCOPE_API_KEY
+    modelEnv: DASHSCOPE_MODEL
     model: qwen-plus
 
   volcengine-text:
@@ -60,6 +62,7 @@ providers:
     enabled: true
     baseURL: https://ark.cn-beijing.volces.com/api/v3
     apiKeyEnv: ARK_API_KEY
+    modelEnv: ARK_MODEL
     model: doubao-1.5-pro-32k-250115
 
 profiles:
@@ -77,6 +80,12 @@ profiles:
 
   china:
     text: aliyun-text
+    image: noop-image
+    video: noop-video
+    speech: local-say
+
+  volcengine:
+    text: volcengine-text
     image: noop-image
     video: noop-video
     speech: local-say

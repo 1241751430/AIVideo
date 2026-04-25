@@ -85,11 +85,11 @@ test("parseArgs supports dry-run flag", () => {
 });
 
 test("getVideoReadySummary includes direct video path and file link", () => {
-  const lines = getVideoReadySummary("/tmp/projects/demo", "/tmp/projects/demo/output/final.mp4");
+  const lines = getVideoReadySummary("/tmp/project/demo", "/tmp/project/demo/output/final.mp4");
   assert.equal(lines[0], "Video generation complete.");
-  assert.match(lines[1] ?? "", /Project directory: \/tmp\/projects\/demo/);
-  assert.match(lines[2] ?? "", /Final video: \/tmp\/projects\/demo\/output\/final\.mp4/);
-  assert.match(lines[3] ?? "", /^Open file: file:\/\/\/tmp\/projects\/demo\/output\/final\.mp4$/);
+  assert.match(lines[1] ?? "", /Project directory: \/tmp\/project\/demo/);
+  assert.match(lines[2] ?? "", /Final video: \/tmp\/project\/demo\/output\/final\.mp4/);
+  assert.match(lines[3] ?? "", /^Open file: file:\/\/\/tmp\/project\/demo\/output\/final\.mp4$/);
   assert.match(lines[5] ?? "", /Next steps/);
   assert.match(lines[6] ?? "", /Re-render/);
   assert.match(lines[7] ?? "", /Cleanup/);

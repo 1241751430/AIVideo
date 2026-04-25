@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { validateConfig } from "./config.js";
+import { loadConfig, resolveProfileId, validateConfig } from "./config.js";
 import { autoSelectSkill } from "./skills.js";
 import { GenerateRequest, ProviderSelection } from "./types.js";
 import { cleanupExpiredProjects, createProjectId, generateArtifacts, toScriptMarkdown, toSrt, validateGenerateRequest } from "./workflow.js";
@@ -165,7 +165,7 @@ test("createProjectId generates unique slugified id", () => {
 
 test("validateConfig detects missing profile references", () => {
   const warnings = validateConfig({
-    defaults: { profile: "missing", aspectRatio: "9:16", durationSeconds: 30, language: "zh-CN", platform: "douyin", projectsDir: "projects" },
+    defaults: { profile: "missing", aspectRatio: "9:16", durationSeconds: 30, language: "zh-CN", platform: "douyin", projectsDir: "project" },
     providers: {},
     profiles: { broken: { text: "nonexistent" } }
   });
@@ -175,7 +175,7 @@ test("validateConfig detects missing profile references", () => {
 
 test("validateConfig detects incomplete openai-compatible provider", () => {
   const warnings = validateConfig({
-    defaults: { profile: "default", aspectRatio: "9:16", durationSeconds: 30, language: "zh-CN", platform: "douyin", projectsDir: "projects" },
+    defaults: { profile: "default", aspectRatio: "9:16", durationSeconds: 30, language: "zh-CN", platform: "douyin", projectsDir: "project" },
     providers: { bad: { type: "openai-compatible", capability: "text", enabled: true } },
     profiles: { default: { text: "bad" } }
   });
@@ -183,6 +183,49 @@ test("validateConfig detects incomplete openai-compatible provider", () => {
   assert.ok(warnings.some((w) => w.includes("model")));
   assert.ok(warnings.some((w) => w.includes("apiKeyEnv")));
 });
+
+test("resolveProfileId honors explicit profile before key auto detection", () => {
+  const originalOpenAIKey = process.env.OPENAI_API_KEY;
+  process.env.OPENAI_API_KEY = "test-key";
+  try {
+    const config = {
+      defaults: { profile: "default", aspectRatio: "9:16", durationSeconds: 30, language: "zh-CN", platform: "douyin", projectsDir: "project" },
+      providers: {
+        "local-rule-text": { type: "local-rule-text", capability: "text" as const, enabled: true },
+        "openai-text": { type: "openai-compatible", capability: "text" as const, enabled: true, apiKeyEnv: "OPENAI_API_KEY" }
+      },
+      profiles: {
+        default: { text: "local-rule-text" },
+        openai: { text: "openai-text" },
+        custom: { text: "local-rule-text" }
+      }
+    };
+    assert.equal(resolveProfileId(config, "custom"), "custom");
+    assert.equal(resolveProfileId(config), "openai");
+  } finally {
+    restoreEnv("OPENAI_API_KEY", originalOpenAIKey);
+  }
+});
+
+test("loadConfig applies model environment overrides", () => {
+  const originalArkModel = process.env.ARK_MODEL;
+  process.env.ARK_MODEL = "doubao-seed-2-0-pro-260215";
+  try {
+    const root = mkdtempSync(join(tmpdir(), "aivideo-config-"));
+    const config = loadConfig(root);
+    assert.equal(config.providers["volcengine-text"]?.model, "doubao-seed-2-0-pro-260215");
+  } finally {
+    restoreEnv("ARK_MODEL", originalArkModel);
+  }
+});
+
+function restoreEnv(key: string, value: string | undefined): void {
+  if (value === undefined) {
+    delete process.env[key];
+  } else {
+    process.env[key] = value;
+  }
+}
 
 test("cleanupExpiredProjects removes only expired directories", () => {
   const root = mkdtempSync(join(tmpdir(), "aivideo-projects-"));

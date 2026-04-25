@@ -61,12 +61,12 @@ class TestResolveMediaPath(unittest.TestCase):
 
 class TestResolveProjectPath(unittest.TestCase):
     def test_stays_within(self):
-        result = resolve_project_path(Path("/app/projects/demo"), "output/final.mp4", "Output")
-        self.assertTrue(str(result).startswith("/app/projects/demo"))
+        result = resolve_project_path(Path("/app/project/demo"), "output/final.mp4", "Output")
+        self.assertTrue(str(result).startswith("/app/project/demo"))
 
     def test_escapes_project(self):
         with self.assertRaises(RuntimeError):
-            resolve_project_path(Path("/app/projects/demo"), "../../etc/passwd", "Bad")
+            resolve_project_path(Path("/app/project/demo"), "../../etc/passwd", "Bad")
 
 
 class TestBuildClipCommand(unittest.TestCase):

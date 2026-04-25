@@ -124,15 +124,16 @@ export async function runInit(cwd: string): Promise<void> {
   const configPath = resolve(cwd, CONFIG_FILE);
   const envExamplePath = resolve(cwd, ".env.example");
   const envPath = resolve(cwd, ".env");
-  const projectsDir = resolve(cwd, "projects");
+  const projectsDir = resolve(cwd, "project");
+  const runningInContainer = process.env.AIVIDEO_CONTAINER === "1";
 
   if (!existsSync(configPath)) {
     writeFileSync(configPath, getConfigTemplate(cwd), "utf8");
   }
-  if (!existsSync(envExamplePath)) {
+  if (!runningInContainer && !existsSync(envExamplePath)) {
     writeFileSync(envExamplePath, getEnvTemplate(cwd), "utf8");
   }
-  if (!existsSync(envPath)) {
+  if (!runningInContainer && !existsSync(envPath)) {
     writeFileSync(envPath, getEnvTemplate(cwd), "utf8");
   }
   mkdirSync(projectsDir, { recursive: true });
@@ -141,7 +142,7 @@ export async function runInit(cwd: string): Promise<void> {
   console.log(`- ${basename(configPath)}`);
   console.log(`- ${basename(envExamplePath)}`);
   console.log(`- ${basename(envPath)}`);
-  console.log("- projects/");
+  console.log("- project/");
 }
 
 function runSkillsList(): void {

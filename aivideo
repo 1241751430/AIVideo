@@ -52,7 +52,7 @@ docker_available() {
 run_docker() {
   mkdir -p "$STATE_DIR"
   print_first_run_notice "Docker"
-  if [ ! -f "$DOCKER_STAMP" ] || [ "Dockerfile" -nt "$DOCKER_STAMP" ] || [ "docker-compose.yml" -nt "$DOCKER_STAMP" ]; then
+  if [ ! -f "$DOCKER_STAMP" ] || [ "Dockerfile" -nt "$DOCKER_STAMP" ] || [ "docker-compose.yml" -nt "$DOCKER_STAMP" ] || [ "aivideo.config.yaml" -nt "$DOCKER_STAMP" ]; then
     echo "[aivideo] Preparing Docker image (first run or Docker files changed)..." >&2
     docker compose build
     touch "$DOCKER_STAMP"

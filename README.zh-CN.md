@@ -7,7 +7,7 @@
 ## 30 秒上手
 
 ```bash
-# 1. 克隆项目后，只需一行命令
+# 1. 克隆项目后，推荐直接用 Docker 运行
 ./aivideo create
 ```
 
@@ -18,7 +18,7 @@
 - 首次引导只展示一次；后续运行会跳过上手提示，除非依赖或 Docker 文件需要重建
 - 进入交互模式，只需描述你想做的视频，回车即可
 
-> 如果需要远程模型能力（OpenAI / 通义千问 / 豆包等），请先在 `.env` 中填入对应 API Key。
+> 如果需要远程模型能力（OpenAI / 通义千问 / 豆包等），请先在 `.env` 中填入对应 API Key。系统会根据已填写的 API Key 自动选择配置档。
 
 非交互模式示例：
 
@@ -28,7 +28,7 @@
 
 ## 环境要求
 
-**推荐：Docker + Docker Compose**（宿主机无需安装 Node.js / Python / ffmpeg）
+**推荐：Docker + Docker Compose**（宿主机无需安装 Node.js / Python / ffmpeg）。`./aivideo` 启动脚本会优先使用 Docker；如果必须强制 Docker，可加 `AIVIDEO_MODE=docker`。
 
 备选宿主机直跑：Node.js 20+ · pnpm 10+ · Python 3.10+ · ffmpeg/ffprobe
 
@@ -77,16 +77,51 @@
 <details>
 <summary>方式一：Docker 部署（推荐）</summary>
 
+推荐本地开发和普通使用都走 Docker。宿主机只需要安装 Docker Desktop，Node.js / Python / ffmpeg 都由镜像提供。
+
 ```bash
-# 编辑 .env 填入 API Key（如需远程模型）
+# 首次运行：自动创建 .env、构建镜像、进入交互创建
 ./aivideo create
+```
+
+如需远程模型，先编辑 `.env`：
+
+```env
+# 火山引擎 Ark 示例
+ARK_API_KEY=你的Key
+ARK_MODEL=doubao-seed-2-0-pro-260215
+```
+
+常用 Docker 运行方式：
+
+```bash
+# 交互式创建视频
+./aivideo create
+
+# 非交互生成视频
+./aivideo generate --brief "主题：夏季防晒喷雾；视频时长：30s"
+
+# 测试已填写的模型配置
+./aivideo providers test --live
+
+# 强制使用 Docker，即使本机也装了 Node.js
+AIVIDEO_MODE=docker ./aivideo create
+```
+
+也可以直接使用 Docker Compose：
+
+```bash
+docker compose build
+docker compose run --rm aivideo create
+docker compose run --rm aivideo generate --brief "主题：夏季防晒喷雾；视频时长：30s"
 ```
 
 `./aivideo` 脚本会自动 `docker compose build`（首次或 Docker 文件变更时）。首次成功配置后，后续命令会直接执行。
 
 - 容器内已包含 ffmpeg / Node.js / Python
-- `projects/` 通过挂载卷保留在宿主机
-- `aivideo.config.yaml` 只读挂载
+- `project/` 通过挂载卷保留在宿主机
+- `.env` 会通过 Docker Compose 注入环境变量；`aivideo.config.yaml` 会打入镜像，文件变更后 `./aivideo` 会自动重建镜像
+- 最终视频输出在 `project/<项目ID>/output/final.mp4`
 
 </details>
 
@@ -132,7 +167,8 @@ pnpm cli create
 - `--cleanup-after-render`：视频导出后删除音频、字幕、临时渲染文件
 - `--dry-run`：仅生成文案和分镜，不执行视频渲染
 - `--gpu`：启用 GPU 加速视频编码（自动检测硬件编码器）
-- `--provider-profile <name>`：指定 provider 配置档
+- `--provider-profile <name>`：指定 provider 配置档；多个 API Key 同时填写时，可用它强制选择 `default|openai|china|volcengine`
+- `.env` 中的 `OPENAI_MODEL` / `DASHSCOPE_MODEL` / `ARK_MODEL` 可切换对应文案模型，例如 `ARK_MODEL=doubao-seed-2-0-pro-260215`
 - 环境变量 `AIVIDEO_MODE=docker|host` 可强制指定 `./aivideo` 脚本的运行模式
 
 </details>

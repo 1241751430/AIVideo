@@ -117,6 +117,7 @@ export interface ProviderConfig {
   baseURL?: string;
   allowCustomBaseURL?: boolean;
   apiKeyEnv?: string;
+  modelEnv?: string;
   model?: string;
   description?: string;
 }

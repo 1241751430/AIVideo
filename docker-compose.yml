@@ -12,6 +12,7 @@ services:
     env_file:
       - path: .env
         required: false
+    environment:
+      AIVIDEO_CONTAINER: "1"
     volumes:
-      - ./projects:/app/projects
-      - ./aivideo.config.yaml:/app/aivideo.config.yaml:ro
+      - ./project:/app/project

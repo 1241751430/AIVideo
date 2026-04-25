@@ -2,6 +2,7 @@
 FROM node:20-bookworm-slim AS build
 
 ENV DEBIAN_FRONTEND=noninteractive
+ENV CI=true
 ENV PNPM_HOME="/pnpm"
 ENV PATH="$PNPM_HOME:$PATH"
 
@@ -36,19 +37,14 @@ RUN apt-get update \
 
 RUN corepack enable
 
-COPY --from=build /app/package.json /app/pnpm-lock.yaml /app/pnpm-workspace.yaml ./
-COPY --from=build /app/node_modules ./node_modules
-COPY --from=build /app/apps/cli/package.json ./apps/cli/package.json
-COPY --from=build /app/apps/cli/dist ./apps/cli/dist
-COPY --from=build /app/packages/core/package.json ./packages/core/package.json
-COPY --from=build /app/packages/core/dist ./packages/core/dist
-COPY --from=build /app/packages/providers/package.json ./packages/providers/package.json
-COPY --from=build /app/packages/providers/dist ./packages/providers/dist
-COPY --from=build /app/apps/cli/node_modules ./apps/cli/node_modules
-COPY --from=build /app/packages/core/node_modules ./packages/core/node_modules
-COPY --from=build /app/packages/providers/node_modules ./packages/providers/node_modules
-COPY workers ./workers
-COPY aivideo.config.yaml .env.example ./
+COPY --from=build /app ./
+
+RUN mkdir -p /app/node_modules/@aivideo \
+  && ln -sfn /app/packages/core /app/node_modules/@aivideo/core \
+  && ln -sfn /app/packages/providers /app/node_modules/@aivideo/providers \
+  && YAML_DIR="$(find /app/node_modules/.pnpm -maxdepth 1 -type d -name 'yaml@*' | head -n 1)" \
+  && test -n "$YAML_DIR" \
+  && ln -sfn "$YAML_DIR/node_modules/yaml" /app/node_modules/yaml
 
 RUN groupadd --system aivideo && useradd --system --gid aivideo aivideo \
   && mkdir -p /app/projects && chown -R aivideo:aivideo /app/projects

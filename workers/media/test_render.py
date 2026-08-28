@@ -6,8 +6,10 @@ from pathlib import Path
 from unittest.mock import patch
 
 from render import (
+    build_bgm_mix_command,
     build_clip_command,
     build_image_prepare_command,
+    build_subtitle_burn_command,
     build_title_card_fallback_command,
     escape_drawtext,
     escape_filter_path,
@@ -20,6 +22,7 @@ from render import (
     resolve_project_path,
     validate_output_video,
     validate_manifest,
+    validate_manifest_paths,
 )
 
 
@@ -78,9 +81,15 @@ class TestBuildClipCommand(unittest.TestCase):
         self.assertIn("lavfi", cmd)
         self.assertIn("-shortest", cmd)
         self.assertIn("libx264", cmd)
+        self.assertIn("-r", cmd)
+        self.assertIn("30", cmd)
+        self.assertIn("-crf", cmd)
+        self.assertIn("20", cmd)
+        self.assertIn("geq=", " ".join(cmd))
+        self.assertIn("box=1", " ".join(cmd))
 
     @patch("os.path.exists", return_value=True)
-    def test_image_has_loop_and_t(self, _mock):
+    def test_image_has_loop_t_and_motion(self, _mock):
         cmd = build_clip_command(
             Path("/tmp/clip.mp4"), 1080, 1920, "5", "Hello", "/tmp/img.png", None
         )
@@ -88,6 +97,63 @@ class TestBuildClipCommand(unittest.TestCase):
         self.assertIn("-t", cmd)
         t_index = cmd.index("-t")
         self.assertEqual(cmd[t_index + 1], "5")
+        filter_index = cmd.index("-vf")
+        self.assertIn("zoompan", cmd[filter_index + 1])
+        self.assertIn("fade=t=in", cmd[filter_index + 1])
+        self.assertIn("fade=t=out", cmd[filter_index + 1])
+
+    def test_clip_command_uses_stable_audio_and_faststart_settings(self):
+        cmd = build_clip_command(
+            Path("/tmp/clip.mp4"), 1080, 1920, "5", "Hello", None, None
+        )
+        self.assertIn("-ar", cmd)
+        self.assertIn("48000", cmd)
+        self.assertIn("-b:a", cmd)
+        self.assertIn("192k", cmd)
+        self.assertIn("+faststart", cmd)
+
+    @patch("os.path.exists", return_value=True)
+    def test_image_with_audio_pads_to_exact_duration_no_shortest(self, _mock):
+        # Narration is usually shorter than the planned shot. Using -shortest
+        # here would trim the clip to the audio and desync the fixed-length
+        # caption timeline, so the image+audio branch must pad the audio to
+        # silence and pin the output to exactly -t duration instead.
+        cmd = build_clip_command(
+            Path("/tmp/clip.mp4"), 1080, 1920, "5", "Hello", "/tmp/img.png", "/tmp/narr.wav"
+        )
+        self.assertNotIn("-shortest", cmd)
+        self.assertIn("-af", cmd)
+        self.assertEqual(cmd[cmd.index("-af") + 1], "apad")
+        # The output is pinned to exactly the planned duration: the -t that
+        # follows -af apad carries the shot duration.
+        self.assertEqual(cmd[cmd.index("-t", cmd.index("-af")) + 1], "5")
+
+    @patch("os.path.exists", return_value=True)
+    def test_video_asset_with_audio_pads_to_exact_duration(self, _mock):
+        cmd = build_clip_command(
+            Path("/tmp/clip.mp4"),
+            1080,
+            1920,
+            "6",
+            "Hello",
+            "/tmp/scene.mp4",
+            "/tmp/narr.wav",
+            "libx264",
+            "video",
+        )
+        self.assertIn("-stream_loop", cmd)
+        self.assertNotIn("-shortest", cmd)
+        self.assertIn("apad", cmd)
+        self.assertEqual(cmd[cmd.index("-t", cmd.index("-af")) + 1], "6")
+
+    def test_title_card_branch_keeps_shortest(self):
+        # No visual asset: both streams are already duration-bound, so the
+        # title-card branch keeps -shortest (and must not gain -af apad).
+        cmd = build_clip_command(
+            Path("/tmp/clip.mp4"), 1080, 1920, "5", "Hello", None, "/tmp/narr.wav"
+        )
+        self.assertIn("-shortest", cmd)
+        self.assertNotIn("apad", cmd)
 
     def test_title_card_fallback_has_no_drawtext(self):
         cmd = build_title_card_fallback_command(
@@ -95,6 +161,21 @@ class TestBuildClipCommand(unittest.TestCase):
         )
         self.assertNotIn("drawtext", " ".join(cmd))
         self.assertIn("libx264", cmd)
+        self.assertIn("-crf", cmd)
+
+    def test_subtitle_burn_command_styles_subtitles(self):
+        cmd = build_subtitle_burn_command(Path("/tmp/in.mp4"), Path("/tmp/captions.srt"), Path("/tmp/out.mp4"))
+        joined = " ".join(cmd)
+        self.assertIn("force_style", joined)
+        self.assertIn("Outline=2", joined)
+        self.assertIn("MarginV=90", joined)
+
+    def test_bgm_mix_command_ducks_music_under_voice(self):
+        cmd = build_bgm_mix_command(Path("/tmp/in.mp4"), Path("/tmp/bgm.mp3"), Path("/tmp/out.mp4"))
+        joined = " ".join(cmd)
+        self.assertIn("sidechaincompress", joined)
+        self.assertIn("volume=0.22", joined)
+        self.assertIn("duration=first", joined)
 
     def test_image_prepare_command_outputs_png(self):
         cmd = build_image_prepare_command("/tmp/input.webp", Path("/tmp/out.png"))
@@ -208,6 +289,37 @@ class TestOutputValidation(unittest.TestCase):
             },
         ):
             self.assertFalse(has_audio_stream(Path("/tmp/audio.aiff")))
+
+
+class TestManifestPathBoundary(unittest.TestCase):
+    def _manifest(self, **shot_extra):
+        shot = {"assetPath": "assets/scene.mp4", "audioPath": "audio/scene.wav"}
+        shot.update(shot_extra)
+        return {
+            "width": 1080,
+            "height": 1920,
+            "outputFile": "output/final.mp4",
+            "captionsFile": "captions/captions.srt",
+            "shots": [shot],
+        }
+
+    def test_accepts_relative_paths(self):
+        with TemporaryDirectory() as tmp:
+            validate_manifest_paths(Path(tmp), self._manifest())
+
+    def test_rejects_traversal(self):
+        with TemporaryDirectory() as tmp:
+            manifest = self._manifest(assetPath="../outside/evil.mp4", assetKind="video")
+            with self.assertRaises(RuntimeError):
+                validate_manifest_paths(Path(tmp), manifest)
+
+    def test_gates_video_asset_only(self):
+        with TemporaryDirectory() as tmp:
+            # Reference images may live outside the project (user-supplied);
+            # only video assets are boundary-checked.
+            validate_manifest_paths(
+                Path(tmp), self._manifest(assetPath="/tmp/user-ref.png", assetKind="image")
+            )
 
 
 class TestFindBgm(unittest.TestCase):

@@ -65,6 +65,58 @@ providers:
     modelEnv: ARK_MODEL
     model: doubao-1.5-pro-32k-250115
 
+  openai-image:
+    type: openai-compatible-image
+    capability: image
+    vendor: openai
+    enabled: true
+    baseURL: https://api.openai.com/v1
+    apiKeyEnv: OPENAI_API_KEY
+    modelEnv: OPENAI_IMAGE_MODEL
+    model: gpt-image-1
+    description: OpenAI 图片模型（gpt-image-1）
+
+  aliyun-image:
+    type: openai-compatible-image
+    capability: image
+    vendor: aliyun
+    enabled: true
+    baseURL: https://dashscope.aliyuncs.com/compatible-mode/v1
+    apiKeyEnv: DASHSCOPE_API_KEY
+    modelEnv: DASHSCOPE_IMAGE_MODEL
+    model: wan2.2-t2i-flash
+    description: 阿里 DashScope 兼容图片模型
+
+  volcengine-image:
+    type: openai-compatible-image
+    capability: image
+    vendor: volcengine
+    enabled: true
+    baseURL: https://ark.cn-beijing.volces.com/api/v3
+    apiKeyEnv: ARK_API_KEY
+    modelEnv: ARK_IMAGE_MODEL
+    model: doubao-seedream-4-0-250828
+    sizeMap:
+      "9:16": "2K"
+      "16:9": "2K"
+      "1:1": "2K"
+      "4:5": "2K"
+      default: "2K"
+    extraBody:
+      watermark: false
+    description: 火山引擎 Ark Seedream 图片模型
+
+  volcengine-video:
+    type: ark-seedance-video
+    capability: video
+    vendor: volcengine
+    enabled: true
+    baseURL: https://ark.cn-beijing.volces.com/api/v3
+    apiKeyEnv: ARK_API_KEY
+    modelEnv: ARK_VIDEO_MODEL
+    model: doubao-seedance-1-0-pro-250528
+    description: 火山引擎 Ark Seedance 视频模型（异步任务）
+
 profiles:
   default:
     text: local-rule-text
@@ -74,18 +126,18 @@ profiles:
 
   openai:
     text: openai-text
-    image: noop-image
+    image: openai-image
     video: noop-video
     speech: local-say
 
   china:
     text: aliyun-text
-    image: noop-image
+    image: aliyun-image
     video: noop-video
     speech: local-say
 
   volcengine:
     text: volcengine-text
-    image: noop-image
-    video: noop-video
+    image: volcengine-image
+    video: volcengine-video
     speech: local-say

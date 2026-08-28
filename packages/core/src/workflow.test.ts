@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, utimesSync } from "node:fs";
+import { mkdtempSync, mkdirSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { loadConfig, resolveProfileId, validateConfig } from "./config.js";
 import { autoSelectSkill } from "./skills.js";
-import { GenerateRequest, ProviderSelection } from "./types.js";
-import { cleanupExpiredProjects, createProjectId, generateArtifacts, toScriptMarkdown, toSrt, validateGenerateRequest } from "./workflow.js";
+import { GenerateRequest, ProviderSelection, VideoModelProvider } from "./types.js";
+import { cleanupExpiredProjects, createProjectId, generateArtifacts, prepareGeneratedAssets, toScriptMarkdown, toSrt, validateGenerateRequest } from "./workflow.js";
 
 test("autoSelectSkill chooses ecommerce for shopping intent", () => {
   const skill = autoSelectSkill({
@@ -240,4 +240,64 @@ test("cleanupExpiredProjects removes only expired directories", () => {
   const removed = cleanupExpiredProjects(root, 7);
   assert.equal(removed.length, 1);
   assert.match(removed[0] ?? "", /expired-project/);
+});
+
+async function buildVideoArtifacts() {
+  const request: GenerateRequest = {
+    theme: "AI 智能体介绍",
+    skill: "knowledge",
+    mode: "video",
+    aspectRatio: "16:9",
+    durationSeconds: 20
+  };
+  const skill = autoSelectSkill({ theme: request.theme });
+  return generateArtifacts({ request, providers: {}, skill });
+}
+
+function videoProvider(returnedPath: "given" | ((input: string) => string)): VideoModelProvider {
+  return {
+    id: "mock-video",
+    capability: "video",
+    isRemote: true,
+    async test() {
+      return { providerId: "mock-video", capability: "video", ok: true, message: "ok", liveChecked: false };
+    },
+    async generateVideo(request) {
+      const finalPath = returnedPath === "given" ? request.outputPath : returnedPath(request.outputPath);
+      mkdirSync(join(finalPath, ".."), { recursive: true });
+      writeFileSync(finalPath, "fake video bytes");
+      return { outputPath: finalPath };
+    }
+  };
+}
+
+test("prepareGeneratedAssets accepts video paths inside the project", async () => {
+  const projectDir = mkdtempSync(join(tmpdir(), "aivideo-prep-"));
+  const artifacts = await buildVideoArtifacts();
+  const providers: ProviderSelection = { video: videoProvider("given") };
+  const result = await prepareGeneratedAssets({ projectDir, artifacts, providers });
+  assert.equal(result.attempted, artifacts.storyboard.shots.length);
+  assert.equal(result.videoSucceeded, artifacts.storyboard.shots.length);
+  const first = artifacts.renderManifest.shots[0]!;
+  assert.equal(first.assetKind, "video");
+  assert.match(String(first.assetPath), /^assets\/.+\.mp4$/);
+});
+
+test("prepareGeneratedAssets rejects video paths outside the project dir", async () => {
+  const projectDir = mkdtempSync(join(tmpdir(), "aivideo-prep-"));
+  const outsideDir = mkdtempSync(join(tmpdir(), "aivideo-outside-"));
+  const artifacts = await buildVideoArtifacts();
+  // Provider reports a path outside the project: the shot must degrade to its
+  // title-card fallback instead of referencing an external file.
+  const providers: ProviderSelection = {
+    video: videoProvider((given) => join(outsideDir, given.split("/").pop() ?? "shot.mp4"))
+  };
+  const result = await prepareGeneratedAssets({ projectDir, artifacts, providers });
+  assert.equal(result.videoSucceeded, 0);
+  assert.equal(result.failed, artifacts.storyboard.shots.length);
+  for (const shot of artifacts.renderManifest.shots) {
+    assert.equal(shot.assetKind, "generated-card");
+    const assetPath = String(shot.assetPath ?? "");
+    assert.equal(assetPath.startsWith(outsideDir), false);
+  }
 });

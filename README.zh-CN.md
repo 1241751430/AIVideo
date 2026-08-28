@@ -90,7 +90,12 @@
 # 火山引擎 Ark 示例
 ARK_API_KEY=你的Key
 ARK_MODEL=doubao-seed-2-0-pro-260215
+ARK_IMAGE_MODEL=doubao-seedream-4-0-250828
+ARK_VIDEO_MODEL=doubao-seedance-1-0-pro-250528
 ```
+
+> 配置了图片模型（如上面的 Ark Seedream）后，视频模式会为每个分镜生成真实场景图片，而不再退化为标题卡片。
+> 再配置视频模型（如上面的 Ark Seedance）后，视频模式会为每个分镜生成真实动态视频片段，而不再是静态场景图。
 
 常用 Docker 运行方式：
 
@@ -169,6 +174,8 @@ pnpm cli create
 - `--gpu`：启用 GPU 加速视频编码（自动检测硬件编码器）
 - `--provider-profile <name>`：指定 provider 配置档；多个 API Key 同时填写时，可用它强制选择 `default|openai|china|volcengine`
 - `.env` 中的 `OPENAI_MODEL` / `DASHSCOPE_MODEL` / `ARK_MODEL` 可切换对应文案模型，例如 `ARK_MODEL=doubao-seed-2-0-pro-260215`
+- `.env` 中的 `OPENAI_IMAGE_MODEL` / `DASHSCOPE_IMAGE_MODEL` / `ARK_IMAGE_MODEL` 可切换对应图片模型，例如 `ARK_IMAGE_MODEL=doubao-seedream-4-0-250828`——当前配置档带有真实图片模型时，视频模式会为每个分镜生成场景图片，而不再使用标题卡片
+- `.env` 中的 `ARK_VIDEO_MODEL` 可切换 Ark Seedance 视频模型，例如 `ARK_VIDEO_MODEL=doubao-seedance-1-0-pro-250528`——当前配置档带有真实视频模型时，视频模式会为每个分镜生成动态视频片段，而不再是静态场景图
 - 环境变量 `AIVIDEO_MODE=docker|host` 可强制指定 `./aivideo` 脚本的运行模式
 
 </details>

@@ -18,6 +18,7 @@ import {
   loadConfig,
   loadDotEnv,
   materializeProject,
+  prepareGeneratedAssets,
   resolveProjectDir,
   selectSkill,
   trimProjectArtifacts,
@@ -209,6 +210,18 @@ async function runGenerate(cwd: string, options: Record<string, string | boolean
 
   if (request.mode === "video") {
     console.log("Preparing video assets...");
+    const assetPrep = await prepareGeneratedAssets({ projectDir, artifacts, providers });
+    if (assetPrep.attempted > 0) {
+      const parts: string[] = [];
+      if (assetPrep.videoSucceeded > 0) {
+        parts.push(`${assetPrep.videoSucceeded} video(s)`);
+      }
+      if (assetPrep.imageSucceeded > 0) {
+        parts.push(`${assetPrep.imageSucceeded} image(s)`);
+      }
+      const summary = parts.length > 0 ? `Generated ${parts.join(" + ")} of ${assetPrep.attempted} scene(s)` : `Generated 0/${assetPrep.attempted} scene(s)`;
+      console.log(summary + (assetPrep.failed > 0 ? `; ${assetPrep.failed} fell back to title cards.` : "."));
+    }
     await synthesizeNarration(projectDir, artifacts.storyboard.shots, providers.speech);
     console.log("Starting video render. This may take a while...");
     await runRender(cwd, { project: projectDir }, config);
@@ -500,7 +513,10 @@ async function synthesizeNarration(
 
   console.log(`Synthesizing narration for ${shots.length} shot(s)...`);
   const tasks = shots.map((shot, index) => async () => {
-    const audioPath = join(projectDir, "audio", `${shot.id}.aiff`);
+    // WAV is the one container both engines produce faithfully: `say -o x.wav`
+    // and `espeak-ng -w x.wav` both write real WAV data, whereas espeak would
+    // emit WAV bytes under a misleading .aiff name.
+    const audioPath = join(projectDir, "audio", `${shot.id}.wav`);
     console.log(`- Narration ${index + 1}/${shots.length}: ${shot.id}`);
     try {
       await speechProvider.synthesizeSpeech({

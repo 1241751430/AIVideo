@@ -85,6 +85,58 @@ const DEFAULT_CONFIG: AppConfig = {
       modelEnv: "ARK_MODEL",
       model: "doubao-1.5-pro-32k-250115",
       description: "火山引擎 Ark 文案模型"
+    },
+    "openai-image": {
+      type: "openai-compatible-image",
+      capability: "image",
+      vendor: "openai",
+      enabled: true,
+      baseURL: "https://api.openai.com/v1",
+      apiKeyEnv: "OPENAI_API_KEY",
+      modelEnv: "OPENAI_IMAGE_MODEL",
+      model: "gpt-image-1",
+      description: "OpenAI 图片模型（gpt-image-1）"
+    },
+    "aliyun-image": {
+      type: "openai-compatible-image",
+      capability: "image",
+      vendor: "aliyun",
+      enabled: true,
+      baseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      apiKeyEnv: "DASHSCOPE_API_KEY",
+      modelEnv: "DASHSCOPE_IMAGE_MODEL",
+      model: "wan2.2-t2i-flash",
+      description: "阿里 DashScope 兼容图片模型"
+    },
+    "volcengine-image": {
+      type: "openai-compatible-image",
+      capability: "image",
+      vendor: "volcengine",
+      enabled: true,
+      baseURL: "https://ark.cn-beijing.volces.com/api/v3",
+      apiKeyEnv: "ARK_API_KEY",
+      modelEnv: "ARK_IMAGE_MODEL",
+      model: "doubao-seedream-4-0-250828",
+      sizeMap: {
+        "9:16": "2K",
+        "16:9": "2K",
+        "1:1": "2K",
+        "4:5": "2K",
+        "default": "2K"
+      },
+      extraBody: { watermark: false },
+      description: "火山引擎 Ark Seedream 图片模型"
+    },
+    "volcengine-video": {
+      type: "ark-seedance-video",
+      capability: "video",
+      vendor: "volcengine",
+      enabled: true,
+      baseURL: "https://ark.cn-beijing.volces.com/api/v3",
+      apiKeyEnv: "ARK_API_KEY",
+      modelEnv: "ARK_VIDEO_MODEL",
+      model: "doubao-seedance-1-0-pro-250528",
+      description: "火山引擎 Ark Seedance 视频模型（异步任务）"
     }
   },
   profiles: {
@@ -96,20 +148,20 @@ const DEFAULT_CONFIG: AppConfig = {
     },
     openai: {
       text: "openai-text",
-      image: "noop-image",
+      image: "openai-image",
       video: "noop-video",
       speech: "local-say"
     },
     china: {
       text: "aliyun-text",
-      image: "noop-image",
+      image: "aliyun-image",
       video: "noop-video",
       speech: "local-say"
     },
     volcengine: {
       text: "volcengine-text",
-      image: "noop-image",
-      video: "noop-video",
+      image: "volcengine-image",
+      video: "volcengine-video",
       speech: "local-say"
     }
   }
@@ -280,15 +332,15 @@ export function validateConfig(config: AppConfig): string[] {
   }
 
   for (const [id, provider] of Object.entries(config.providers)) {
-    if (provider.type === "openai-compatible") {
+    if (provider.type === "openai-compatible" || provider.type === "openai-compatible-image" || provider.type === "ark-seedance-video") {
       if (!provider.baseURL) {
-        warnings.push(`Provider "${id}" (openai-compatible) is missing baseURL.`);
+        warnings.push(`Provider "${id}" (${provider.type}) is missing baseURL.`);
       }
       if (!provider.model) {
-        warnings.push(`Provider "${id}" (openai-compatible) is missing model or modelEnv override.`);
+        warnings.push(`Provider "${id}" (${provider.type}) is missing model or modelEnv override.`);
       }
       if (!provider.apiKeyEnv) {
-        warnings.push(`Provider "${id}" (openai-compatible) is missing apiKeyEnv.`);
+        warnings.push(`Provider "${id}" (${provider.type}) is missing apiKeyEnv.`);
       }
     }
   }
@@ -299,12 +351,16 @@ export function validateConfig(config: AppConfig): string[] {
 const DEFAULT_ENV_TEMPLATE = `# OpenAI
 OPENAI_API_KEY=
 OPENAI_MODEL=gpt-4.1-mini
+OPENAI_IMAGE_MODEL=gpt-image-1
 
 # 阿里 DashScope
 DASHSCOPE_API_KEY=
 DASHSCOPE_MODEL=qwen-plus
+DASHSCOPE_IMAGE_MODEL=wan2.2-t2i-flash
 
 # 火山引擎 Ark
 ARK_API_KEY=
 ARK_MODEL=doubao-seed-2-0-pro-260215
+ARK_IMAGE_MODEL=doubao-seedream-4-0-250828
+ARK_VIDEO_MODEL=doubao-seedance-1-0-pro-250528
 `;

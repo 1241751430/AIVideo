@@ -120,6 +120,8 @@ export interface ProviderConfig {
   modelEnv?: string;
   model?: string;
   description?: string;
+  sizeMap?: Record<string, string>;
+  extraBody?: Record<string, unknown>;
 }
 
 export interface ProviderProfileConfig {
@@ -168,6 +170,9 @@ export interface ImageGenerationRequest {
   prompt: string;
   outputPath: string;
   referenceImages?: string[];
+  width?: number;
+  height?: number;
+  aspectRatio?: string;
 }
 
 export interface ImageModelProvider {
@@ -182,6 +187,7 @@ export interface VideoGenerationRequest {
   prompt: string;
   durationSeconds: number;
   outputPath: string;
+  aspectRatio?: string;
 }
 
 export interface VideoModelProvider {

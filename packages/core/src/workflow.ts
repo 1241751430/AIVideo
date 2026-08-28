@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { basename, join, resolve } from "node:path";
+import { basename, join, resolve, sep } from "node:path";
 import { randomUUID } from "node:crypto";
 import {
   BriefDocument,
@@ -136,6 +136,175 @@ export function materializeProject(projectDir: string, artifacts: ProjectArtifac
   writeJson(join(projectDir, "storyboard.json"), artifacts.storyboard);
   writeJson(join(projectDir, "render-manifest.json"), artifacts.renderManifest);
   writeFileSync(join(projectDir, "captions", "captions.srt"), toSrt(artifacts.captions), "utf8");
+}
+
+const ASSET_PREP_CONCURRENCY = 3;
+
+/**
+ * A remote provider controls the path it reports back as the generated file's
+ * location. Refuse to reference anything outside the project directory so a
+ * misbehaving provider cannot redirect the renderer to arbitrary local files.
+ */
+function assertPathWithinProject(projectDir: string, filePath: string, kind: string): void {
+  const root = resolve(projectDir);
+  const target = resolve(filePath);
+  if (target !== root && !target.startsWith(root + sep)) {
+    throw new Error(`provider returned a ${kind} path outside the project directory`);
+  }
+}
+
+export interface AssetPrepResult {
+  attempted: number;
+  succeeded: number;
+  failed: number;
+  videoSucceeded: number;
+  imageSucceeded: number;
+}
+
+/**
+ * Generate the scene assets promised by the storyboard (`assetSource:
+ * "generated_image"`) and upgrade matching render-manifest shots from
+ * "generated-card". When the selected video provider is remote, each shot gets
+ * a real motion clip ("video"); otherwise a remote image provider produces
+ * scene images ("image"). Failures degrade gracefully: a failed video falls
+ * back to the image flow when available, and the shot keeps its title-card
+ * fallback so rendering always has something to use.
+ *
+ * No-ops when both the video and image providers are local/noop — those never
+ * create real files, and the manifest must keep pointing at title cards.
+ */
+export async function prepareGeneratedAssets(input: {
+  projectDir: string;
+  artifacts: ProjectArtifacts;
+  providers: ProviderSelection;
+}): Promise<AssetPrepResult> {
+  const { projectDir, artifacts, providers } = input;
+  const result: AssetPrepResult = {
+    attempted: 0,
+    succeeded: 0,
+    failed: 0,
+    videoSucceeded: 0,
+    imageSucceeded: 0
+  };
+  const videoProvider = providers.video;
+  const imageProvider = providers.image;
+  const useVideo = Boolean(videoProvider && videoProvider.isRemote);
+  const useImage = Boolean(imageProvider && imageProvider.isRemote);
+  if (!useVideo && !useImage) {
+    return result;
+  }
+
+  const generatedShots = artifacts.storyboard.shots.filter(
+    (shot) => shot.assetSource === "generated_image"
+  );
+  if (generatedShots.length === 0) {
+    return result;
+  }
+
+  const manifestByShotId = new Map(
+    artifacts.renderManifest.shots.map((shot) => [shot.shotId, shot])
+  );
+  const size = ASPECT_SIZES[artifacts.brief.aspectRatio] ?? { width: 1080, height: 1920 };
+
+  type PendingShot = (typeof generatedShots)[number];
+  type ManifestShot = (typeof artifacts.renderManifest.shots)[number];
+  const queue: PendingShot[] = [...generatedShots];
+  result.attempted = queue.length;
+
+  async function generateVideoFor(shot: PendingShot, manifestShot: ManifestShot): Promise<boolean> {
+    if (!videoProvider || !videoProvider.isRemote) {
+      return false;
+    }
+    const relativePath = `assets/${shot.id}.mp4`;
+    const outputPath = join(projectDir, relativePath);
+    try {
+      const generated = await videoProvider.generateVideo({
+        prompt: shot.visualPrompt,
+        durationSeconds: shot.durationSeconds,
+        outputPath,
+        aspectRatio: artifacts.brief.aspectRatio
+      });
+      const finalPath = generated.outputPath || outputPath;
+      if (!existsSync(finalPath)) {
+        throw new Error("provider returned no video file");
+      }
+      assertPathWithinProject(projectDir, finalPath, "video");
+      manifestShot.assetKind = "video";
+      manifestShot.assetPath = finalPath === outputPath ? relativePath : finalPath;
+      result.succeeded += 1;
+      result.videoSucceeded += 1;
+      return true;
+    } catch (error) {
+      const fallback = useImage ? "scene image" : "title card";
+      console.warn(
+        `Video generation failed for shot ${shot.id}, falling back to ${fallback}: ${(error as Error).message}`
+      );
+      return false;
+    }
+  }
+
+  async function generateImageFor(shot: PendingShot, manifestShot: ManifestShot): Promise<boolean> {
+    if (!imageProvider || !imageProvider.isRemote) {
+      return false;
+    }
+    const relativePath = `assets/${shot.id}.png`;
+    const outputPath = join(projectDir, relativePath);
+    try {
+      const generated = await imageProvider.generateImage({
+        prompt: shot.visualPrompt,
+        outputPath,
+        width: size.width,
+        height: size.height,
+        aspectRatio: artifacts.brief.aspectRatio
+      });
+      const finalPath = generated.outputPath || outputPath;
+      if (!existsSync(finalPath)) {
+        throw new Error("provider returned no image file");
+      }
+      assertPathWithinProject(projectDir, finalPath, "image");
+      manifestShot.assetKind = "image";
+      manifestShot.assetPath = finalPath === outputPath ? relativePath : finalPath;
+      result.succeeded += 1;
+      result.imageSucceeded += 1;
+      return true;
+    } catch (error) {
+      console.warn(
+        `Image generation failed for shot ${shot.id}, falling back to title card: ${(error as Error).message}`
+      );
+      return false;
+    }
+  }
+
+  async function generateOne(shot: PendingShot): Promise<void> {
+    const manifestShot = manifestByShotId.get(shot.id);
+    if (!manifestShot) {
+      result.failed += 1;
+      return;
+    }
+    if (useVideo && (await generateVideoFor(shot, manifestShot))) {
+      return;
+    }
+    if (useImage && (await generateImageFor(shot, manifestShot))) {
+      return;
+    }
+    result.failed += 1;
+  }
+
+  const workers = Array.from({ length: Math.min(ASSET_PREP_CONCURRENCY, queue.length) }, async () => {
+    while (queue.length > 0) {
+      const shot = queue.shift();
+      if (!shot) {
+        break;
+      }
+      await generateOne(shot);
+    }
+  });
+  await Promise.all(workers);
+
+  if (result.succeeded > 0) {
+    writeJson(join(projectDir, "render-manifest.json"), artifacts.renderManifest);
+  }
+  return result;
 }
 
 export function trimProjectArtifacts(projectDir: string): void {
@@ -401,7 +570,7 @@ function buildRenderManifest(input: {
       durationSeconds: shot.durationSeconds,
       assetKind: hasReference ? ("image" as const) : ("generated-card" as const),
       assetPath: referencedImage,
-      audioPath: `audio/${shot.id}.aiff`,
+      audioPath: `audio/${shot.id}.wav`,
       overlayText: shot.title,
       caption: shot.caption,
       visualPrompt: shot.visualPrompt

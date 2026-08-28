@@ -11,6 +11,11 @@ import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
+OUTPUT_FPS = "30"
+VIDEO_CRF = "20"
+AUDIO_SAMPLE_RATE = "48000"
+AUDIO_BITRATE = "192k"
+
 
 def run(command: list[str]) -> None:
     completed = subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
@@ -120,6 +125,107 @@ def escape_filter_path(value: str) -> str:
     )
 
 
+def build_image_filter(width: int, height: int, duration: str) -> str:
+    frames = max(1, int(round(float(duration) * int(OUTPUT_FPS))))
+    return (
+        f"scale={width * 2}:{height * 2}:force_original_aspect_ratio=increase,"
+        f"crop={width}:{height},"
+        f"zoompan=z='min(zoom+0.0008,1.08)':d={frames}:s={width}x{height}:fps={OUTPUT_FPS},"
+        f"fade=t=in:st=0:d=0.25,fade=t=out:st=max(0\\,{float(duration) - 0.35:.3f}):d=0.35,"
+        "format=yuv420p"
+    )
+
+
+def build_video_filter(width: int, height: int, duration: str) -> str:
+    return (
+        f"scale={width}:{height}:force_original_aspect_ratio=increase,"
+        f"crop={width}:{height},"
+        f"fps={OUTPUT_FPS},"
+        f"fade=t=in:st=0:d=0.25,fade=t=out:st=max(0\\,{float(duration) - 0.35:.3f}):d=0.35,"
+        "format=yuv420p"
+    )
+
+
+def build_title_card_filter(width: int, height: int, title: str) -> str:
+    title_size = max(44, min(72, width // 18))
+    accent_height = max(10, height // 120)
+    return (
+        f"geq=r='16+34*Y/H':g='24+24*X/W':b='38+70*(1-Y/H)',"
+        f"drawbox=x=0:y={height - accent_height}:w={width}:h={accent_height}:color=0x6d5dfc@0.95:t=fill,"
+        f"drawbox=x={width * 0.08:.0f}:y={height * 0.34:.0f}:w={width * 0.84:.0f}:h={height * 0.28:.0f}:color=black@0.35:t=fill,"
+        f"drawtext=text='{title}':fontcolor=white:fontsize={title_size}:line_spacing=16:"
+        "box=1:boxcolor=black@0.22:boxborderw=28:x=(w-text_w)/2:y=(h-text_h)/2,"
+        "format=yuv420p"
+    )
+
+
+def append_output_quality_settings(command: list[str], video_encoder: str) -> None:
+    command.extend(["-r", OUTPUT_FPS, "-c:v", video_encoder])
+    if video_encoder == "libx264":
+        command.extend(["-preset", "medium", "-crf", VIDEO_CRF])
+    command.extend(
+        [
+            "-c:a",
+            "aac",
+            "-ar",
+            AUDIO_SAMPLE_RATE,
+            "-b:a",
+            AUDIO_BITRATE,
+            "-pix_fmt",
+            "yuv420p",
+            "-movflags",
+            "+faststart",
+        ]
+    )
+
+
+def build_subtitle_burn_command(input_path: Path, captions: Path, output_path: Path) -> list[str]:
+    style = "FontName=Arial,FontSize=18,PrimaryColour=&H00FFFFFF,OutlineColour=&H80000000,BorderStyle=1,Outline=2,Shadow=1,MarginV=90,Alignment=2"
+    return [
+        "ffmpeg",
+        "-y",
+        "-loglevel",
+        "error",
+        "-i",
+        str(input_path),
+        "-vf",
+        f"subtitles='{escape_filter_path(captions.as_posix())}':force_style='{style}'",
+        "-c:a",
+        "copy",
+        str(output_path),
+    ]
+
+
+def build_bgm_mix_command(input_path: Path, bgm: Path, output_path: Path) -> list[str]:
+    return [
+        "ffmpeg",
+        "-y",
+        "-loglevel",
+        "error",
+        "-i",
+        str(input_path),
+        "-stream_loop",
+        "-1",
+        "-i",
+        str(bgm),
+        "-filter_complex",
+        "[1:a]volume=0.22[bgm];[bgm][0:a]sidechaincompress=threshold=0.05:ratio=8:attack=20:release=500[ducked];[0:a][ducked]amix=inputs=2:duration=first:dropout_transition=2[aout]",
+        "-map",
+        "0:v",
+        "-map",
+        "[aout]",
+        "-c:v",
+        "copy",
+        "-c:a",
+        "aac",
+        "-ar",
+        AUDIO_SAMPLE_RATE,
+        "-b:a",
+        AUDIO_BITRATE,
+        str(output_path),
+    ]
+
+
 def build_clip_command(
     clip_path: Path,
     width: int,
@@ -129,11 +235,28 @@ def build_clip_command(
     image_path: str | None,
     audio_path: str | None,
     video_encoder: str = "libx264",
+    asset_kind: str = "image",
 ) -> list[str]:
-    has_image = bool(image_path and os.path.exists(image_path))
+    has_video_asset = asset_kind == "video" and bool(image_path and os.path.exists(image_path))
+    has_image = (not has_video_asset) and bool(image_path and os.path.exists(image_path))
     has_audio = bool(audio_path and os.path.exists(audio_path))
 
-    if has_image:
+    if has_video_asset:
+        # Loop the generated clip so a short clip still fills the shot's
+        # planned duration; -t on this input caps it there exactly.
+        command = [
+            "ffmpeg",
+            "-y",
+            "-loglevel",
+            "error",
+            "-stream_loop",
+            "-1",
+            "-t",
+            duration,
+            "-i",
+            image_path,
+        ]
+    elif has_image:
         command = [
             "ffmpeg",
             "-y",
@@ -159,7 +282,11 @@ def build_clip_command(
         ]
 
     if has_audio:
-        command.extend(["-i", audio_path])
+        # Cap the narration input at the planned duration so the output can
+        # reach exactly -t without -shortest ending it early when the clip
+        # loops; when narration is shorter than the shot, the (video-less)
+        # audio stream simply pads with silence at the end.
+        command.extend(["-t", duration, "-i", audio_path])
     else:
         command.extend(
             [
@@ -172,37 +299,62 @@ def build_clip_command(
             ]
         )
 
-    if has_image:
+    if has_video_asset:
         command.extend(
             [
                 "-vf",
-                f"scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,format=yuv420p",
+                build_video_filter(width, height, duration),
+            ]
+        )
+    elif has_image:
+        command.extend(
+            [
+                "-vf",
+                build_image_filter(width, height, duration),
             ]
         )
     else:
         command.extend(
             [
                 "-vf",
-                f"drawtext=text='{title}':fontcolor=white:fontsize=56:x=(w-text_w)/2:y=(h-text_h)/2,format=yuv420p",
+                build_title_card_filter(width, height, title),
             ]
         )
 
-    command.extend(
-        [
-            "-shortest",
-            "-map",
-            "0:v:0",
-            "-map",
-            "1:a:0",
-            "-c:v",
-            video_encoder,
-            "-c:a",
-            "aac",
-            "-pix_fmt",
-            "yuv420p",
-            str(clip_path),
-        ]
-    )
+    # The image and video branches already bound their visual stream to
+    # `duration` (via -loop 1 -t / -stream_loop -1 -t on the input). When they
+    # also carry narration, we must NOT use -shortest: it would trim the clip to
+    # the (usually shorter) narration audio and desync the fixed-length caption
+    # timeline. Instead pad the audio with silence (-af apad) and pin the output
+    # to exactly -t duration, so every clip is precisely durationSeconds long and
+    # the concatenated total matches the SRT. The title-card branch has no such
+    # asset and keeps -shortest (both its streams are already duration-bound).
+    has_visual_asset = has_video_asset or has_image
+    if has_visual_asset and has_audio:
+        command.extend(
+            [
+                "-af",
+                "apad",
+                "-map",
+                "0:v:0",
+                "-map",
+                "1:a:0",
+                "-t",
+                duration,
+            ]
+        )
+    else:
+        command.extend(
+            [
+                "-shortest",
+                "-map",
+                "0:v:0",
+                "-map",
+                "1:a:0",
+            ]
+        )
+    append_output_quality_settings(command, video_encoder)
+    command.append(str(clip_path))
     return command
 
 
@@ -246,15 +398,10 @@ def build_title_card_fallback_command(
             "1:a:0",
             "-vf",
             "format=yuv420p",
-            "-c:v",
-            video_encoder,
-            "-c:a",
-            "aac",
-            "-pix_fmt",
-            "yuv420p",
-            str(clip_path),
         ]
     )
+    append_output_quality_settings(command, video_encoder)
+    command.append(str(clip_path))
     return command
 
 
@@ -285,6 +432,21 @@ def prepare_manifest_media(project_dir: Path, work_dir: Path, manifest: dict) ->
 def prepare_shot_image(project_dir: Path, assets_dir: Path, shot: dict, index: int) -> None:
     image_path = resolve_media_path(project_dir, shot.get("assetPath"))
     if not image_path:
+        return
+    if shot.get("assetKind") == "video":
+        # Video assets are already real motion clips; ffmpeg can consume them
+        # directly. Probe for a usable video stream instead of normalizing to PNG.
+        if not os.path.exists(image_path):
+            warn(f"video asset missing for shot {index + 1}; using title card")
+            shot["assetPath"] = None
+            return
+        try:
+            if not has_video_stream(Path(image_path)):
+                warn(f"video asset has no readable stream for shot {index + 1}; using title card")
+                shot["assetPath"] = None
+        except RuntimeError as exc:
+            warn(f"video asset could not be probed for shot {index + 1}; using title card: {exc}")
+            shot["assetPath"] = None
         return
     if not os.path.exists(image_path):
         warn(f"image asset missing for shot {index + 1}; using title card")
@@ -322,15 +484,16 @@ def make_clip(project_dir: Path, work_dir: Path, shot: dict, width: int, height:
     image_path = resolve_media_path(project_dir, shot.get("assetPath"))
     audio_path = resolve_media_path(project_dir, shot.get("audioPath"))
     title = escape_drawtext(shot.get("overlayText") or shot.get("title") or "AI Video")
+    asset_kind = shot.get("assetKind") or "image"
     errors: list[str] = []
     try:
-        run(build_clip_command(clip_path, width, height, duration, title, image_path, audio_path, video_encoder))
+        run(build_clip_command(clip_path, width, height, duration, title, image_path, audio_path, video_encoder, asset_kind))
         return clip_path
     except RuntimeError as exc:
         errors.append(str(exc))
     if video_encoder != "libx264":
         try:
-            run(build_clip_command(clip_path, width, height, duration, title, image_path, audio_path, "libx264"))
+            run(build_clip_command(clip_path, width, height, duration, title, image_path, audio_path, "libx264", asset_kind))
             return clip_path
         except RuntimeError as exc:
             errors.append(str(exc))
@@ -409,6 +572,17 @@ def has_audio_stream(path: Path) -> bool:
     return parse_probe_duration(probe, audio_stream) > 0
 
 
+def has_video_stream(path: Path) -> bool:
+    probe = probe_media(path)
+    streams = probe.get("streams")
+    if not isinstance(streams, list):
+        return False
+    video_stream = next((stream for stream in streams if stream.get("codec_type") == "video"), None)
+    if not video_stream:
+        return False
+    return parse_probe_duration(probe, video_stream) > 0
+
+
 def validate_output_video(path: Path, width: int, height: int) -> None:
     if not path.exists() or path.stat().st_size <= 0:
         raise RuntimeError(f"Rendered video is missing or empty: {path}")
@@ -439,6 +613,24 @@ def parse_probe_duration(probe: dict, video_stream: dict) -> float:
     return 0.0
 
 
+def validate_manifest_paths(project_dir: Path, manifest: dict) -> Path:
+    """Resolve every manifest-declared file, rejecting paths outside the project.
+
+    Video assets are pipeline-generated files that must live under the project;
+    reference images (assetKind "image") may legitimately be user-supplied
+    paths outside it, so only video is gated here.
+    """
+    output_path = resolve_project_path(project_dir, manifest["outputFile"], "Output file")
+    resolve_project_path(project_dir, manifest["captionsFile"], "Captions file")
+    for shot in manifest["shots"]:
+        audio_path = shot.get("audioPath")
+        if audio_path:
+            resolve_project_path(project_dir, audio_path, "Audio file")
+        if shot.get("assetKind") == "video" and shot.get("assetPath"):
+            resolve_project_path(project_dir, shot["assetPath"], "Video asset")
+    return output_path
+
+
 def render(project_dir: Path, manifest_path: Path, gpu: bool = False) -> Path:
     ensure_binary("ffmpeg")
     ensure_binary("ffprobe")
@@ -449,12 +641,8 @@ def render(project_dir: Path, manifest_path: Path, gpu: bool = False) -> Path:
     work_dir = project_dir / ".render_tmp"
     work_dir.mkdir(parents=True, exist_ok=True)
 
-    output_path = resolve_project_path(project_dir, manifest["outputFile"], "Output file")
+    output_path = validate_manifest_paths(project_dir, manifest)
     captions = resolve_project_path(project_dir, manifest["captionsFile"], "Captions file")
-    for shot in manifest["shots"]:
-        audio_path = shot.get("audioPath")
-        if audio_path:
-            resolve_project_path(project_dir, audio_path, "Audio file")
     prepare_manifest_media(project_dir, work_dir, manifest)
 
     total_shots = len(manifest["shots"])
@@ -509,21 +697,7 @@ def render(project_dir: Path, manifest_path: Path, gpu: bool = False) -> Path:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     if captions.exists():
         try:
-            run(
-                [
-                    "ffmpeg",
-                    "-y",
-                    "-loglevel",
-                    "error",
-                    "-i",
-                    str(merged),
-                    "-vf",
-                    f"subtitles='{escape_filter_path(captions.as_posix())}'",
-                    "-c:a",
-                    "copy",
-                    str(output_path),
-                ]
-            )
+            run(build_subtitle_burn_command(merged, captions, output_path))
         except RuntimeError as exc:
             warn(f"subtitle burn-in failed; continuing without subtitles: {exc}")
             shutil.copyfile(merged, output_path)
@@ -535,29 +709,7 @@ def render(project_dir: Path, manifest_path: Path, gpu: bool = False) -> Path:
         print(f"Mixing BGM: {bgm.name}", flush=True)
         with_bgm = work_dir / "with_bgm.mp4"
         try:
-            run(
-                [
-                    "ffmpeg",
-                    "-y",
-                    "-loglevel",
-                    "error",
-                    "-i",
-                    str(output_path),
-                    "-i",
-                    str(bgm),
-                    "-filter_complex",
-                    "[1:a]volume=0.3[bgm];[0:a][bgm]amix=inputs=2:duration=first[aout]",
-                    "-map",
-                    "0:v",
-                    "-map",
-                    "[aout]",
-                    "-c:v",
-                    "copy",
-                    "-c:a",
-                    "aac",
-                    str(with_bgm),
-                ]
-            )
+            run(build_bgm_mix_command(output_path, bgm, with_bgm))
             shutil.move(str(with_bgm), str(output_path))
         except RuntimeError as exc:
             warn(f"BGM mix failed; keeping video without BGM: {exc}")

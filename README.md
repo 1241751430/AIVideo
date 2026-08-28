@@ -90,7 +90,12 @@ For remote models, edit `.env` first:
 # Volcengine Ark example
 ARK_API_KEY=your-key
 ARK_MODEL=doubao-seed-2-0-pro-260215
+ARK_IMAGE_MODEL=doubao-seedream-4-0-250828
+ARK_VIDEO_MODEL=doubao-seedance-1-0-pro-250528
 ```
+
+> With an image model configured (like the Ark Seedream above), video mode generates real scene images for each storyboard shot instead of falling back to title cards.
+> With a video model configured as well (like the Ark Seedance above), video mode generates real motion clips per shot instead of static scene images.
 
 Common Docker runs:
 
@@ -169,6 +174,8 @@ Schedule via cron or CI.
 - `--gpu`: enable GPU-accelerated video encoding (auto-detects hardware encoder)
 - `--provider-profile <name>`: select a provider profile; when multiple API keys are filled, use it to force `default|openai|china|volcengine`
 - `.env` `OPENAI_MODEL` / `DASHSCOPE_MODEL` / `ARK_MODEL` switches the matching text model, for example `ARK_MODEL=doubao-seed-2-0-pro-260215`
+- `.env` `OPENAI_IMAGE_MODEL` / `DASHSCOPE_IMAGE_MODEL` / `ARK_IMAGE_MODEL` switches the matching image model, for example `ARK_IMAGE_MODEL=doubao-seedream-4-0-250828` — when the active profile has a real image model, video mode generates scene images for every shot instead of using title cards
+- `.env` `ARK_VIDEO_MODEL` switches the Ark Seedance video model, for example `ARK_VIDEO_MODEL=doubao-seedance-1-0-pro-250528` — when the active profile has a real video model, video mode generates motion clips per shot instead of static scene images
 - Env var `AIVIDEO_MODE=docker|host` forces the launcher's runtime mode
 
 </details>

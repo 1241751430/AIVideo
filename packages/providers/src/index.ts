@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import {
   AppConfig,
@@ -19,12 +19,28 @@ import {
 
 const LIVE_TEST_TIMEOUT_MS = 10_000;
 const MODEL_REQUEST_TIMEOUT_MS = 45_000;
+const IMAGE_REQUEST_TIMEOUT_MS = 120_000;
+const IMAGE_DOWNLOAD_TIMEOUT_MS = 60_000;
+const MAX_IMAGE_DOWNLOAD_BYTES = 20 * 1024 * 1024;
+const VIDEO_REQUEST_TIMEOUT_MS = 30_000;
+const VIDEO_POLL_INTERVAL_MS = 5_000;
+const VIDEO_POLL_TIMEOUT_MS = 10 * 60_000;
+const VIDEO_DOWNLOAD_TIMEOUT_MS = 180_000;
+const MAX_VIDEO_DOWNLOAD_BYTES = 200 * 1024 * 1024;
 const RETRY_ATTEMPTS = 3;
 const RETRY_BASE_MS = 1000;
 const SAFE_PROVIDER_HOSTS = [
   "api.openai.com",
   "dashscope.aliyuncs.com",
   "ark.cn-beijing.volces.com"
+];
+// Hosts allowed to serve generated image payloads returned by provider APIs.
+const TRUSTED_IMAGE_DOWNLOAD_HOSTS = ["files.oaiusercontent.com"];
+const TRUSTED_IMAGE_DOWNLOAD_SUFFIXES = [
+  ".volces.com",
+  ".aliyuncs.com",
+  ".blob.core.windows.net",
+  ".openai.com"
 ];
 
 async function withRetry<T>(fn: () => Promise<T>, attempts = RETRY_ATTEMPTS, baseMs = RETRY_BASE_MS): Promise<T> {
@@ -202,6 +218,173 @@ class NoopImageProvider implements ImageModelProvider {
   }
 }
 
+/**
+ * Generic image provider for OpenAI-compatible `/images/generations` endpoints.
+ *
+ * Works with Volcengine Ark (Seedream), OpenAI (gpt-image-1) and DashScope
+ * compatible-mode image APIs. Vendor quirks are handled through config:
+ * - `sizeMap`: per-aspect-ratio size strings (e.g. Ark presets like "2K",
+ *   OpenAI sizes like "1024x1536"), falling back to `${width}x${height}`.
+ * - `extraBody`: extra JSON body fields (e.g. Ark's `{"watermark": false}`).
+ * Responses are accepted either as `data[0].url` (downloaded, HTTPS-only,
+ * size-capped) or `data[0].b64_json` (decoded). The image bytes are always
+ * written to `request.outputPath`, unlike the noop provider which only echoes
+ * the path without creating a file.
+ */
+class OpenAICompatibleImageProvider implements ImageModelProvider {
+  readonly capability = "image" as const;
+  readonly isRemote = true;
+
+  constructor(
+    readonly id: string,
+    private readonly config: ProviderConfig
+  ) {}
+
+  async test(options?: { live?: boolean }): Promise<ProviderHealth> {
+    assertSafeBaseURL(this.config);
+    const apiKey = this.getApiKey();
+    if (!apiKey) {
+      return {
+        providerId: this.id,
+        capability: this.capability,
+        ok: false,
+        message: `Missing API key env: ${this.config.apiKeyEnv}`,
+        liveChecked: false
+      };
+    }
+
+    if (!options?.live) {
+      return {
+        providerId: this.id,
+        capability: this.capability,
+        ok: true,
+        message: "Configured and ready for remote image generation.",
+        liveChecked: false
+      };
+    }
+
+    const response = await fetchWithTimeout(
+      `${this.config.baseURL}/models`,
+      {
+        headers: {
+          Authorization: `Bearer ${apiKey}`
+        }
+      },
+      LIVE_TEST_TIMEOUT_MS
+    );
+
+    return {
+      providerId: this.id,
+      capability: this.capability,
+      ok: response.ok,
+      message: response.ok ? "Remote endpoint reachable." : `HTTP ${response.status}`,
+      liveChecked: true
+    };
+  }
+
+  async generateImage(request: ImageGenerationRequest): Promise<{ outputPath: string }> {
+    assertSafeBaseURL(this.config);
+    const apiKey = this.getApiKey();
+    if (!apiKey || !this.config.baseURL || !this.config.model) {
+      throw new Error(`Provider ${this.id} is missing baseURL, model, or API key.`);
+    }
+
+    const size = this.resolveSize(request);
+    const imageBuffer = await withRetry(async () => {
+      const response = await fetchWithTimeout(
+        `${this.config.baseURL}/images/generations`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            Authorization: `Bearer ${apiKey}`
+          },
+          body: JSON.stringify({
+            model: this.config.model,
+            prompt: request.prompt,
+            ...(size ? { size } : {}),
+            ...(this.config.extraBody ?? {})
+          })
+        },
+        IMAGE_REQUEST_TIMEOUT_MS
+      );
+
+      if (!response.ok) {
+        const detail = await safeReadErrorBody(response);
+        throw new Error(
+          `Provider ${this.id} failed with HTTP ${response.status}${detail ? `: ${detail}` : ""}`
+        );
+      }
+
+      const payload = (await response.json()) as {
+        data?: Array<{ url?: string; b64_json?: string }>;
+      };
+      const item = payload.data?.[0];
+      if (!item) {
+        throw new Error(`Provider ${this.id} returned an empty image response.`);
+      }
+      if (item.b64_json) {
+        const buffer = Buffer.from(item.b64_json, "base64");
+        if (buffer.length === 0) {
+          throw new Error(`Provider ${this.id} returned an empty base64 image payload.`);
+        }
+        return buffer;
+      }
+      if (item.url) {
+        return this.downloadImage(item.url);
+      }
+      throw new Error(`Provider ${this.id} returned neither an image URL nor a base64 payload.`);
+    });
+
+    mkdirSync(dirname(request.outputPath), { recursive: true });
+    writeFileSync(request.outputPath, imageBuffer);
+    return { outputPath: request.outputPath };
+  }
+
+  private resolveSize(request: ImageGenerationRequest): string | undefined {
+    if (request.aspectRatio && this.config.sizeMap?.[request.aspectRatio]) {
+      return this.config.sizeMap[request.aspectRatio];
+    }
+    if (request.width && request.height) {
+      return `${request.width}x${request.height}`;
+    }
+    return this.config.sizeMap?.["default"];
+  }
+
+  private async downloadImage(url: string): Promise<Buffer> {
+    const parsed = new URL(url);
+    if (parsed.protocol !== "https:") {
+      throw new Error(`Image download must use HTTPS to avoid tampered payloads, got: ${parsed.protocol}`);
+    }
+    if (this.config.allowCustomBaseURL !== true && !isTrustedImageHost(parsed.hostname)) {
+      throw new Error(
+        `Image download host ${parsed.hostname} is not trusted. Set allowCustomBaseURL=true on the provider only if you explicitly trust its responses.`
+      );
+    }
+
+    const response = await fetchWithTimeout(url, {}, IMAGE_DOWNLOAD_TIMEOUT_MS);
+    if (!response.ok) {
+      throw new Error(`Image download failed with HTTP ${response.status}`);
+    }
+    const contentLength = Number(response.headers.get("content-length") ?? "0");
+    if (contentLength > MAX_IMAGE_DOWNLOAD_BYTES) {
+      throw new Error(`Image download exceeds ${MAX_IMAGE_DOWNLOAD_BYTES} bytes.`);
+    }
+    const buffer = Buffer.from(await response.arrayBuffer());
+    if (buffer.length === 0) {
+      throw new Error("Image download returned an empty body.");
+    }
+    if (buffer.length > MAX_IMAGE_DOWNLOAD_BYTES) {
+      throw new Error(`Image download exceeds ${MAX_IMAGE_DOWNLOAD_BYTES} bytes.`);
+    }
+    return buffer;
+  }
+
+  private getApiKey(): string | undefined {
+    return this.config.apiKeyEnv ? process.env[this.config.apiKeyEnv] : undefined;
+  }
+}
+
 class NoopVideoProvider implements VideoModelProvider {
   readonly capability = "video" as const;
   readonly isRemote = false;
@@ -220,6 +403,203 @@ class NoopVideoProvider implements VideoModelProvider {
 
   async generateVideo(request: VideoGenerationRequest): Promise<{ outputPath: string }> {
     return { outputPath: request.outputPath };
+  }
+}
+
+/**
+ * Volcengine Ark Seedance text-to-video provider.
+ *
+ * Unlike the image endpoints, Ark video generation is an async task API:
+ * 1. POST {baseURL}/contents/generations/tasks  -> { id }
+ * 2. GET  {baseURL}/contents/generations/tasks/{id} until status is
+ *    "succeeded" (or a terminal failure), polling every VIDEO_POLL_INTERVAL_MS
+ *    within an overall VIDEO_POLL_TIMEOUT_MS budget.
+ * 3. Download the returned content.video_url (HTTPS-only, trusted host,
+ *    size-capped) and write it to request.outputPath.
+ *
+ * Vendor quirks are config-driven: `extraBody` is merged into the create-task
+ * body (e.g. resolution/fps overrides), so new Seedance parameters do not
+ * require a code change.
+ */
+class ArkSeedanceVideoProvider implements VideoModelProvider {
+  readonly capability = "video" as const;
+  readonly isRemote = true;
+
+  constructor(
+    readonly id: string,
+    private readonly config: ProviderConfig
+  ) {}
+
+  async test(options?: { live?: boolean }): Promise<ProviderHealth> {
+    assertSafeBaseURL(this.config);
+    const apiKey = this.getApiKey();
+    if (!apiKey) {
+      return {
+        providerId: this.id,
+        capability: this.capability,
+        ok: false,
+        message: `Missing API key env: ${this.config.apiKeyEnv}`,
+        liveChecked: false
+      };
+    }
+
+    if (!options?.live) {
+      return {
+        providerId: this.id,
+        capability: this.capability,
+        ok: true,
+        message: "Configured and ready for remote video generation.",
+        liveChecked: false
+      };
+    }
+
+    const response = await fetchWithTimeout(
+      `${this.config.baseURL}/models`,
+      {
+        headers: {
+          Authorization: `Bearer ${apiKey}`
+        }
+      },
+      LIVE_TEST_TIMEOUT_MS
+    );
+
+    return {
+      providerId: this.id,
+      capability: this.capability,
+      ok: response.ok,
+      message: response.ok ? "Remote endpoint reachable." : `HTTP ${response.status}`,
+      liveChecked: true
+    };
+  }
+
+  async generateVideo(request: VideoGenerationRequest): Promise<{ outputPath: string }> {
+    assertSafeBaseURL(this.config);
+    const apiKey = this.getApiKey();
+    if (!apiKey || !this.config.baseURL || !this.config.model) {
+      throw new Error(`Provider ${this.id} is missing baseURL, model, or API key.`);
+    }
+
+    const videoBuffer = await withRetry(async () => {
+      const taskId = await this.createTask(request, apiKey);
+      const videoUrl = await this.pollTask(taskId, apiKey);
+      return this.downloadVideo(videoUrl);
+    }, 1); // retrying the whole create+poll cycle would double-bill; rely on per-shot title-card fallback instead
+
+    mkdirSync(dirname(request.outputPath), { recursive: true });
+    writeFileSync(request.outputPath, videoBuffer);
+    return { outputPath: request.outputPath };
+  }
+
+  private async createTask(request: VideoGenerationRequest, apiKey: string): Promise<string> {
+    const duration = Math.max(2, Math.min(12, Math.round(request.durationSeconds)));
+    const body: Record<string, unknown> = {
+      model: this.config.model,
+      content: [{ type: "text", text: request.prompt }],
+      duration,
+      ...(request.aspectRatio ? { ratio: request.aspectRatio } : {}),
+      ...(this.config.extraBody ?? {})
+    };
+
+    const response = await fetchWithTimeout(
+      `${this.config.baseURL}/contents/generations/tasks`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          Authorization: `Bearer ${apiKey}`
+        },
+        body: JSON.stringify(body)
+      },
+      VIDEO_REQUEST_TIMEOUT_MS
+    );
+
+    if (!response.ok) {
+      const detail = await safeReadErrorBody(response);
+      throw new Error(
+        `Provider ${this.id} video task creation failed with HTTP ${response.status}${detail ? `: ${detail}` : ""}`
+      );
+    }
+
+    const payload = (await response.json()) as { id?: string };
+    if (!payload.id) {
+      throw new Error(`Provider ${this.id} video task creation returned no task id.`);
+    }
+    return payload.id;
+  }
+
+  private async pollTask(taskId: string, apiKey: string): Promise<string> {
+    const deadline = Date.now() + VIDEO_POLL_TIMEOUT_MS;
+    const headers = { Authorization: `Bearer ${apiKey}` };
+
+    while (Date.now() < deadline) {
+      const response = await fetchWithTimeout(
+        `${this.config.baseURL}/contents/generations/tasks/${taskId}`,
+        { headers },
+        VIDEO_REQUEST_TIMEOUT_MS
+      );
+      if (!response.ok) {
+        const detail = await safeReadErrorBody(response);
+        throw new Error(
+          `Provider ${this.id} video task poll failed with HTTP ${response.status}${detail ? `: ${detail}` : ""}`
+        );
+      }
+
+      const payload = (await response.json()) as {
+        status?: string;
+        content?: { video_url?: string; url?: string };
+        error?: { code?: string; message?: string };
+      };
+      const status = (payload.status ?? "").toLowerCase();
+
+      if (status === "succeeded" || status === "success") {
+        const videoUrl = payload.content?.video_url ?? payload.content?.url;
+        if (!videoUrl) {
+          throw new Error(`Provider ${this.id} video task succeeded but returned no video URL.`);
+        }
+        return videoUrl;
+      }
+      if (status === "failed" || status === "cancelled" || status === "canceled" || status === "expired") {
+        const reason = payload.error?.message ?? payload.error?.code ?? "unknown reason";
+        throw new Error(`Provider ${this.id} video task ${status}: ${reason}`);
+      }
+      // queued / running / anything else non-terminal: keep polling
+      await new Promise((resolve) => setTimeout(resolve, VIDEO_POLL_INTERVAL_MS));
+    }
+
+    throw new Error(`Provider ${this.id} video task ${taskId} timed out after ${VIDEO_POLL_TIMEOUT_MS}ms.`);
+  }
+
+  private async downloadVideo(url: string): Promise<Buffer> {
+    const parsed = new URL(url);
+    if (parsed.protocol !== "https:") {
+      throw new Error(`Video download must use HTTPS to avoid tampered payloads, got: ${parsed.protocol}`);
+    }
+    if (this.config.allowCustomBaseURL !== true && !isTrustedImageHost(parsed.hostname)) {
+      throw new Error(
+        `Video download host ${parsed.hostname} is not trusted. Set allowCustomBaseURL=true on the provider only if you explicitly trust its responses.`
+      );
+    }
+
+    const response = await fetchWithTimeout(url, {}, VIDEO_DOWNLOAD_TIMEOUT_MS);
+    if (!response.ok) {
+      throw new Error(`Video download failed with HTTP ${response.status}`);
+    }
+    const contentLength = Number(response.headers.get("content-length") ?? "0");
+    if (contentLength > MAX_VIDEO_DOWNLOAD_BYTES) {
+      throw new Error(`Video download exceeds ${MAX_VIDEO_DOWNLOAD_BYTES} bytes.`);
+    }
+    const buffer = Buffer.from(await response.arrayBuffer());
+    if (buffer.length === 0) {
+      throw new Error("Video download returned an empty body.");
+    }
+    if (buffer.length > MAX_VIDEO_DOWNLOAD_BYTES) {
+      throw new Error(`Video download exceeds ${MAX_VIDEO_DOWNLOAD_BYTES} bytes.`);
+    }
+    return buffer;
+  }
+
+  private getApiKey(): string | undefined {
+    return this.config.apiKeyEnv ? process.env[this.config.apiKeyEnv] : undefined;
   }
 }
 
@@ -291,7 +671,9 @@ const speechProviderRegistry = new Map<string, ProviderFactory<SpeechProvider>>(
 textProviderRegistry.set("local-rule-text", () => new LocalRuleTextProvider());
 textProviderRegistry.set("openai-compatible", (id, cfg) => new OpenAICompatibleTextProvider(id, cfg));
 imageProviderRegistry.set("noop-image", (id) => new NoopImageProvider(id));
+imageProviderRegistry.set("openai-compatible-image", (id, cfg) => new OpenAICompatibleImageProvider(id, cfg));
 videoProviderRegistry.set("noop-video", (id) => new NoopVideoProvider(id));
+videoProviderRegistry.set("ark-seedance-video", (id, cfg) => new ArkSeedanceVideoProvider(id, cfg));
 speechProviderRegistry.set("local-say", (id) => new LocalSpeechProvider(id));
 
 export function registerTextProvider(type: string, factory: ProviderFactory<TextModelProvider>): void {
@@ -404,5 +786,28 @@ function assertSafeBaseURL(config: ProviderConfig): void {
     throw new Error(
       `Provider baseURL ${parsed.origin} is not in the trusted host list. Set allowCustomBaseURL=true only if you explicitly trust this endpoint.`
     );
+  }
+}
+
+function isTrustedImageHost(hostname: string): boolean {
+  if (TRUSTED_IMAGE_DOWNLOAD_HOSTS.includes(hostname)) {
+    return true;
+  }
+  return TRUSTED_IMAGE_DOWNLOAD_SUFFIXES.some(
+    (suffix) => hostname === suffix.slice(1) || hostname.endsWith(suffix)
+  );
+}
+
+async function safeReadErrorBody(response: Response): Promise<string> {
+  try {
+    const text = await response.text();
+    const trimmed = text.trim();
+    if (!trimmed) {
+      return "";
+    }
+    // Keep error messages bounded; provider bodies are untrusted and can be large.
+    return trimmed.length > 300 ? `${trimmed.slice(0, 300)}…` : trimmed;
+  } catch {
+    return "";
   }
 }

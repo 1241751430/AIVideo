@@ -117,6 +117,20 @@ providers:
     model: doubao-seedance-1-0-pro-250528
     description: 火山引擎 Ark Seedance 视频模型（异步任务）
 
+  # 火山引擎语音合成：需在「语音技术」控制台单独开通，appid/access token 与 Ark 密钥不通用。
+  # 开通后把下方 volcengine profile 的 speech 改为 volcengine-speech 即可启用；未配置密钥时保持 local-say 本地配音。
+  volcengine-speech:
+    type: ark-tts-speech
+    capability: speech
+    vendor: volcengine
+    enabled: true
+    baseURL: https://openspeech.bytedance.com/api/v1/tts
+    appIdEnv: ARK_TTS_APP_ID
+    apiKeyEnv: ARK_TTS_ACCESS_KEY
+    modelEnv: ARK_TTS_VOICE
+    model: zh_female_qingxin
+    description: 火山引擎语音合成（语音技术控制台 appid + access token）
+
 profiles:
   default:
     text: local-rule-text

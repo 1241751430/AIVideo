@@ -137,6 +137,18 @@ const DEFAULT_CONFIG: AppConfig = {
       modelEnv: "ARK_VIDEO_MODEL",
       model: "doubao-seedance-1-0-pro-250528",
       description: "火山引擎 Ark Seedance 视频模型（异步任务）"
+    },
+    "volcengine-speech": {
+      type: "ark-tts-speech",
+      capability: "speech",
+      vendor: "volcengine",
+      enabled: true,
+      baseURL: "https://openspeech.bytedance.com/api/v1/tts",
+      appIdEnv: "ARK_TTS_APP_ID",
+      apiKeyEnv: "ARK_TTS_ACCESS_KEY",
+      modelEnv: "ARK_TTS_VOICE",
+      model: "zh_female_qingxin",
+      description: "火山引擎语音合成（需在语音技术控制台单独开通，使用 appid + access token）"
     }
   },
   profiles: {
@@ -332,7 +344,7 @@ export function validateConfig(config: AppConfig): string[] {
   }
 
   for (const [id, provider] of Object.entries(config.providers)) {
-    if (provider.type === "openai-compatible" || provider.type === "openai-compatible-image" || provider.type === "ark-seedance-video") {
+    if (provider.type === "openai-compatible" || provider.type === "openai-compatible-image" || provider.type === "ark-seedance-video" || provider.type === "ark-tts-speech") {
       if (!provider.baseURL) {
         warnings.push(`Provider "${id}" (${provider.type}) is missing baseURL.`);
       }
@@ -363,4 +375,9 @@ ARK_API_KEY=
 ARK_MODEL=doubao-seed-2-0-pro-260215
 ARK_IMAGE_MODEL=doubao-seedream-4-0-250828
 ARK_VIDEO_MODEL=doubao-seedance-1-0-pro-250528
+
+# 火山引擎 语音合成（语音技术控制台，与 Ark 密钥不通用）
+ARK_TTS_APP_ID=
+ARK_TTS_ACCESS_KEY=
+ARK_TTS_VOICE=zh_female_qingxin
 `;

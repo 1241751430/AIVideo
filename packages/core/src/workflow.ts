@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, join, resolve, sep } from "node:path";
 import { randomUUID } from "node:crypto";
 import {
@@ -141,6 +141,41 @@ export function materializeProject(projectDir: string, artifacts: ProjectArtifac
 const ASSET_PREP_CONCURRENCY = 3;
 
 /**
+ * The subset of project artifacts the asset-preparation phase consumes. Kept
+ * as a Pick so a resumed run can rebuild it from the project's on-disk JSON
+ * files without regenerating the (paid) script or needing the skill object.
+ */
+export type AssetArtifacts = Pick<ProjectArtifacts, "brief" | "storyboard" | "renderManifest">;
+
+/**
+ * Rebuild asset-prep artifacts from a materialized project directory. Returns
+ * null when any required file is missing or unparsable — the caller should
+ * treat that as "this directory is not a resumable project" rather than
+ * silently generating against a half-known state.
+ */
+export function loadAssetArtifacts(projectDir: string): AssetArtifacts | null {
+  try {
+    const brief = JSON.parse(readFileSync(join(projectDir, "brief.json"), "utf8")) as BriefDocument;
+    const storyboard = JSON.parse(readFileSync(join(projectDir, "storyboard.json"), "utf8")) as Storyboard;
+    const renderManifest = JSON.parse(
+      readFileSync(join(projectDir, "render-manifest.json"), "utf8")
+    ) as RenderManifest;
+    if (
+      !brief ||
+      !Array.isArray(storyboard?.shots) ||
+      storyboard.shots.length === 0 ||
+      !Array.isArray(renderManifest?.shots) ||
+      renderManifest.shots.length === 0
+    ) {
+      return null;
+    }
+    return { brief, storyboard, renderManifest };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * A remote provider controls the path it reports back as the generated file's
  * location. Refuse to reference anything outside the project directory so a
  * misbehaving provider cannot redirect the renderer to arbitrary local files.
@@ -157,25 +192,61 @@ export interface AssetPrepResult {
   attempted: number;
   succeeded: number;
   failed: number;
+  /** Shots whose paid asset was already present in the project dir from a previous run. */
+  reused: number;
   videoSucceeded: number;
   imageSucceeded: number;
 }
 
 /**
- * Generate the scene assets promised by the storyboard (`assetSource:
- * "generated_image"`) and upgrade matching render-manifest shots from
- * "generated-card". When the selected video provider is remote, each shot gets
- * a real motion clip ("video"); otherwise a remote image provider produces
- * scene images ("image"). Failures degrade gracefully: a failed video falls
- * back to the image flow when available, and the shot keeps its title-card
- * fallback so rendering always has something to use.
+ * True when `filePath` names a regular file with non-empty content. A crashed
+ * run can truncate an asset to 0 bytes, and a directory can never be a usable
+ * media file — neither counts.
+ */
+function nonEmptyFileExists(filePath: string): boolean {
+  if (!existsSync(filePath)) {
+    return false;
+  }
+  try {
+    return statSync(filePath).isFile() && statSync(filePath).size > 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * True when `filePath` points at a regular file inside `projectDir` with
+ * non-empty content. Used to detect assets produced by an earlier run so a
+ * resume pass can skip the paid API call. The resolved-path check makes this
+ * safe against a shot id smuggling a traversal outside the project.
+ */
+function reusableAssetExists(projectDir: string, filePath: string): boolean {
+  if (!nonEmptyFileExists(filePath)) {
+    return false;
+  }
+  const root = resolve(projectDir);
+  const target = resolve(filePath);
+  return target !== root && target.startsWith(root + sep);
+}
+
+/**
+ * Generate the scene assets promised by the storyboard. Shots with
+ * `assetSource: "generated_image"` get a paid asset: when the selected video
+ * provider is remote, each shot becomes a real motion clip ("video");
+ * otherwise a remote image provider produces scene images ("image"). Shots
+ * with `assetSource: "reference_image"` keep their user image as the manifest
+ * asset — and when a remote video provider exists, it animates that image
+ * (image-to-video) instead of spending a second call on a fresh scene image.
+ * Failures degrade gracefully: a failed video falls back to the image flow
+ * when available and then to the manifest's existing asset (scene image or
+ * user reference image), or a title card if neither exists.
  *
  * No-ops when both the video and image providers are local/noop — those never
  * create real files, and the manifest must keep pointing at title cards.
  */
 export async function prepareGeneratedAssets(input: {
   projectDir: string;
-  artifacts: ProjectArtifacts;
+  artifacts: AssetArtifacts;
   providers: ProviderSelection;
 }): Promise<AssetPrepResult> {
   const { projectDir, artifacts, providers } = input;
@@ -183,6 +254,7 @@ export async function prepareGeneratedAssets(input: {
     attempted: 0,
     succeeded: 0,
     failed: 0,
+    reused: 0,
     videoSucceeded: 0,
     imageSucceeded: 0
   };
@@ -195,7 +267,9 @@ export async function prepareGeneratedAssets(input: {
   }
 
   const generatedShots = artifacts.storyboard.shots.filter(
-    (shot) => shot.assetSource === "generated_image"
+    (shot) =>
+      shot.assetSource === "generated_image" ||
+      (shot.assetSource === "reference_image" && useVideo)
   );
   if (generatedShots.length === 0) {
     return result;
@@ -206,8 +280,41 @@ export async function prepareGeneratedAssets(input: {
   );
   const size = ASPECT_SIZES[artifacts.brief.aspectRatio] ?? { width: 1080, height: 1920 };
 
+  // Each user image is pinned to the shot at its own index (see buildStoryboard)
+  // — the same mapping buildRenderManifest records per-shot. Provenance is
+  // pinned to the brief, never to the manifest, so a tampered manifest cannot
+  // smuggle an arbitrary local file into a provider upload.
+  const inputImages = artifacts.brief.inputImages ?? [];
+  const shotIndexById = new Map(
+    artifacts.storyboard.shots.map((shot, index) => [shot.id, index])
+  );
+
   type PendingShot = (typeof generatedShots)[number];
   type ManifestShot = (typeof artifacts.renderManifest.shots)[number];
+
+  /**
+   * The image a shot's video should start from, or undefined for a plain
+   * text-to-video call. Reference shots animate the user's own image; a
+   * generated shot whose scene image already exists in the project (paid for
+   * by an earlier run whose video failed) animates from that image instead of
+   * being regenerated blind.
+   */
+  function firstFrameFor(shot: PendingShot, manifestShot: ManifestShot): string[] | undefined {
+    if (shot.assetSource === "reference_image") {
+      const index = shotIndexById.get(shot.id);
+      if (index === undefined || index >= inputImages.length) {
+        return undefined;
+      }
+      const candidate = inputImages[index]!;
+      return nonEmptyFileExists(candidate) ? [candidate] : undefined;
+    }
+    if (manifestShot.assetKind === "image" && manifestShot.assetPath) {
+      const sceneImage = resolve(projectDir, manifestShot.assetPath);
+      return reusableAssetExists(projectDir, sceneImage) ? [sceneImage] : undefined;
+    }
+    return undefined;
+  }
+
   const queue: PendingShot[] = [...generatedShots];
   result.attempted = queue.length;
 
@@ -217,12 +324,32 @@ export async function prepareGeneratedAssets(input: {
     }
     const relativePath = `assets/${shot.id}.mp4`;
     const outputPath = join(projectDir, relativePath);
+    // Resume support: if an earlier run already produced this shot's video —
+    // either at the conventional path or the provider-returned path still
+    // recorded in the manifest — reuse it instead of paying for a duplicate
+    // generation. Only files inside the project dir are ever trusted.
+    if (reusableAssetExists(projectDir, outputPath)) {
+      manifestShot.assetKind = "video";
+      manifestShot.assetPath = relativePath;
+      result.reused += 1;
+      result.succeeded += 1;
+      return true;
+    }
+    if (manifestShot.assetKind === "video" && manifestShot.assetPath) {
+      const recorded = resolve(projectDir, manifestShot.assetPath);
+      if (reusableAssetExists(projectDir, recorded)) {
+        result.reused += 1;
+        result.succeeded += 1;
+        return true;
+      }
+    }
     try {
       const generated = await videoProvider.generateVideo({
         prompt: shot.visualPrompt,
         durationSeconds: shot.durationSeconds,
         outputPath,
-        aspectRatio: artifacts.brief.aspectRatio
+        aspectRatio: artifacts.brief.aspectRatio,
+        referenceImagePaths: firstFrameFor(shot, manifestShot)
       });
       const finalPath = generated.outputPath || outputPath;
       if (!existsSync(finalPath)) {
@@ -235,10 +362,23 @@ export async function prepareGeneratedAssets(input: {
       result.videoSucceeded += 1;
       return true;
     } catch (error) {
-      const fallback = useImage ? "scene image" : "title card";
+      // A reference shot that fails to animate still has its user image in
+      // the manifest — a complete asset that cost nothing. Keep it instead of
+      // spending a paid image call to replace a free user-supplied picture.
+      const keepsImage =
+        shot.assetSource === "reference_image" &&
+        manifestShot.assetKind === "image" &&
+        Boolean(manifestShot.assetPath) &&
+        nonEmptyFileExists(resolve(projectDir, manifestShot.assetPath!));
+      const fallback = keepsImage ? "the reference image" : useImage ? "scene image" : "title card";
       console.warn(
         `Video generation failed for shot ${shot.id}, falling back to ${fallback}: ${(error as Error).message}`
       );
+      if (keepsImage) {
+        result.succeeded += 1;
+        result.reused += 1;
+        return true;
+      }
       return false;
     }
   }
@@ -249,6 +389,23 @@ export async function prepareGeneratedAssets(input: {
     }
     const relativePath = `assets/${shot.id}.png`;
     const outputPath = join(projectDir, relativePath);
+    // Same resume logic as the video branch: reuse a previously generated
+    // scene image when the file is already present inside the project dir.
+    if (reusableAssetExists(projectDir, outputPath)) {
+      manifestShot.assetKind = "image";
+      manifestShot.assetPath = relativePath;
+      result.reused += 1;
+      result.succeeded += 1;
+      return true;
+    }
+    if (manifestShot.assetKind === "image" && manifestShot.assetPath) {
+      const recorded = resolve(projectDir, manifestShot.assetPath);
+      if (reusableAssetExists(projectDir, recorded)) {
+        result.reused += 1;
+        result.succeeded += 1;
+        return true;
+      }
+    }
     try {
       const generated = await imageProvider.generateImage({
         prompt: shot.visualPrompt,
@@ -526,8 +683,11 @@ function buildStoryboard(request: GenerateRequest, script: ScriptPackage): Story
     shotType: scene.shotType,
     durationSeconds: scene.durationSeconds,
     transition: index === 0 ? "cut" : "fade",
+    // Per-shot mixing: each user image is spent on exactly one shot (shot i
+    // takes images[i]); once they run out, later shots fall back to generated
+    // assets. Reusing one photo across the whole video reads as a slideshow.
     assetSource:
-      request.images && request.images.length > 0
+      request.images && index < request.images.length
         ? "reference_image"
         : request.mode === "video"
           ? "generated_image"
@@ -562,7 +722,11 @@ function buildRenderManifest(input: {
 }): RenderManifest {
   const size = ASPECT_SIZES[input.request.aspectRatio]!;
   const shots = input.storyboard.shots.map((shot, index) => {
-    const referencedImage = input.images[index % Math.max(input.images.length, 1)];
+    // Mirror buildStoryboard's per-shot rule: a reference shot consumes the
+    // image at its own index (reference shots are exactly the first N shots);
+    // every other shot starts as a title card and gets a generated asset.
+    const referencedImage =
+      shot.assetSource === "reference_image" ? input.images[index] : undefined;
     const hasReference = Boolean(referencedImage);
     return {
       shotId: shot.id,

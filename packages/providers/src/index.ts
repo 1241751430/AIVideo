@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { dirname, extname } from "node:path";
 import {
   AppConfig,
   ImageGenerationRequest,
@@ -27,12 +27,15 @@ const VIDEO_POLL_INTERVAL_MS = 5_000;
 const VIDEO_POLL_TIMEOUT_MS = 10 * 60_000;
 const VIDEO_DOWNLOAD_TIMEOUT_MS = 180_000;
 const MAX_VIDEO_DOWNLOAD_BYTES = 200 * 1024 * 1024;
+const SPEECH_REQUEST_TIMEOUT_MS = 30_000;
+const MAX_SPEECH_BYTES = 20 * 1024 * 1024;
 const RETRY_ATTEMPTS = 3;
 const RETRY_BASE_MS = 1000;
 const SAFE_PROVIDER_HOSTS = [
   "api.openai.com",
   "dashscope.aliyuncs.com",
-  "ark.cn-beijing.volces.com"
+  "ark.cn-beijing.volces.com",
+  "openspeech.bytedance.com"
 ];
 // Hosts allowed to serve generated image payloads returned by provider APIs.
 const TRUSTED_IMAGE_DOWNLOAD_HOSTS = ["files.oaiusercontent.com"];
@@ -290,7 +293,10 @@ class OpenAICompatibleImageProvider implements ImageModelProvider {
     }
 
     const size = this.resolveSize(request);
-    const imageBuffer = await withRetry(async () => {
+    // The retry budget stays scoped to the billed generation call itself.
+    // Payload-shape problems and download guards are deterministic, so they are
+    // resolved outside withRetry — retrying them would re-bill the same failure.
+    const item = await withRetry(async () => {
       const response = await fetchWithTimeout(
         `${this.config.baseURL}/images/generations`,
         {
@@ -319,22 +325,23 @@ class OpenAICompatibleImageProvider implements ImageModelProvider {
       const payload = (await response.json()) as {
         data?: Array<{ url?: string; b64_json?: string }>;
       };
-      const item = payload.data?.[0];
-      if (!item) {
-        throw new Error(`Provider ${this.id} returned an empty image response.`);
-      }
-      if (item.b64_json) {
-        const buffer = Buffer.from(item.b64_json, "base64");
-        if (buffer.length === 0) {
-          throw new Error(`Provider ${this.id} returned an empty base64 image payload.`);
-        }
-        return buffer;
-      }
-      if (item.url) {
-        return this.downloadImage(item.url);
-      }
-      throw new Error(`Provider ${this.id} returned neither an image URL nor a base64 payload.`);
+      return payload.data?.[0];
     });
+
+    if (!item) {
+      throw new Error(`Provider ${this.id} returned an empty image response.`);
+    }
+    let imageBuffer: Buffer;
+    if (item.b64_json) {
+      imageBuffer = Buffer.from(item.b64_json, "base64");
+      if (imageBuffer.length === 0) {
+        throw new Error(`Provider ${this.id} returned an empty base64 image payload.`);
+      }
+    } else if (item.url) {
+      imageBuffer = await this.downloadImage(item.url);
+    } else {
+      throw new Error(`Provider ${this.id} returned neither an image URL nor a base64 payload.`);
+    }
 
     mkdirSync(dirname(request.outputPath), { recursive: true });
     writeFileSync(request.outputPath, imageBuffer);
@@ -492,9 +499,21 @@ class ArkSeedanceVideoProvider implements VideoModelProvider {
 
   private async createTask(request: VideoGenerationRequest, apiKey: string): Promise<string> {
     const duration = Math.max(2, Math.min(12, Math.round(request.durationSeconds)));
+    const content: Array<Record<string, unknown>> = [{ type: "text", text: request.prompt }];
+    // Image-to-video: Seedance accepts a first-frame image and animates from
+    // it, which keeps the clip visually consistent with the shot's scene
+    // image. Only the first reference is used (Seedance takes one frame).
+    const reference = request.referenceImagePaths?.[0];
+    if (reference) {
+      content.unshift({
+        type: "image_url",
+        image_url: { url: imageToDataURI(reference) },
+        role: "first_frame"
+      });
+    }
     const body: Record<string, unknown> = {
       model: this.config.model,
-      content: [{ type: "text", text: request.prompt }],
+      content,
       duration,
       ...(request.aspectRatio ? { ratio: request.aspectRatio } : {}),
       ...(this.config.extraBody ?? {})
@@ -650,7 +669,15 @@ class LocalSpeechProvider implements SpeechProvider {
     const engine = await this.detectEngine();
     if (engine === "say") {
       const voice = request.voice ?? "Tingting";
-      await execFileAsync("say", ["-v", voice, "-o", request.outputPath, request.text]);
+      // macOS say refuses to write a .wav container with its default AIFF
+      // encoding ("Opening output file failed: fmt?"); the sample format must
+      // be stated explicitly for the extension we store narration under.
+      const args = ["-v", voice];
+      if (request.outputPath.toLowerCase().endsWith(".wav")) {
+        args.push("--data-format=LEI16@22050");
+      }
+      args.push("-o", request.outputPath, request.text);
+      await execFileAsync("say", args);
     } else if (engine === "espeak-ng") {
       const voice = request.voice ?? "zh";
       await execFileAsync("espeak-ng", ["-v", voice, "-w", request.outputPath, request.text]);
@@ -659,6 +686,165 @@ class LocalSpeechProvider implements SpeechProvider {
     }
     return { outputPath: request.outputPath };
   }
+}
+
+/**
+ * Volcengine (语音技术) text-to-speech via the openspeech JSON API.
+ *
+ * Auth uses a separate appid + access token from the 语音技术 console — it is
+ * NOT the Ark API key. Vendor tuning (sample rate, speed, silence expansion)
+ * is config-driven: `extraBody` is merged into the `audio` section so new
+ * parameters do not require a code change. `model` carries the default voice
+ * (voice_type), which `request.voice` overrides.
+ */
+class ArkTTSSpeechProvider implements SpeechProvider {
+  readonly capability = "speech" as const;
+  readonly isRemote = true;
+
+  constructor(
+    readonly id: string,
+    private readonly config: ProviderConfig
+  ) {}
+
+  async test(options?: { live?: boolean }): Promise<ProviderHealth> {
+    assertSafeBaseURL(this.config);
+    const missing = this.getMissingCredentials();
+    if (missing.length > 0) {
+      return {
+        providerId: this.id,
+        capability: this.capability,
+        ok: false,
+        message: `Missing speech credential env: ${missing.join(", ")} (generation falls back to the local engine).`,
+        liveChecked: false
+      };
+    }
+
+    // The speech API has no free health endpoint and every synthesis is
+    // billed, so even --live stops at configuration checks.
+    return {
+      providerId: this.id,
+      capability: this.capability,
+      ok: true,
+      message: "Configured and ready for remote speech synthesis.",
+      liveChecked: false
+    };
+  }
+
+  async synthesizeSpeech(request: SpeechGenerationRequest): Promise<{ outputPath: string }> {
+    assertSafeBaseURL(this.config);
+    // Without the speech-console credentials there is nothing to bill: degrade
+    // to the local engine so narration stays audible instead of silent.
+    if (this.getMissingCredentials().length > 0) {
+      return new LocalSpeechProvider(this.id).synthesizeSpeech(request);
+    }
+    if (!this.config.baseURL || !this.config.model) {
+      throw new Error(`Provider ${this.id} is missing baseURL or model (voice).`);
+    }
+
+    const audioBuffer = await withRetry(() => this.synthesize(request), 1); // no retry: each call is billed; the shot degrades to silent narration instead
+    mkdirSync(dirname(request.outputPath), { recursive: true });
+    writeFileSync(request.outputPath, audioBuffer);
+    return { outputPath: request.outputPath };
+  }
+
+  private async synthesize(request: SpeechGenerationRequest): Promise<Buffer> {
+    const appId = this.getAppId();
+    const accessToken = this.getAccessToken();
+    const requestId = `${this.id}-${Date.now()}`;
+    const body = {
+      app: {
+        appid: appId,
+        token: accessToken,
+        ...(typeof this.config.extraBody?.cluster === "string" ? { cluster: this.config.extraBody.cluster } : {})
+      },
+      user: { uid: "aivideo-cli" },
+      audio: {
+        voice_type: request.voice ?? this.config.model,
+        encoding: "wav",
+        sample_rate: 24000,
+        ...(typeof this.config.extraBody === "object" && this.config.extraBody !== null ? stripCluster(this.config.extraBody) : {})
+      },
+      request_id: requestId,
+      text: request.text
+    };
+
+    const response = await fetchWithTimeout(
+      this.config.baseURL!,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          // The speech API expects "Bearer; <token>" — the semicolon is literal.
+          Authorization: `Bearer; ${accessToken}`,
+          "X-Api-App-Key": appId ?? "",
+          "X-Api-Access-Key": accessToken ?? "",
+          "X-Api-Request-Id": requestId
+        },
+        body: JSON.stringify(body)
+      },
+      SPEECH_REQUEST_TIMEOUT_MS
+    );
+
+    if (!response.ok) {
+      const detail = await safeReadErrorBody(response);
+      throw new Error(
+        `Provider ${this.id} speech request failed with HTTP ${response.status}${detail ? `: ${detail}` : ""}`
+      );
+    }
+
+    const payload = (await response.json()) as {
+      code?: number | string;
+      message?: string;
+      audio?: string;
+      data?: string;
+    };
+    // The v1 API signals success with code 3004; treat any other numeric code
+    // as a failure so a silent error envelope never becomes empty narration.
+    const code = Number(payload.code);
+    if (Number.isFinite(code) && code !== 3004 && code !== 0) {
+      throw new Error(
+        `Provider ${this.id} speech synthesis failed: code ${payload.code}${payload.message ? ` (${payload.message})` : ""}`
+      );
+    }
+
+    const base64Audio = payload.audio ?? payload.data;
+    if (!base64Audio) {
+      throw new Error(`Provider ${this.id} speech response contained no audio payload.`);
+    }
+    const audioBuffer = Buffer.from(base64Audio, "base64");
+    if (audioBuffer.length === 0) {
+      throw new Error(`Provider ${this.id} speech response decoded to an empty payload.`);
+    }
+    if (audioBuffer.length > MAX_SPEECH_BYTES) {
+      throw new Error(`Speech audio exceeds ${MAX_SPEECH_BYTES} bytes.`);
+    }
+    return audioBuffer;
+  }
+
+  private getAppId(): string | undefined {
+    return this.config.appIdEnv ? process.env[this.config.appIdEnv] : undefined;
+  }
+
+  private getAccessToken(): string | undefined {
+    return this.config.apiKeyEnv ? process.env[this.config.apiKeyEnv] : undefined;
+  }
+
+  private getMissingCredentials(): string[] {
+    const missing: string[] = [];
+    if (!this.config.appIdEnv || !process.env[this.config.appIdEnv]) {
+      missing.push(this.config.appIdEnv ?? "appIdEnv (not configured)");
+    }
+    if (!this.config.apiKeyEnv || !process.env[this.config.apiKeyEnv]) {
+      missing.push(this.config.apiKeyEnv ?? "apiKeyEnv (not configured)");
+    }
+    return missing;
+  }
+}
+
+// `cluster` belongs to the `app` section; keep it out of the `audio` merge.
+function stripCluster(extraBody: Record<string, unknown>): Record<string, unknown> {
+  const { cluster: _cluster, ...rest } = extraBody;
+  return rest;
 }
 
 type ProviderFactory<T> = (id: string, config: ProviderConfig) => T;
@@ -675,6 +861,7 @@ imageProviderRegistry.set("openai-compatible-image", (id, cfg) => new OpenAIComp
 videoProviderRegistry.set("noop-video", (id) => new NoopVideoProvider(id));
 videoProviderRegistry.set("ark-seedance-video", (id, cfg) => new ArkSeedanceVideoProvider(id, cfg));
 speechProviderRegistry.set("local-say", (id) => new LocalSpeechProvider(id));
+speechProviderRegistry.set("ark-tts-speech", (id, cfg) => new ArkTTSSpeechProvider(id, cfg));
 
 export function registerTextProvider(type: string, factory: ProviderFactory<TextModelProvider>): void {
   textProviderRegistry.set(type, factory);
@@ -810,4 +997,39 @@ async function safeReadErrorBody(response: Response): Promise<string> {
   } catch {
     return "";
   }
+}
+
+// Reference images sent to video models as base64 data URIs. Ark accepts
+// roughly this size, and larger payloads are rejected by the API — fail early
+// with a clear local error instead of a billed 4xx.
+const MAX_REFERENCE_IMAGE_BYTES = 10 * 1024 * 1024;
+const REFERENCE_IMAGE_MIME: Record<string, string> = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".webp": "image/webp"
+};
+
+function imageToDataURI(filePath: string): string {
+  if (!existsSync(filePath)) {
+    throw new Error(`Reference image not found: ${filePath}`);
+  }
+  const stat = statSync(filePath);
+  if (!stat.isFile()) {
+    throw new Error(`Reference image is not a regular file: ${filePath}`);
+  }
+  if (stat.size === 0) {
+    throw new Error(`Reference image is empty: ${filePath}`);
+  }
+  if (stat.size > MAX_REFERENCE_IMAGE_BYTES) {
+    throw new Error(`Reference image exceeds ${MAX_REFERENCE_IMAGE_BYTES} bytes: ${filePath}`);
+  }
+  const mime = REFERENCE_IMAGE_MIME[extname(filePath).toLowerCase()];
+  if (!mime) {
+    throw new Error(
+      `Unsupported reference image format: ${filePath} (use png, jpg, jpeg or webp)`
+    );
+  }
+  const buffer = readFileSync(filePath);
+  return `data:${mime};base64,${buffer.toString("base64")}`;
 }

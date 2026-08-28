@@ -117,6 +117,8 @@ export interface ProviderConfig {
   baseURL?: string;
   allowCustomBaseURL?: boolean;
   apiKeyEnv?: string;
+  /** Secondary credential env (e.g. Volcengine speech console appid). */
+  appIdEnv?: string;
   modelEnv?: string;
   model?: string;
   description?: string;
@@ -188,6 +190,13 @@ export interface VideoGenerationRequest {
   durationSeconds: number;
   outputPath: string;
   aspectRatio?: string;
+  /**
+   * Local image files to condition the generation on (image-to-video).
+   * Providers that support a first-frame input use the first entry;
+   * providers that don't ignore the field. Callers must only pass files they
+   * trust to be uploaded (project assets or user-supplied reference images).
+   */
+  referenceImagePaths?: string[];
 }
 
 export interface VideoModelProvider {

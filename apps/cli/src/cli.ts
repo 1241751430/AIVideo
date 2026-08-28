@@ -5,6 +5,7 @@ import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { stdin as input, stdout as output } from "node:process";
 import { pathToFileURL } from "node:url";
 import {
+  AssetArtifacts,
   BUILTIN_SKILLS,
   CONFIG_FILE,
   GenerateRequest,
@@ -15,6 +16,7 @@ import {
   generateArtifacts,
   getConfigTemplate,
   getEnvTemplate,
+  loadAssetArtifacts,
   loadConfig,
   loadDotEnv,
   materializeProject,
@@ -184,11 +186,43 @@ async function runGenerate(cwd: string, options: Record<string, string | boolean
   for (const warning of validateConfig(config)) {
     console.warn(`[config] ${warning}`);
   }
+  const providers = createProviderSelection(config, getStringOption(options, "provider-profile"));
+
+  // Resume mode: --project points at an existing materialized project. The
+  // storyboard/manifest on disk are reused verbatim (shot ids must stay stable
+  // for the asset reuse below to hit), and only missing assets, narration, and
+  // the render are (re)produced.
+  const resumeProject = getStringOption(options, "project");
+  if (resumeProject) {
+    if (getBooleanOption(options, "dry-run")) {
+      throw new Error("--project cannot be combined with --dry-run: the artifacts already exist on disk.");
+    }
+    const projectDir = resolveResumeProjectDir(cwd, config, resumeProject);
+    const artifacts = loadAssetArtifacts(projectDir);
+    if (!artifacts) {
+      throw new Error(
+        `Cannot resume ${projectDir}: storyboard.json and render-manifest.json must exist and be valid.`
+      );
+    }
+    const request = buildGenerateRequest(config, cwd, options);
+    if (request.mode !== "video") {
+      throw new Error(`Resuming --project requires --mode video (got "${request.mode}").`);
+    }
+    // Resume never rewrites the artifact JSONs; just make sure the worker
+    // directories exist so providers/narration can write into them.
+    for (const child of ["assets", "audio", "captions", "output"]) {
+      mkdirSync(join(projectDir, child), { recursive: true });
+    }
+    console.log(`Resuming project: ${projectDir}`);
+    await ensureRenderEnvironmentReady();
+    await runVideoPhase(projectDir, artifacts, providers, options, cwd, config, request);
+    return;
+  }
+
   const request = buildGenerateRequest(config, cwd, options);
   if (request.mode === "video" && !getBooleanOption(options, "dry-run")) {
     await ensureRenderEnvironmentReady();
   }
-  const providers = createProviderSelection(config, getStringOption(options, "provider-profile"));
   console.log("Generating script and storyboard...");
   const skill = await selectSkill(request, providers);
   const artifacts = await generateArtifacts({ request, providers, skill });
@@ -209,26 +243,62 @@ async function runGenerate(cwd: string, options: Record<string, string | boolean
   }
 
   if (request.mode === "video") {
-    console.log("Preparing video assets...");
-    const assetPrep = await prepareGeneratedAssets({ projectDir, artifacts, providers });
-    if (assetPrep.attempted > 0) {
-      const parts: string[] = [];
-      if (assetPrep.videoSucceeded > 0) {
-        parts.push(`${assetPrep.videoSucceeded} video(s)`);
-      }
-      if (assetPrep.imageSucceeded > 0) {
-        parts.push(`${assetPrep.imageSucceeded} image(s)`);
-      }
-      const summary = parts.length > 0 ? `Generated ${parts.join(" + ")} of ${assetPrep.attempted} scene(s)` : `Generated 0/${assetPrep.attempted} scene(s)`;
-      console.log(summary + (assetPrep.failed > 0 ? `; ${assetPrep.failed} fell back to title cards.` : "."));
-    }
-    await synthesizeNarration(projectDir, artifacts.storyboard.shots, providers.speech);
-    console.log("Starting video render. This may take a while...");
-    await runRender(cwd, { project: projectDir }, config);
-    if (request.cleanupAfterRender) {
-      cleanupRenderWorkspace(projectDir);
-    }
+    await runVideoPhase(projectDir, artifacts, providers, options, cwd, config, request);
   }
+}
+
+async function runVideoPhase(
+  projectDir: string,
+  artifacts: AssetArtifacts,
+  providers: ReturnType<typeof createProviderSelection>,
+  options: Record<string, string | boolean>,
+  cwd: string,
+  config: ReturnType<typeof loadConfig>,
+  request: GenerateRequest
+): Promise<void> {
+  console.log("Preparing video assets...");
+  const assetPrep = await prepareGeneratedAssets({ projectDir, artifacts, providers });
+  if (assetPrep.attempted > 0) {
+    const parts: string[] = [];
+    if (assetPrep.reused > 0) {
+      parts.push(`${assetPrep.reused} reused`);
+    }
+    if (assetPrep.videoSucceeded > 0) {
+      parts.push(`${assetPrep.videoSucceeded} new video(s)`);
+    }
+    if (assetPrep.imageSucceeded > 0) {
+      parts.push(`${assetPrep.imageSucceeded} new image(s)`);
+    }
+    const summary = parts.length > 0 ? `Prepared ${assetPrep.attempted} scene(s): ${parts.join(", ")}` : `Generated 0/${assetPrep.attempted} scene(s)`;
+    console.log(summary + (assetPrep.failed > 0 ? `; ${assetPrep.failed} fell back to title cards.` : "."));
+  }
+  await synthesizeNarration(projectDir, artifacts.storyboard.shots, providers.speech);
+  console.log("Starting video render. This may take a while...");
+  await runRender(cwd, { project: projectDir }, config);
+  if (request.cleanupAfterRender) {
+    cleanupRenderWorkspace(projectDir);
+  }
+}
+
+/**
+ * Resolve a --project resume target the same way `render` does: absolute paths
+ * pass through, bare ids resolve under the configured projects dir, and either
+ * way the result must stay inside that dir.
+ */
+function resolveResumeProjectDir(
+  cwd: string,
+  config: ReturnType<typeof loadConfig>,
+  projectArg: string
+): string {
+  const projectsRoot = resolve(cwd, config.defaults.projectsDir);
+  const projectDir = isAbsolute(projectArg)
+    ? projectArg
+    : resolveProjectDir(cwd, config.defaults.projectsDir, projectArg);
+  assertPathWithin(projectsRoot, projectDir, "Project directory");
+  if (!existsSync(projectDir)) {
+    throw new Error(`Project directory not found: ${projectDir}`);
+  }
+  return projectDir;
 }
 
 async function autoInit(cwd: string): Promise<void> {
@@ -517,6 +587,13 @@ async function synthesizeNarration(
     // and `espeak-ng -w x.wav` both write real WAV data, whereas espeak would
     // emit WAV bytes under a misleading .aiff name.
     const audioPath = join(projectDir, "audio", `${shot.id}.wav`);
+    // Resume support: a non-empty wav from a previous run means this shot's
+    // narration was already synthesized (local engines are free, but
+    // re-voicing overwrites a file the render may already reference — skip it).
+    if (isNonEmptyFile(audioPath)) {
+      console.log(`- Narration ${index + 1}/${shots.length}: ${shot.id} (reused existing audio)`);
+      return;
+    }
     console.log(`- Narration ${index + 1}/${shots.length}: ${shot.id}`);
     try {
       await speechProvider.synthesizeSpeech({
@@ -539,6 +616,17 @@ async function runConcurrent(tasks: Array<() => Promise<void>>, limit: number): 
     }
   }
   await Promise.all(Array.from({ length: Math.min(limit, tasks.length) }, () => worker()));
+}
+
+function isNonEmptyFile(filePath: string): boolean {
+  if (!existsSync(filePath)) {
+    return false;
+  }
+  try {
+    return statSync(filePath).isFile() && statSync(filePath).size > 0;
+  } catch {
+    return false;
+  }
 }
 
 export function parseArgs(argv: string[]): ParsedArgs {
@@ -886,6 +974,7 @@ Commands:
   aivideo providers test [--profile name] [--live]
   aivideo generate --brief "..."            Non-interactive generation
   aivideo generate --brief-file ./brief.txt
+  aivideo generate --project <id|path>      Resume an interrupted run: reuse assets already on disk, generate only what is missing, then render
   aivideo cleanup [--keep-days 7]           Remove expired projects
   aivideo render --project <id|path>        Re-render an existing project
 Advanced generate flags:

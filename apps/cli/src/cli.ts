@@ -492,6 +492,7 @@ function printHelp(): void {
 
 Quick start:
   ./aivideo create                          Interactive quick create (recommended)
+  ./aivideo serve                           Start shot-wall workbench in browser (http://127.0.0.1:8787)
   ./aivideo generate --brief "主题：夏季防晒喷雾；视频时长：30s"
 
 Commands:

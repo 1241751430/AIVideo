@@ -2,7 +2,7 @@
  * @file DeliverPanel.tsx
  * @author zhangbaohong
  * @date 2026-09-17
- * @description 交付面板：成片在线播放（Range 流式）、下载链接；产物被编辑后置为 videoStale 时展示警示与「重新渲染」CTA；script 模式给出脚本交付说明。
+ * @description 交付面板：成片在线播放（Range 流式）、下载链接；产物被编辑后置为 videoStale 时展示警示与「重新渲染」CTA；script 模式给出脚本交付说明；「打开文件夹」调用宿主文件管理器，容器降级时展示宿主路径。
  * @see https://github.com/1241751430/AIVideo.git
  */
 import { useState } from "react";
@@ -24,6 +24,7 @@ export default function DeliverPanel({
 }) {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const [folderHint, setFolderHint] = useState<string | null>(null);
   const videoReady = artifacts?.videoReady ?? false;
   const videoStale = job.result?.videoStale === true;
 
@@ -38,6 +39,18 @@ export default function DeliverPanel({
       })
       .catch((err: Error) => setMessage(err.message))
       .finally(() => setBusy(false));
+  };
+
+  const openFolder = (): void => {
+    setFolderHint(null);
+    api
+      .openFolder(job.projectId)
+      .then((res) => {
+        if (!res.ok) {
+          setFolderHint(`${res.hint ?? "未能打开文件管理器"}（路径：${res.path}）`);
+        }
+      })
+      .catch((err: Error) => setFolderHint(err.message));
   };
 
   return (
@@ -67,9 +80,13 @@ export default function DeliverPanel({
         <div className="muted">渲染完成后，成片会出现在这里（播放 / 下载）。</div>
       )}
       {message && <div className={message.startsWith("已") ? "notice" : "error-line"}>{message}</div>}
-      <div className="muted" style={{ fontSize: 12, marginTop: 8 }}>
-        项目目录：project/{job.projectId}
+      <div className="actions" style={{ marginTop: 8, alignItems: "center" }}>
+        <span className="muted" style={{ fontSize: 12 }}>
+          项目目录：project/{job.projectId}
+        </span>
+        <button onClick={openFolder}>打开文件夹</button>
       </div>
+      {folderHint && <div className="error-line" style={{ fontSize: 12 }}>{folderHint}</div>}
     </section>
   );
 }

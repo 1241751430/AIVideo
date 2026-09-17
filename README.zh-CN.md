@@ -52,6 +52,7 @@
 | 命令 | 说明 |
 |------|------|
 | `./aivideo create` | 交互式快速创建视频（推荐） |
+| `./aivideo serve` | 启动镜头墙工作台网页版（http://127.0.0.1:8787） |
 | `./aivideo generate --brief "..."` | 非交互一行生成 |
 | `./aivideo generate --brief-file ./brief.txt` | 从文件读取 brief |
 | `./aivideo skills list` | 查看内置 skills |
@@ -61,6 +62,43 @@
 | `./aivideo init` | 手动初始化配置（通常自动完成） |
 
 `create` 为终端 TUI 界面（@clack）：方向键选择、Enter 确认、Ctrl+C 取消；首个问题直接留空即进入高级逐项配置；文本步骤中可输入 `/back` 返回上一步、`/cancel` 取消向导。提交前会显示计费确认页（列出生效的模型及远程/本地计费属性）。在终端中直接运行不带输入的 `generate` 时，会弹出已有项目的续跑选择器。
+
+## 镜头墙工作台（网页版）
+
+```bash
+./aivideo serve          # 浏览器打开 http://127.0.0.1:8787
+```
+
+本机优先、无需登录的网页工作台（截图占位：`docs/screenshots/shot-wall.png`），与 CLI 共用同一条流水线：
+
+- **创建** — brief 输入框 + 内置模板卡，执行模式（全自动 / 分步确认）与产物模式（成片 / 仅脚本）
+- **流水线导航** — ①脚本 → ②计费 → ③素材 → ④旁白 → ⑤渲染，SSE 实时日志；分步确认模式在每个检查点暂停（脚本评审 / 计费确认 / 镜头墙审阅 / 旁白试听 / 成片验收）
+- **镜头墙** — 逐镜画面/视频预览、旁白试听、就地编辑标题/旁白/画面词/字幕/时长，单镜「重生成素材 / 重配音」只重做该镜
+- **交付** — 成片在线播放（HTTP Range）、下载、**打开文件夹**（按平台拉起 Finder/资源管理器/xdg-open）
+- **断点续跑** — 服务重启自动重新排队中断任务，磁盘产物即唯一真相源
+
+说明：
+
+- 服务默认仅监听 `127.0.0.1` 且**无任何鉴权**，定位本机/自用，请勿直接暴露公网；可用 `AIVIDEO_SERVER_HOST` / `AIVIDEO_SERVER_PORT` 覆盖。
+- Docker 运行（`docker compose up server`，镜像 `aivideo-agent:local`）时 `AIVIDEO_CONTAINER=1`，「打开文件夹」自动降级：界面展示宿主挂载路径（`./project/<id>`）供手动打开。
+- 未安装 `ffmpeg` 时，脚本/分镜/旁白等产物照常可用，仅渲染阶段报明确错误（可用「仅脚本」模式或改用 Docker）。
+- 开发模式热更新：`pnpm dev:server`（API）+ `pnpm dev:web`（Vite 界面 :5173，自动代理 `/api`）。
+
+### API 简表
+
+| 接口 | 用途 |
+|------|------|
+| `POST /api/projects` | 创建任务（`briefText`、`mode`、`generationMode`、`skill`、`durationSeconds`、`providerProfile`） |
+| `GET /api/projects` / `GET /api/projects/:id` | 任务与旧项目目录列表 / 详情 |
+| `DELETE /api/projects/:id` / `POST /api/projects/:id/cancel` | 删除 / 取消 |
+| `GET /api/projects/:id/events` | SSE 事件流（状态+日志，支持 `Last-Event-ID` 重放） |
+| `POST /api/projects/:id/review` | 检查点决策：`approve` / `cancel` / `redo-stage` |
+| `PUT /api/projects/:id/artifacts/script` · `PUT /api/projects/:id/shots/:shotId` | 就地编辑（自动执行失效矩阵） |
+| `POST /api/projects/:id/shots/:shotId/retry` | 单镜重试（`target: asset` 或 `audio`） |
+| `GET /api/projects/:id/cost-preview` · `POST /api/projects/:id/rerender` | 计费预览 · 重新排队渲染 |
+| `GET /api/projects/:id/file?path=` · `GET /api/projects/:id/video` | 沙箱化工件预览 / Range 流式播放 |
+| `POST /api/projects/:id/open-folder` | 拉起宿主文件管理器打开项目目录 |
+| `GET /api/healthz` · `GET /api/skills` · `GET /api/summary` | 存活检查 · 模板卡 · 生效 provider 与默认配置 |
 
 ## 自然语言输入
 

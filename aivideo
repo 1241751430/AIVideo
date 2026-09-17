@@ -2,10 +2,11 @@
 # @file aivideo
 # @author zhangbaohong
 # @date 2026-09-17
-# @description 启动脚本：解析 AIVIDEO_MODE，自动准备 .env/构建，分发 docker/host/local 模式执行 CLI
+# @description 启动脚本：解析 AIVIDEO_MODE，自动准备 .env/构建，分发 docker/host/local 模式执行 CLI；`serve` 子命令常驻启动镜头墙工作台服务
 # @see https://github.com/1241751430/AIVideo.git
 # AI Video Agent launcher.
 # Usage: ./aivideo <command> [args...]
+#        ./aivideo serve    — 常驻启动镜头墙工作台（浏览器访问 http://127.0.0.1:8787）
 #
 # Behavior:
 #   - Prefer Docker Compose when Docker is available (first run auto-builds the image).
@@ -66,16 +67,41 @@ docker_available() {
   return 1
 }
 
-# 功能：按需构建 Docker 镜像后通过 docker compose 运行 CLI
+# 功能：镜像缺失或 Docker 相关文件更新时按需构建镜像（docker 模式公共前置）
 # @author zhangbaohong @date 2026-09-17 @see https://github.com/1241751430/AIVideo.git
-run_docker() {
+ensure_docker_image() {
   mkdir -p "$STATE_DIR"
-  print_first_run_notice "Docker"
   if [ ! -f "$DOCKER_STAMP" ] || [ "Dockerfile" -nt "$DOCKER_STAMP" ] || [ "docker-compose.yml" -nt "$DOCKER_STAMP" ] || [ "aivideo.config.yaml" -nt "$DOCKER_STAMP" ]; then
     echo "[aivideo] Preparing Docker image (first run or Docker files changed)..." >&2
     docker compose build
     touch "$DOCKER_STAMP"
   fi
+}
+
+# 功能：校验宿主 Node/pnpm，并在指定入口产物缺失时执行一次 install + build（host 模式公共前置）
+# @author zhangbaohong @date 2026-09-17 @see https://github.com/1241751430/AIVideo.git
+require_host_runtime() {
+  local entry="$1"
+  if ! have_cmd node; then
+    echo "[aivideo] Node.js 20+ is required but was not found." >&2
+    exit 1
+  fi
+  if [ ! -f "$entry" ]; then
+    if ! have_cmd pnpm; then
+      echo "[aivideo] pnpm is required to build the project. Install pnpm 10+ first." >&2
+      exit 1
+    fi
+    echo "[aivideo] First run: installing dependencies and building..." >&2
+    pnpm install
+    pnpm build
+  fi
+}
+
+# 功能：按需构建 Docker 镜像后通过 docker compose 运行 CLI
+# @author zhangbaohong @date 2026-09-17 @see https://github.com/1241751430/AIVideo.git
+run_docker() {
+  print_first_run_notice "Docker"
+  ensure_docker_image
   mark_first_run_complete
   exec docker compose run --rm aivideo "$@"
 }
@@ -85,24 +111,55 @@ run_docker() {
 run_host() {
   mkdir -p "$STATE_DIR"
   print_first_run_notice "host"
-  if ! have_cmd node; then
-    echo "[aivideo] Node.js 20+ is required but was not found." >&2
-    exit 1
-  fi
-  if [ ! -f "apps/cli/dist/index.js" ]; then
-    if ! have_cmd pnpm; then
-      echo "[aivideo] pnpm is required to build the project. Install pnpm 10+ first." >&2
-      exit 1
-    fi
-    echo "[aivideo] First run: installing dependencies and building..." >&2
-    pnpm install
-    pnpm build
-  fi
+  require_host_runtime "apps/cli/dist/index.js"
   mark_first_run_complete
   exec node apps/cli/dist/index.js "$@"
 }
 
+# 功能：docker 模式常驻启动工作台服务（compose up server，仅映射宿主 127.0.0.1:8787）
+# @author zhangbaohong @date 2026-09-17 @see https://github.com/1241751430/AIVideo.git
+serve_docker() {
+  print_first_run_notice "Docker serve"
+  ensure_docker_image
+  mark_first_run_complete
+  echo "[aivideo] Shot-wall workbench: http://127.0.0.1:8787 (container: open-folder degrades to host path hint)" >&2
+  exec docker compose up server
+}
+
+# 功能：host 模式常驻启动工作台服务（直接 node apps/server/dist/index.js）
+# @author zhangbaohong @date 2026-09-17 @see https://github.com/1241751430/AIVideo.git
+serve_host() {
+  mkdir -p "$STATE_DIR"
+  print_first_run_notice "host serve"
+  require_host_runtime "apps/server/dist/index.js"
+  mark_first_run_complete
+  echo "[aivideo] Shot-wall workbench: http://127.0.0.1:8787" >&2
+  exec node apps/server/dist/index.js
+}
+
+# 功能：按 AIVIDEO_MODE 分发 serve 子命令（auto 模式 docker 优先，与 CLI 行为一致）
+# @author zhangbaohong @date 2026-09-17 @see https://github.com/1241751430/AIVideo.git
+run_serve() {
+  MODE="${AIVIDEO_MODE:-auto}"
+  case "$MODE" in
+    docker) serve_docker ;;
+    host|local) serve_host ;;
+    auto|*)
+      if docker_available; then
+        serve_docker
+      else
+        serve_host
+      fi
+      ;;
+  esac
+}
+
 ensure_env_file
+
+if [ "${1:-}" = "serve" ]; then
+  shift
+  run_serve "$@"
+fi
 
 MODE="${AIVIDEO_MODE:-auto}"
 case "$MODE" in

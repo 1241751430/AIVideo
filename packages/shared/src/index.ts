@@ -180,3 +180,12 @@ export interface ScriptMetaBody {
   cta?: string;
   hashtags?: string[];
 }
+
+/** POST /api/projects/:id/open-folder 响应：本机打开文件管理器；容器环境降级返回宿主路径提示。 */
+export interface OpenFolderResponse {
+  ok: boolean;
+  /** 项目目录绝对路径。 */
+  path: string;
+  /** 打开失败或容器降级时的操作提示。 */
+  hint?: string;
+}

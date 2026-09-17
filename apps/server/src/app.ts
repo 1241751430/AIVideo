@@ -11,6 +11,7 @@ import { Hono } from "hono";
 import type { AppConfig, ProviderSelection } from "@aivideo/core";
 import { isWithinBase } from "@aivideo/core";
 import type { JobRunner } from "./jobs/job-runner.js";
+import { folderRoutes } from "./routes/folder.js";
 import { mediaRoutes } from "./routes/media.js";
 import { projectRoutes } from "./routes/projects.js";
 import { reviewRoutes } from "./routes/review.js";
@@ -52,6 +53,7 @@ export function buildApp(deps: ServerDeps): Hono {
   const api = new Hono();
   api.route("/projects", mediaRoutes(deps));
   api.route("/projects", reviewRoutes(deps));
+  api.route("/projects", folderRoutes(deps));
   api.route("/projects", projectRoutes(deps));
   api.route("/", systemRoutes(deps));
   app.route("/api", api);

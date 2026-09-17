@@ -52,6 +52,7 @@ Verify: `ffmpeg -version && ffprobe -version`
 | Command | Description |
 |---------|-------------|
 | `./aivideo create` | Interactive quick-create (recommended) |
+| `./aivideo serve` | Start the Shot-Wall Workbench web UI (http://127.0.0.1:8787) |
 | `./aivideo generate --brief "..."` | One-line non-interactive generation |
 | `./aivideo generate --brief-file ./brief.txt` | Generate from a brief file |
 | `./aivideo skills list` | Show built-in skills |
@@ -61,6 +62,43 @@ Verify: `ffmpeg -version && ffprobe -version`
 | `./aivideo init` | Manually initialize config (usually automatic) |
 
 `create` is a terminal TUI (@clack): arrow keys to choose, Enter to confirm, Ctrl+C to cancel. Leave the first question blank for advanced step-by-step mode; inside text steps type `/back` to revisit the previous question or `/cancel` to abort. A billing summary (selected models, remote vs. local) is shown before generation starts. Running plain `generate` with no input in a terminal offers to resume an existing project.
+
+## Shot-Wall Workbench (Web UI)
+
+```bash
+./aivideo serve          # then open http://127.0.0.1:8787
+```
+
+A local-first, no-login web workbench (screenshot placeholder: `docs/screenshots/shot-wall.png`) built on top of the same pipeline the CLI uses:
+
+- **Create** — brief box + built-in skill cards, execution mode (auto / guided step-by-step checkpoints) and output mode (video / script-only)
+- **Pipeline stepper** — ①script → ②billing → ③assets → ④narration → ⑤render, with live SSE logs; guided mode pauses at each checkpoint (script review / cost confirm / shot wall / narration preview / final accept)
+- **Shot wall** — per-shot video/image preview, narration audition, inline editing of title/narration/visual prompt/caption/duration, single-shot regeneration ("retry asset / retry audio") that only re-does that shot
+- **Delivery** — in-browser video playback (HTTP Range), download, and **Open Folder** which launches Finder/Explorer/xdg-open on the project directory
+- **Resume-safe** — server restart re-queues interrupted jobs; disk artifacts are the single source of truth
+
+Notes:
+
+- The server binds `127.0.0.1` only and has **no authentication** — intended for local / self-hosted LAN use, do not expose it publicly. Override with `AIVIDEO_SERVER_HOST` / `AIVIDEO_SERVER_PORT`.
+- In Docker (`docker compose up server`, image `aivideo-agent:local`), `AIVIDEO_CONTAINER=1` makes Open Folder degrade gracefully: the UI shows the host path (`./project/<id>` on the mounted volume) to open manually.
+- Without `ffmpeg`, script/storyboard/audio artifacts still work end-to-end; only the render stage fails with a clear error (use script mode or install ffmpeg / use Docker).
+- Dev mode with hot reload: `pnpm dev:server` (API) + `pnpm dev:web` (Vite UI on :5173, proxying `/api`).
+
+### API surface
+
+| Endpoint | Purpose |
+|----------|---------|
+| `POST /api/projects` | Create job (`briefText`, `mode`, `generationMode`, `skill`, `durationSeconds`, `providerProfile`) |
+| `GET /api/projects` / `GET /api/projects/:id` | List / inspect jobs + legacy project dirs |
+| `DELETE /api/projects/:id` / `POST /api/projects/:id/cancel` | Remove / cancel |
+| `GET /api/projects/:id/events` | SSE stream (status + logs, `Last-Event-ID` replay) |
+| `POST /api/projects/:id/review` | Checkpoint decision: `approve` / `cancel` / `redo-stage` |
+| `PUT /api/projects/:id/artifacts/script` · `PUT /api/projects/:id/shots/:shotId` | Inline edits (invalidation matrix applied automatically) |
+| `POST /api/projects/:id/shots/:shotId/retry` | Single-shot retry: `target: asset` or `audio` |
+| `GET /api/projects/:id/cost-preview` · `POST /api/projects/:id/rerender` | Billing gate data · re-queue render |
+| `GET /api/projects/:id/file?path=` · `GET /api/projects/:id/video` | Sandboxed artifact preview / Range video stream |
+| `POST /api/projects/:id/open-folder` | Open project dir in the host file manager |
+| `GET /api/healthz` · `GET /api/skills` · `GET /api/summary` | Liveness · skill cards · active providers/defaults |
 
 ## Structured Brief Input
 

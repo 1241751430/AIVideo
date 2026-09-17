@@ -9,6 +9,7 @@ import type {
   ArtifactsSnapshot,
   CostPreview,
   JobDto,
+  OpenFolderResponse,
   ProjectListItem,
   ReviewDecision,
   ScriptMetaBody,
@@ -113,7 +114,9 @@ export const api = {
       body: JSON.stringify({ target })
     }),
   costPreview: (id: string) => request<{ preview: CostPreview }>(`/api/projects/${encodeURIComponent(id)}/cost-preview`),
-  rerender: (id: string) => request<{ ok: boolean }>(`/api/projects/${encodeURIComponent(id)}/rerender`, { method: "POST" })
+  rerender: (id: string) => request<{ ok: boolean }>(`/api/projects/${encodeURIComponent(id)}/rerender`, { method: "POST" }),
+  openFolder: (id: string) =>
+    request<OpenFolderResponse>(`/api/projects/${encodeURIComponent(id)}/open-folder`, { method: "POST" })
 };
 
 /**

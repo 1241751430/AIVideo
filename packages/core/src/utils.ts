@@ -1,0 +1,147 @@
+import { execFile } from "node:child_process";
+import { existsSync, statSync } from "node:fs";
+import { extname, isAbsolute, relative, resolve, sep } from "node:path";
+
+/**
+ * Shared filesystem, path-safety and process helpers used across
+ * @aivideo/core, @aivideo/providers and @aivideo/cli so the same guard is
+ * not re-implemented per package.
+ */
+
+/** True when `filePath` names a regular file with non-empty content. */
+export function nonEmptyFileExists(filePath: string): boolean {
+  if (!existsSync(filePath)) {
+    return false;
+  }
+  try {
+    return statSync(filePath).isFile() && statSync(filePath).size > 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * True when `candidatePath` resolves to `baseDir` itself or a path inside it.
+ * Guards against traversal (`../`) and absolute escapes; a sibling directory
+ * whose name merely starts with `..` (e.g. `..hidden`) stays inside.
+ */
+export function isWithinBase(baseDir: string, candidatePath: string): boolean {
+  const rel = relative(resolve(baseDir), resolve(candidatePath));
+  if (rel === "") {
+    return true;
+  }
+  return !isAbsolute(rel) && rel !== ".." && !rel.startsWith(`..${sep}`);
+}
+
+/** Throws when `candidatePath` escapes `baseDir`. */
+export function assertPathWithin(baseDir: string, candidatePath: string, label: string): void {
+  if (!isWithinBase(baseDir, candidatePath)) {
+    throw new Error(`${label} must stay within ${baseDir}.`);
+  }
+}
+
+/** Runs task thunks with at most `limit` in flight, preserving queue order. */
+export async function runConcurrent(tasks: Array<() => Promise<void>>, limit: number): Promise<void> {
+  let index = 0;
+  async function worker(): Promise<void> {
+    while (index < tasks.length) {
+      const current = index++;
+      await tasks[current]!();
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, tasks.length) }, () => worker()));
+}
+
+export interface ExecFileOptions {
+  maxBufferBytes?: number;
+  /** Printed before the command starts and every `heartbeatMs` while it runs. */
+  statusMessage?: string;
+  heartbeatMs?: number;
+  /**
+   * Called before the command starts and on every heartbeat instead of
+   * printing `statusMessage` — lets a TUI drive the same liveness signal.
+   */
+  onHeartbeat?: () => void;
+}
+
+/**
+ * Promise wrapper around execFile. Resolves with stdout; rejects with the
+ * command's stderr/stdout merged into the message when available.
+ */
+export function execFileAsync(command: string, args: string[], options: ExecFileOptions = {}): Promise<string> {
+  return new Promise((resolvePromise, rejectPromise) => {
+    let heartbeat: NodeJS.Timeout | undefined;
+    const tick = () => {
+      if (options.onHeartbeat) {
+        options.onHeartbeat();
+      } else if (options.statusMessage) {
+        console.log(options.statusMessage);
+      }
+    };
+    if (options.onHeartbeat || options.statusMessage) {
+      tick();
+      if (options.heartbeatMs && options.heartbeatMs > 0) {
+        heartbeat = setInterval(tick, options.heartbeatMs);
+      }
+    }
+
+    execFile(command, args, { maxBuffer: options.maxBufferBytes ?? 64 * 1024 * 1024 }, (error, stdout, stderr) => {
+      if (heartbeat) {
+        clearInterval(heartbeat);
+      }
+      if (error) {
+        const detail = [stderr, stdout].filter(Boolean).join("\n").trim();
+        rejectPromise(new Error(detail || error.message));
+        return;
+      }
+      resolvePromise(stdout);
+    });
+  });
+}
+
+export const LOCAL_IMAGE_MIME: Record<string, string> = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".webp": "image/webp"
+};
+
+/** Providers and the CLI both cap reference images at the same size. */
+export const MAX_LOCAL_IMAGE_BYTES = 10 * 1024 * 1024;
+
+/**
+ * Validates a user/project-supplied local image (existence, regular file,
+ * non-empty, size cap, supported extension) and returns its MIME type.
+ * `label` prefixes error messages so callers keep context-specific wording
+ * (e.g. "Image" for CLI args, "Reference image" for video providers).
+ */
+export function validateLocalImageFile(
+  filePath: string,
+  label = "Image"
+): { mime: string; sizeBytes: number } {
+  if (!existsSync(filePath)) {
+    throw new Error(`${label} not found: ${filePath}`);
+  }
+  let stat;
+  try {
+    stat = statSync(filePath);
+  } catch {
+    throw new Error(`${label} not found: ${filePath}`);
+  }
+  if (!stat.isFile()) {
+    throw new Error(`${label} is not a regular file: ${filePath}`);
+  }
+  if (stat.size === 0) {
+    throw new Error(`${label} is empty: ${filePath}`);
+  }
+  if (stat.size > MAX_LOCAL_IMAGE_BYTES) {
+    throw new Error(`${label} exceeds ${MAX_LOCAL_IMAGE_BYTES} bytes: ${filePath}`);
+  }
+  const mime = LOCAL_IMAGE_MIME[extname(filePath).toLowerCase()];
+  if (!mime) {
+    throw new Error(
+      `Unsupported ${label.toLowerCase()} format: ${filePath} (use png, jpg, jpeg or webp)`
+    );
+  }
+  return { mime, sizeBytes: stat.size };
+}

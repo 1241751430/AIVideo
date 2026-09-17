@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { basename, join, resolve, sep } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import {
   BriefDocument,
@@ -15,6 +15,7 @@ import {
   TextModelProvider
 } from "./types.js";
 import { autoSelectSkill, getSkillById } from "./skills.js";
+import { isWithinBase, nonEmptyFileExists, runConcurrent } from "./utils.js";
 
 const ASPECT_SIZES: Record<string, { width: number; height: number }> = {
   "9:16": { width: 1080, height: 1920 },
@@ -181,9 +182,7 @@ export function loadAssetArtifacts(projectDir: string): AssetArtifacts | null {
  * misbehaving provider cannot redirect the renderer to arbitrary local files.
  */
 function assertPathWithinProject(projectDir: string, filePath: string, kind: string): void {
-  const root = resolve(projectDir);
-  const target = resolve(filePath);
-  if (target !== root && !target.startsWith(root + sep)) {
+  if (!isWithinBase(projectDir, filePath)) {
     throw new Error(`provider returned a ${kind} path outside the project directory`);
   }
 }
@@ -199,34 +198,17 @@ export interface AssetPrepResult {
 }
 
 /**
- * True when `filePath` names a regular file with non-empty content. A crashed
- * run can truncate an asset to 0 bytes, and a directory can never be a usable
- * media file — neither counts.
- */
-function nonEmptyFileExists(filePath: string): boolean {
-  if (!existsSync(filePath)) {
-    return false;
-  }
-  try {
-    return statSync(filePath).isFile() && statSync(filePath).size > 0;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * True when `filePath` points at a regular file inside `projectDir` with
- * non-empty content. Used to detect assets produced by an earlier run so a
- * resume pass can skip the paid API call. The resolved-path check makes this
- * safe against a shot id smuggling a traversal outside the project.
+ * True when `filePath` points at a regular file inside `projectDir` (but not
+ * the directory itself) with non-empty content. Used to detect assets produced
+ * by an earlier run so a resume pass can skip the paid API call. The
+ * resolved-path check makes this safe against a shot id smuggling a traversal
+ * outside the project.
  */
 function reusableAssetExists(projectDir: string, filePath: string): boolean {
   if (!nonEmptyFileExists(filePath)) {
     return false;
   }
-  const root = resolve(projectDir);
-  const target = resolve(filePath);
-  return target !== root && target.startsWith(root + sep);
+  return isWithinBase(projectDir, filePath) && resolve(filePath) !== resolve(projectDir);
 }
 
 /**
@@ -248,8 +230,10 @@ export async function prepareGeneratedAssets(input: {
   projectDir: string;
   artifacts: AssetArtifacts;
   providers: ProviderSelection;
+  /** Optional progress sink (e.g. a CLI spinner); defaults to silent. */
+  reportProgress?: (message: string) => void;
 }): Promise<AssetPrepResult> {
-  const { projectDir, artifacts, providers } = input;
+  const { projectDir, artifacts, providers, reportProgress } = input;
   const result: AssetPrepResult = {
     attempted: 0,
     succeeded: 0,
@@ -315,8 +299,8 @@ export async function prepareGeneratedAssets(input: {
     return undefined;
   }
 
-  const queue: PendingShot[] = [...generatedShots];
-  result.attempted = queue.length;
+  result.attempted = generatedShots.length;
+  let settled = 0;
 
   async function generateVideoFor(shot: PendingShot, manifestShot: ManifestShot): Promise<boolean> {
     if (!videoProvider || !videoProvider.isRemote) {
@@ -447,16 +431,14 @@ export async function prepareGeneratedAssets(input: {
     result.failed += 1;
   }
 
-  const workers = Array.from({ length: Math.min(ASSET_PREP_CONCURRENCY, queue.length) }, async () => {
-    while (queue.length > 0) {
-      const shot = queue.shift();
-      if (!shot) {
-        break;
-      }
+  await runConcurrent(
+    generatedShots.map((shot) => async () => {
       await generateOne(shot);
-    }
-  });
-  await Promise.all(workers);
+      settled += 1;
+      reportProgress?.(`Scene assets ${settled}/${generatedShots.length} done`);
+    }),
+    ASSET_PREP_CONCURRENCY
+  );
 
   if (result.succeeded > 0) {
     writeJson(join(projectDir, "render-manifest.json"), artifacts.renderManifest);

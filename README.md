@@ -60,7 +60,7 @@ Verify: `ffmpeg -version && ffprobe -version`
 | `./aivideo cleanup --keep-days 7` | Remove expired projects |
 | `./aivideo init` | Manually initialize config (usually automatic) |
 
-`create` interactive commands: `/more` advanced step-by-step · `/back` · `/skip` · `/cancel` · `/help`
+`create` is a terminal TUI (@clack): arrow keys to choose, Enter to confirm, Ctrl+C to cancel. Leave the first question blank for advanced step-by-step mode; inside text steps type `/back` to revisit the previous question or `/cancel` to abort. A billing summary (selected models, remote vs. local) is shown before generation starts. Running plain `generate` with no input in a terminal offers to resume an existing project.
 
 ## Structured Brief Input
 

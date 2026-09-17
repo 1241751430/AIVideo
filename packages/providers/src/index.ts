@@ -1,10 +1,11 @@
-import { execFile } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { dirname, extname } from "node:path";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import {
   AppConfig,
+  execFileAsync,
   ImageGenerationRequest,
   ImageModelProvider,
+  ProviderCapability,
   ProviderConfig,
   ProviderHealth,
   ProviderSelection,
@@ -12,6 +13,7 @@ import {
   SpeechProvider,
   TextGenerationRequest,
   TextModelProvider,
+  validateLocalImageFile,
   VideoGenerationRequest,
   VideoModelProvider,
   resolveProfile
@@ -62,6 +64,73 @@ async function withRetry<T>(fn: () => Promise<T>, attempts = RETRY_ATTEMPTS, bas
   throw lastError;
 }
 
+/**
+ * Shared scaffolding for remote providers that authenticate with a single API
+ * key against an OpenAI-style endpoint layout: assert the configured baseURL
+ * is trusted, check the key env, and (on `--live`) probe `GET /models`.
+ * Vendors whose health check differs (e.g. the speech console) implement
+ * `test()` themselves.
+ */
+abstract class RemoteApiKeyProvider {
+  abstract readonly capability: ProviderCapability;
+
+  readonly isRemote = true;
+
+  constructor(
+    readonly id: string,
+    protected readonly config: ProviderConfig
+  ) {}
+
+  protected getApiKey(): string | undefined {
+    return this.config.apiKeyEnv ? process.env[this.config.apiKeyEnv] : undefined;
+  }
+
+  protected async probe(
+    options?: { live?: boolean },
+    readyMessage = "Configured and ready for remote calls."
+  ): Promise<ProviderHealth> {
+    assertSafeBaseURL(this.config);
+    const apiKey = this.getApiKey();
+    if (!apiKey) {
+      return {
+        providerId: this.id,
+        capability: this.capability,
+        ok: false,
+        message: `Missing API key env: ${this.config.apiKeyEnv}`,
+        liveChecked: false
+      };
+    }
+
+    if (!options?.live) {
+      return {
+        providerId: this.id,
+        capability: this.capability,
+        ok: true,
+        message: readyMessage,
+        liveChecked: false
+      };
+    }
+
+    const response = await fetchWithTimeout(
+      `${this.config.baseURL}/models`,
+      {
+        headers: {
+          Authorization: `Bearer ${apiKey}`
+        }
+      },
+      LIVE_TEST_TIMEOUT_MS
+    );
+
+    return {
+      providerId: this.id,
+      capability: this.capability,
+      ok: response.ok,
+      message: response.ok ? "Remote endpoint reachable." : `HTTP ${response.status}`,
+      liveChecked: true
+    };
+  }
+}
+
 class LocalRuleTextProvider implements TextModelProvider {
   readonly id = "local-rule-text";
   readonly capability = "text" as const;
@@ -101,55 +170,11 @@ class LocalRuleTextProvider implements TextModelProvider {
   }
 }
 
-class OpenAICompatibleTextProvider implements TextModelProvider {
+class OpenAICompatibleTextProvider extends RemoteApiKeyProvider implements TextModelProvider {
   readonly capability = "text" as const;
-  readonly isRemote = true;
-
-  constructor(
-    readonly id: string,
-    private readonly config: ProviderConfig
-  ) {}
 
   async test(options?: { live?: boolean }): Promise<ProviderHealth> {
-    assertSafeBaseURL(this.config);
-    const apiKey = this.getApiKey();
-    if (!apiKey) {
-      return {
-        providerId: this.id,
-        capability: this.capability,
-        ok: false,
-        message: `Missing API key env: ${this.config.apiKeyEnv}`,
-        liveChecked: false
-      };
-    }
-
-    if (!options?.live) {
-      return {
-        providerId: this.id,
-        capability: this.capability,
-        ok: true,
-        message: "Configured and ready for remote calls.",
-        liveChecked: false
-      };
-    }
-
-    const response = await fetchWithTimeout(
-      `${this.config.baseURL}/models`,
-      {
-        headers: {
-          Authorization: `Bearer ${apiKey}`
-        }
-      },
-      LIVE_TEST_TIMEOUT_MS
-    );
-
-    return {
-      providerId: this.id,
-      capability: this.capability,
-      ok: response.ok,
-      message: response.ok ? "Remote endpoint reachable." : `HTTP ${response.status}`,
-      liveChecked: true
-    };
+    return this.probe(options);
   }
 
   async generateText(request: TextGenerationRequest): Promise<string> {
@@ -194,10 +219,6 @@ class OpenAICompatibleTextProvider implements TextModelProvider {
       return content;
     });
   }
-
-  private getApiKey(): string | undefined {
-    return this.config.apiKeyEnv ? process.env[this.config.apiKeyEnv] : undefined;
-  }
 }
 
 class NoopImageProvider implements ImageModelProvider {
@@ -234,55 +255,11 @@ class NoopImageProvider implements ImageModelProvider {
  * written to `request.outputPath`, unlike the noop provider which only echoes
  * the path without creating a file.
  */
-class OpenAICompatibleImageProvider implements ImageModelProvider {
+class OpenAICompatibleImageProvider extends RemoteApiKeyProvider implements ImageModelProvider {
   readonly capability = "image" as const;
-  readonly isRemote = true;
-
-  constructor(
-    readonly id: string,
-    private readonly config: ProviderConfig
-  ) {}
 
   async test(options?: { live?: boolean }): Promise<ProviderHealth> {
-    assertSafeBaseURL(this.config);
-    const apiKey = this.getApiKey();
-    if (!apiKey) {
-      return {
-        providerId: this.id,
-        capability: this.capability,
-        ok: false,
-        message: `Missing API key env: ${this.config.apiKeyEnv}`,
-        liveChecked: false
-      };
-    }
-
-    if (!options?.live) {
-      return {
-        providerId: this.id,
-        capability: this.capability,
-        ok: true,
-        message: "Configured and ready for remote image generation.",
-        liveChecked: false
-      };
-    }
-
-    const response = await fetchWithTimeout(
-      `${this.config.baseURL}/models`,
-      {
-        headers: {
-          Authorization: `Bearer ${apiKey}`
-        }
-      },
-      LIVE_TEST_TIMEOUT_MS
-    );
-
-    return {
-      providerId: this.id,
-      capability: this.capability,
-      ok: response.ok,
-      message: response.ok ? "Remote endpoint reachable." : `HTTP ${response.status}`,
-      liveChecked: true
-    };
+    return this.probe(options, "Configured and ready for remote image generation.");
   }
 
   async generateImage(request: ImageGenerationRequest): Promise<{ outputPath: string }> {
@@ -386,10 +363,6 @@ class OpenAICompatibleImageProvider implements ImageModelProvider {
     }
     return buffer;
   }
-
-  private getApiKey(): string | undefined {
-    return this.config.apiKeyEnv ? process.env[this.config.apiKeyEnv] : undefined;
-  }
 }
 
 class NoopVideoProvider implements VideoModelProvider {
@@ -428,55 +401,11 @@ class NoopVideoProvider implements VideoModelProvider {
  * body (e.g. resolution/fps overrides), so new Seedance parameters do not
  * require a code change.
  */
-class ArkSeedanceVideoProvider implements VideoModelProvider {
+class ArkSeedanceVideoProvider extends RemoteApiKeyProvider implements VideoModelProvider {
   readonly capability = "video" as const;
-  readonly isRemote = true;
-
-  constructor(
-    readonly id: string,
-    private readonly config: ProviderConfig
-  ) {}
 
   async test(options?: { live?: boolean }): Promise<ProviderHealth> {
-    assertSafeBaseURL(this.config);
-    const apiKey = this.getApiKey();
-    if (!apiKey) {
-      return {
-        providerId: this.id,
-        capability: this.capability,
-        ok: false,
-        message: `Missing API key env: ${this.config.apiKeyEnv}`,
-        liveChecked: false
-      };
-    }
-
-    if (!options?.live) {
-      return {
-        providerId: this.id,
-        capability: this.capability,
-        ok: true,
-        message: "Configured and ready for remote video generation.",
-        liveChecked: false
-      };
-    }
-
-    const response = await fetchWithTimeout(
-      `${this.config.baseURL}/models`,
-      {
-        headers: {
-          Authorization: `Bearer ${apiKey}`
-        }
-      },
-      LIVE_TEST_TIMEOUT_MS
-    );
-
-    return {
-      providerId: this.id,
-      capability: this.capability,
-      ok: response.ok,
-      message: response.ok ? "Remote endpoint reachable." : `HTTP ${response.status}`,
-      liveChecked: true
-    };
+    return this.probe(options, "Configured and ready for remote video generation.");
   }
 
   async generateVideo(request: VideoGenerationRequest): Promise<{ outputPath: string }> {
@@ -615,10 +544,6 @@ class ArkSeedanceVideoProvider implements VideoModelProvider {
       throw new Error(`Video download exceeds ${MAX_VIDEO_DOWNLOAD_BYTES} bytes.`);
     }
     return buffer;
-  }
-
-  private getApiKey(): string | undefined {
-    return this.config.apiKeyEnv ? process.env[this.config.apiKeyEnv] : undefined;
   }
 }
 
@@ -927,18 +852,6 @@ export async function testProviders(
   return Promise.all(checks.map((provider) => provider!.test({ live })));
 }
 
-function execFileAsync(command: string, args: string[]): Promise<void> {
-  return new Promise((resolve, reject) => {
-    execFile(command, args, (error) => {
-      if (error) {
-        reject(error);
-        return;
-      }
-      resolve();
-    });
-  });
-}
-
 async function fetchWithTimeout(
   input: string,
   init: RequestInit,
@@ -1000,36 +913,11 @@ async function safeReadErrorBody(response: Response): Promise<string> {
 }
 
 // Reference images sent to video models as base64 data URIs. Ark accepts
-// roughly this size, and larger payloads are rejected by the API — fail early
-// with a clear local error instead of a billed 4xx.
-const MAX_REFERENCE_IMAGE_BYTES = 10 * 1024 * 1024;
-const REFERENCE_IMAGE_MIME: Record<string, string> = {
-  ".png": "image/png",
-  ".jpg": "image/jpeg",
-  ".jpeg": "image/jpeg",
-  ".webp": "image/webp"
-};
-
+// roughly the 10MB cap enforced by validateLocalImageFile, and larger payloads
+// are rejected by the API — fail early with a clear local error instead of a
+// billed 4xx.
 function imageToDataURI(filePath: string): string {
-  if (!existsSync(filePath)) {
-    throw new Error(`Reference image not found: ${filePath}`);
-  }
-  const stat = statSync(filePath);
-  if (!stat.isFile()) {
-    throw new Error(`Reference image is not a regular file: ${filePath}`);
-  }
-  if (stat.size === 0) {
-    throw new Error(`Reference image is empty: ${filePath}`);
-  }
-  if (stat.size > MAX_REFERENCE_IMAGE_BYTES) {
-    throw new Error(`Reference image exceeds ${MAX_REFERENCE_IMAGE_BYTES} bytes: ${filePath}`);
-  }
-  const mime = REFERENCE_IMAGE_MIME[extname(filePath).toLowerCase()];
-  if (!mime) {
-    throw new Error(
-      `Unsupported reference image format: ${filePath} (use png, jpg, jpeg or webp)`
-    );
-  }
+  const { mime } = validateLocalImageFile(filePath, "Reference image");
   const buffer = readFileSync(filePath);
   return `data:${mime};base64,${buffer.toString("base64")}`;
 }

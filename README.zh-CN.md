@@ -60,7 +60,7 @@
 | `./aivideo cleanup --keep-days 7` | 清理过期项目 |
 | `./aivideo init` | 手动初始化配置（通常自动完成） |
 
-`create` 交互模式命令：`/more` 进入高级逐项配置 · `/back` 上一步 · `/skip` 跳过 · `/cancel` 取消 · `/help` 帮助
+`create` 为终端 TUI 界面（@clack）：方向键选择、Enter 确认、Ctrl+C 取消；首个问题直接留空即进入高级逐项配置；文本步骤中可输入 `/back` 返回上一步、`/cancel` 取消向导。提交前会显示计费确认页（列出生效的模型及远程/本地计费属性）。在终端中直接运行不带输入的 `generate` 时，会弹出已有项目的续跑选择器。
 
 ## 自然语言输入
 

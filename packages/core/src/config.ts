@@ -1,7 +1,8 @@
 import { existsSync, readFileSync } from "node:fs";
-import { isAbsolute, relative, resolve } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 import YAML from "yaml";
 import { AppConfig, ProviderProfileConfig } from "./types.js";
+import { isWithinBase } from "./utils.js";
 
 const ALLOWED_ENV_PREFIXES = [
   "OPENAI_",
@@ -236,8 +237,7 @@ function assertSafeProjectsDir(cwd: string, projectsDir: string): void {
     throw new Error(`projectsDir must be a relative path, got: ${projectsDir}`);
   }
   const resolved = resolve(cwd, projectsDir);
-  const rel = relative(resolve(cwd), resolved);
-  if (rel.startsWith("..")) {
+  if (!isWithinBase(resolve(cwd), resolved)) {
     throw new Error(`projectsDir must stay within the project root, got: ${projectsDir}`);
   }
 }
@@ -326,6 +326,23 @@ export function getEnvTemplate(cwd?: string): string {
     return readFileSync(target, "utf8");
   }
   return DEFAULT_ENV_TEMPLATE;
+}
+
+/**
+ * Every environment variable name referenced by the configured providers
+ * (API keys, app ids, model overrides). Used by tests and tooling to keep the
+ * `.env` template in sync with the provider definitions.
+ */
+export function collectProviderEnvKeys(config: AppConfig): string[] {
+  const keys = new Set<string>();
+  for (const provider of Object.values(config.providers)) {
+    for (const key of [provider.apiKeyEnv, provider.appIdEnv, provider.modelEnv]) {
+      if (key) {
+        keys.add(key);
+      }
+    }
+  }
+  return [...keys].sort();
 }
 
 export function validateConfig(config: AppConfig): string[] {

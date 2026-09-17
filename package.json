@@ -11,6 +11,7 @@
     "test:worker": "python3 -m unittest discover -s workers/media -p \"test_*.py\" -v",
     "cli": "node apps/cli/dist/index.js",
     "server": "node apps/server/dist/index.js",
-    "dev:server": "pnpm --filter @aivideo/server dev"
+    "dev:server": "pnpm --filter @aivideo/server dev",
+    "dev:web": "pnpm --filter @aivideo/web dev"
   }
 }

@@ -19,20 +19,12 @@ import {
   shotVideoRelative,
   validateGenerateRequest
 } from "@aivideo/core";
-import type { ExecMode, JobDto, JobRequest } from "../types.js";
+import type { ExecMode, JobDto, JobRequest, ProjectListItem } from "../types.js";
 import { JobEventLog, sseFrame } from "../jobs/events.js";
 import { removeProject, scanProjects } from "../jobs/job-store.js";
 import type { ServerDeps } from "../app.js";
 
-/** GET /api/projects 列表条目：任务、无任务的旧项目目录、或损坏隔离项。 */
-export interface ProjectListItem {
-  projectId: string;
-  kind: "job" | "project" | "corrupt";
-  job?: JobDto;
-  title?: string;
-  hasVideo?: boolean;
-  updatedAt?: string;
-}
+export type { ProjectListItem } from "../types.js";
 
 /**
  * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git

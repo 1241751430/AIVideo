@@ -223,6 +223,31 @@ export class JobRunner {
 
   /**
    * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+   * 功能：对非活动任务重新入队执行指定阶段（镜头重试/重渲染入口；磁盘复用保证只重做受影响部分）。
+   * @returns 是否成功入队；running/queued 或未知任务拒绝
+   */
+  rerun(jobId: string, stage: StageKind): boolean {
+    const job = this.jobs.get(jobId);
+    if (!job || job.phase === "running" || job.phase === "queued") {
+      return false;
+    }
+    this.beginRun(job, stage);
+    return true;
+  }
+
+  /**
+   * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+   * 功能：标记成片过期（人工编辑脚本/镜头后调用，提示需要重新渲染）。
+   */
+  markVideoStale(jobId: string): void {
+    const job = this.jobs.get(jobId);
+    if (job) {
+      this.setStatus(job, { result: { ...job.result, videoStale: true } });
+    }
+  }
+
+  /**
+   * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
    * 功能：从内存与队列中移除任务（调用方负责删除磁盘目录）。
    */
   forget(jobId: string): void {

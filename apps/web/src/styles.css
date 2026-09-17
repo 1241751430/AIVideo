@@ -1,0 +1,507 @@
+/*
+ * @file styles.css
+ * @author zhangbaohong
+ * @date 2026-09-17
+ * @description 镜头墙工作台全局样式：深色主题设计令牌、双栏布局、卡片/徽标/stepper/镜头墙/日志面板样式，移动端单列自适应。
+ * @see https://github.com/1241751430/AIVideo.git
+ */
+:root {
+  --bg: #0f1115;
+  --panel: #171a21;
+  --panel-2: #1e2230;
+  --border: #2a3040;
+  --text: #e6e9ef;
+  --muted: #98a1b3;
+  --accent: #4f8cff;
+  --accent-weak: rgba(79, 140, 255, 0.14);
+  --ok: #34c07a;
+  --warn: #e5a13c;
+  --err: #f05f5f;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "PingFang SC", "Microsoft YaHei", "Helvetica Neue", system-ui, sans-serif;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.app {
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  min-height: 100vh;
+}
+
+.sidebar {
+  border-right: 1px solid var(--border);
+  background: var(--panel);
+  padding: 16px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-height: 100vh;
+  overflow-y: auto;
+}
+
+.sidebar h1 {
+  font-size: 16px;
+  margin: 4px 8px 0;
+}
+
+.main {
+  padding: 20px 24px 48px;
+  max-width: 1180px;
+  width: 100%;
+}
+
+button {
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 14px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-weight: 600;
+}
+
+button.danger {
+  color: var(--err);
+}
+
+input,
+select,
+textarea {
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 7px 10px;
+  font-size: 13px;
+  font-family: inherit;
+  width: 100%;
+}
+
+textarea {
+  resize: vertical;
+  min-height: 96px;
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px 18px;
+  margin-bottom: 16px;
+}
+
+.card h2 {
+  font-size: 15px;
+  margin: 0 0 12px;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.badge {
+  display: inline-block;
+  border-radius: 999px;
+  padding: 1px 10px;
+  font-size: 12px;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  background: var(--panel-2);
+}
+
+.badge.queued,
+.badge.running,
+.badge.awaiting {
+  color: var(--warn);
+  border-color: var(--warn);
+}
+
+.badge.done {
+  color: var(--ok);
+  border-color: var(--ok);
+}
+
+.badge.failed,
+.badge.cancelled {
+  color: var(--err);
+  border-color: var(--err);
+}
+
+.badge.stale {
+  color: var(--warn);
+  border-color: var(--warn);
+}
+
+/* 项目列表 */
+.project-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.project-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  cursor: pointer;
+}
+
+.project-item:hover {
+  background: var(--panel-2);
+}
+
+.project-item.selected {
+  background: var(--accent-weak);
+  border-color: var(--accent);
+}
+
+.project-item .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--muted);
+}
+
+.project-item .dot.done { background: var(--ok); }
+.project-item .dot.active { background: var(--warn); }
+.project-item .dot.failed { background: var(--err); }
+.project-item .dot.corrupt { background: var(--err); }
+
+.project-item .meta {
+  flex: 1;
+  min-width: 0;
+}
+
+.project-item .title {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 13px;
+}
+
+.project-item .sub {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+/* stepper */
+.stepper {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.stepper .node {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  border-radius: 999px;
+  border: 1px dashed var(--border);
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.stepper .node.done {
+  border-style: solid;
+  border-color: var(--ok);
+  color: var(--ok);
+}
+
+.stepper .node.current {
+  border-style: solid;
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-weak);
+}
+
+.stepper .node.error {
+  border-style: solid;
+  border-color: var(--err);
+  color: var(--err);
+}
+
+.stepper .sep {
+  color: var(--muted);
+}
+
+/* 任务头 */
+.task-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.task-header h2 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-top: 10px;
+}
+
+.checkpoint-hint {
+  border: 1px solid var(--warn);
+  background: rgba(229, 161, 60, 0.08);
+  border-radius: 10px;
+  padding: 10px 14px;
+  margin: 12px 0;
+}
+
+.error-line {
+  color: var(--err);
+  margin: 8px 0;
+  white-space: pre-wrap;
+}
+
+.notice {
+  color: var(--ok);
+  margin: 6px 0;
+}
+
+/* 创建卡 */
+.create-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.form-row {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.form-row label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+  min-width: 140px;
+  flex: 1;
+}
+
+.skill-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 10px;
+}
+
+.skill-card {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel-2);
+  padding: 10px 12px;
+  cursor: pointer;
+  text-align: left;
+  color: var(--text);
+}
+
+.skill-card.selected {
+  border-color: var(--accent);
+  background: var(--accent-weak);
+}
+
+.skill-card .name {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.skill-card .desc {
+  font-size: 12px;
+  color: var(--muted);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.radio-group {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.radio-group label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text);
+  min-width: 0;
+}
+
+.radio-group input {
+  width: auto;
+}
+
+/* 镜头墙 */
+.shot-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 14px;
+}
+
+.shot-card {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel-2);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.shot-card .shot-title {
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+.shot-card video,
+.shot-card img {
+  width: 100%;
+  max-height: 240px;
+  border-radius: 8px;
+  background: #000;
+  object-fit: contain;
+}
+
+.shot-card audio {
+  width: 100%;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.shot-card .row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+/* 脚本编辑器 */
+.script-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.script-scenes {
+  border-top: 1px dashed var(--border);
+  padding-top: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.script-scenes li {
+  margin-bottom: 4px;
+}
+
+/* 计费卡 */
+.cost-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.cost-table th,
+.cost-table td {
+  text-align: left;
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+/* 日志 */
+.log-panel {
+  background: #0a0c10;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  max-height: 260px;
+  overflow-y: auto;
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.log-line { display: block; }
+.log-line.status { color: var(--accent); }
+.log-line.failed-line { color: var(--err); }
+
+.deliver video {
+  width: 100%;
+  max-height: 480px;
+  border-radius: 10px;
+  background: #000;
+}
+
+@media (max-width: 860px) {
+  .app {
+    grid-template-columns: 1fr;
+  }
+  .sidebar {
+    max-height: none;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+  .main {
+    padding: 16px 14px 40px;
+  }
+}

@@ -1,26 +1,23 @@
 {
-  "name": "@aivideo/server",
+  "name": "@aivideo/shared",
   "version": "0.1.0",
+  "private": true,
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "dev": "tsx src/index.ts",
-    "start": "node dist/index.js",
     "test:compiled": "node --test dist",
     "test": "pnpm run test:compiled"
   },
-  "dependencies": {
-    "@aivideo/core": "workspace:*",
-    "@aivideo/providers": "workspace:*",
-    "@aivideo/shared": "workspace:*",
-    "@hono/node-server": "^1.14.0",
-    "hono": "^4.7.0"
-  },
   "devDependencies": {
     "@types/node": "^22.15.2",
-    "tsx": "^4.21.0",
     "typescript": "^5.8.3"
   }
 }

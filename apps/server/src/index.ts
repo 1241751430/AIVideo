@@ -5,6 +5,7 @@
  * @description 工作台服务主入口：加载配置与 .env、装配 provider、启动任务引擎（含 boot 恢复）、监听 HTTP 端口（默认仅 127.0.0.1）。
  * @see https://github.com/1241751430/AIVideo.git
  */
+import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
 import { serve } from "@hono/node-server";
@@ -28,6 +29,17 @@ function bootstrap(): void {
   }
   const defaultProfile = createProviderSelection(config, undefined);
   const providersByProfile = new Map<string, ReturnType<typeof createProviderSelection>>();
+  const providersFor = (profile?: string): ReturnType<typeof createProviderSelection> => {
+    if (!profile) {
+      return defaultProfile;
+    }
+    let providers = providersByProfile.get(profile);
+    if (!providers) {
+      providers = createProviderSelection(config, profile);
+      providersByProfile.set(profile, providers);
+    }
+    return providers;
+  };
   const projectsRoot = resolve(cwd, config.defaults.projectsDir);
   const events = new EventHub();
   const runner = new JobRunner({
@@ -35,29 +47,23 @@ function bootstrap(): void {
     projectsRoot,
     config,
     providers: defaultProfile,
-    providersFor: (profile) => {
-      if (!profile) {
-        return defaultProfile;
-      }
-      let providers = providersByProfile.get(profile);
-      if (!providers) {
-        providers = createProviderSelection(config, profile);
-        providersByProfile.set(profile, providers);
-      }
-      return providers;
-    },
+    providersFor,
     events
   });
   runner.boot();
 
+  // 优先托管 apps/web 的构建产物；未构建时回退到内置的无构建工作台 public/。
+  const webDist = resolve(cwd, "apps", "web", "dist");
   const here = dirname(fileURLToPath(import.meta.url));
+  const publicDir = existsSync(join(webDist, "index.html")) ? webDist : resolve(here, join("..", "public"));
   const app = buildApp({
     cwd,
     projectsRoot,
     config,
     providers: defaultProfile,
+    providersFor,
     runner,
-    publicDir: resolve(here, join("..", "public"))
+    publicDir
   });
   const { host, port } = serverConfigFromEnv();
   serve({ fetch: app.fetch, hostname: host, port }, () => {

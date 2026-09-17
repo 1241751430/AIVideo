@@ -13,6 +13,7 @@ import { isWithinBase } from "@aivideo/core";
 import type { JobRunner } from "./jobs/job-runner.js";
 import { mediaRoutes } from "./routes/media.js";
 import { projectRoutes } from "./routes/projects.js";
+import { reviewRoutes } from "./routes/review.js";
 import { systemRoutes } from "./routes/system.js";
 
 /** buildApp 的注入依赖。 */
@@ -22,6 +23,8 @@ export interface ServerDeps {
   projectsRoot: string;
   config: AppConfig;
   providers: ProviderSelection;
+  /** 按 provider profile 装配提供者（计费预览与素材阶段共用口径）。 */
+  providersFor: (profile?: string) => ProviderSelection;
   runner: JobRunner;
   /** public/ 静态目录绝对路径。 */
   publicDir: string;
@@ -48,6 +51,7 @@ export function buildApp(deps: ServerDeps): Hono {
 
   const api = new Hono();
   api.route("/projects", mediaRoutes(deps));
+  api.route("/projects", reviewRoutes(deps));
   api.route("/projects", projectRoutes(deps));
   api.route("/", systemRoutes(deps));
   app.route("/api", api);

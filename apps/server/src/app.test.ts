@@ -7,105 +7,12 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-import type { AppConfig } from "@aivideo/core";
-import { buildApp } from "./app.js";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { serverConfigFromEnv } from "./config.js";
-import { JobRunner } from "./jobs/job-runner.js";
-import type { StageRunner } from "./jobs/stages.js";
 import { safeResolveProjectFile } from "./routes/media.js";
 import type { JobRequest } from "./types.js";
-
-/**
- * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
- * 功能：最小配置（仅 defaults/profiles 被路由读取）。
- */
-function makeConfig(): AppConfig {
-  return {
-    defaults: {
-      profile: "default",
-      aspectRatio: "9:16",
-      durationSeconds: 30,
-      language: "zh-CN",
-      platform: "douyin",
-      projectsDir: "project",
-      gpu: false
-    },
-    providers: {},
-    profiles: { default: {} }
-  } as unknown as AppConfig;
-}
-
-/** 全部立即成功的假阶段。 */
-const noopStages: StageRunner = {
-  async runScript() {},
-  async runAssets() {},
-  async runAudio() {},
-  async runRender() {}
-};
-
-/**
- * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
- * 功能：装配测试应用：真实 JobRunner + 假阶段 + 临时项目根。
- */
-function makeTestApp(): {
-  app: ReturnType<typeof buildApp>;
-  runner: JobRunner;
-  projectsRoot: string;
-  cleanup: () => void;
-} {
-  const projectsRoot = mkdtempSync(join(tmpdir(), "aivideo-app-"));
-  const runner = new JobRunner({
-    cwd: projectsRoot,
-    projectsRoot,
-    config: makeConfig(),
-    providers: {},
-    stages: noopStages
-  });
-  const here = dirname(fileURLToPath(import.meta.url));
-  const app = buildApp({
-    cwd: projectsRoot,
-    projectsRoot,
-    config: makeConfig(),
-    providers: {},
-    runner,
-    publicDir: resolve(here, join("..", "public"))
-  });
-  return { app, runner, projectsRoot, cleanup: () => rmSync(projectsRoot, { recursive: true, force: true }) };
-}
-
-/**
- * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
- * 功能：轮询等待条件成立。
- */
-async function waitUntil(predicate: () => boolean, label: string, timeoutMs = 2000): Promise<void> {
-  const started = Date.now();
-  while (!predicate()) {
-    if (Date.now() - started > timeoutMs) {
-      throw new Error(`timeout waiting for: ${label}`);
-    }
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, 5));
-  }
-}
-
-/**
- * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
- * 功能：创建一个自动模式任务并等待其 done。
- */
-async function createDoneJob(ctx: ReturnType<typeof makeTestApp>, theme = "测试"): Promise<string> {
-  const res = await ctx.app.request("/api/projects", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ briefText: `主题：${theme}` })
-  });
-  assert.equal(res.status, 201);
-  const body = (await res.json()) as { job: { id: string } };
-  await waitUntil(() => ctx.runner.get(body.job.id)?.phase === "done", "done");
-  return body.job.id;
-}
+import { createDoneJob, makeTestApp, waitUntil } from "./testkit.js";
 
 test("POST /api/projects 缺少 theme/content 返回 400", async () => {
   const ctx = makeTestApp();

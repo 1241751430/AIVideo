@@ -232,3 +232,34 @@ export function validateLocalImageFile(
   }
   return { mime, sizeBytes: stat.size };
 }
+
+/**
+ * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+ * 功能：校验项目 id 可安全用作 project/ 下的目录名：字母/数字（含 CJK）开头，仅含字母数字与 _ . -，长度 ≤200，不含路径分隔符或 ".."。
+ * @param value 待校验字符串
+ * @returns 是否合法
+ */
+export function isValidProjectId(value: string): boolean {
+  return (
+    typeof value === "string" &&
+    /^[\p{L}\p{N}][\p{L}\p{N}_.-]{0,199}$/u.test(value) &&
+    !value.includes("..")
+  );
+}
+
+/**
+ * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+ * 功能：解析时长字符串（支持 "45s" 与 "30" 形式）为秒数。
+ * @param value 原始时长文本
+ * @returns 秒数；无法解析时返回 undefined
+ */
+export function parseDuration(value: string | undefined): number | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const normalized = value.trim().toLowerCase();
+  const parsed = normalized.endsWith("s")
+    ? Number.parseInt(normalized.slice(0, -1), 10)
+    : Number.parseInt(normalized, 10);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}

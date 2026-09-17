@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>镜头墙工作台 · AIVideo</title>
+  <link rel="stylesheet" href="/app.css" />
+</head>
+<body>
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="brand">🎬 镜头墙工作台</div>
+      <button id="btn-new" class="primary block">＋ 新建视频</button>
+      <div class="section-title">项目</div>
+      <ul id="project-list" class="project-list"></ul>
+      <div class="sidebar-footer" id="system-line"></div>
+    </aside>
+
+    <main class="main">
+      <!-- 创建视图 -->
+      <section id="view-create" class="view">
+        <h1>今天想做什么视频？</h1>
+        <p class="hint">直接输入一句主题，或粘贴结构化 brief（支持「主题：…；时长：30s；模式：视频」中英键名）。</p>
+        <textarea id="brief" rows="5" placeholder="例如：主题：夏季防晒喷雾；时长：30s；平台：douyin"></textarea>
+        <div class="form-grid">
+          <label>执行模式
+            <select id="exec-mode">
+              <option value="auto">全自动（一口气跑完）</option>
+              <option value="guided">分步确认（每个阶段停下来检查）</option>
+            </select>
+          </label>
+          <label>产物类型
+            <select id="generation-mode">
+              <option value="video">视频（脚本→素材→旁白→渲染）</option>
+              <option value="script">仅脚本与分镜</option>
+            </select>
+          </label>
+          <label>风格模板
+            <select id="skill"></select>
+          </label>
+          <label>时长（秒）
+            <input id="duration" type="number" min="5" max="600" step="5" />
+          </label>
+          <label>模型配置
+            <select id="profile"></select>
+          </label>
+        </div>
+        <button id="btn-submit" class="primary">开始制作</button>
+        <div id="create-error" class="error" hidden></div>
+      </section>
+
+      <!-- 任务视图 -->
+      <section id="view-task" class="view" hidden>
+        <div class="task-head">
+          <div>
+            <h1 id="task-title"></h1>
+            <div class="badges">
+              <span id="task-phase" class="badge"></span>
+              <span id="task-mode" class="badge ghost"></span>
+              <span id="task-queue" class="badge ghost" hidden></span>
+            </div>
+          </div>
+          <div class="task-actions">
+            <button id="btn-review-approve" class="primary" hidden>✓ 继续</button>
+            <button id="btn-redo-stage" hidden>↻ 重做本阶段</button>
+            <button id="btn-review-cancel" class="danger" hidden>终止</button>
+            <button id="btn-cancel" class="danger">取消任务</button>
+            <button id="btn-refresh" class="ghost-btn">刷新</button>
+            <button id="btn-delete" class="ghost-btn">删除</button>
+          </div>
+        </div>
+
+        <ol class="stepper" id="stepper">
+          <li data-stage="script">① 脚本与分镜</li>
+          <li data-stage="assets">② 场景素材</li>
+          <li data-stage="audio">③ 旁白配音</li>
+          <li data-stage="render">④ 渲染成片</li>
+        </ol>
+
+        <div id="checkpoint-hint" class="checkpoint" hidden></div>
+
+        <div class="panel">
+          <div class="panel-title">运行日志</div>
+          <pre id="log" class="log"></pre>
+        </div>
+
+        <div class="panel" id="deliver" hidden>
+          <div class="panel-title">成片</div>
+          <video id="player" controls playsinline></video>
+          <div class="deliver-actions">
+            <a id="download" class="primary-link" download>下载视频</a>
+            <span id="video-path" class="hint mono"></span>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+  <script src="/app.js"></script>
+</body>
+</html>

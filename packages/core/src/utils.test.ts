@@ -1,3 +1,11 @@
+/**
+ * @file utils.test.ts
+ * @author zhangbaohong
+ * @date 2026-09-17
+ * @description utils.ts 与 config.ts 共享工具的单元测试：路径越界判断、并发限流、execFileAsync 心跳/逐行流式/中断、本地图片校验，以及 Provider 环境变量键与 .env 模板一致性等。
+ * @see https://github.com/1241751430/AIVideo.git
+ */
+
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -13,6 +21,10 @@ import {
   validateLocalImageFile
 } from "./utils.js";
 
+/**
+ * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+ * 功能：测试辅助：创建带 aivideo-utils- 前缀的临时目录并返回其路径。
+ */
 function tempDir(): string {
   return mkdtempSync(join(tmpdir(), "aivideo-utils-"));
 }
@@ -116,6 +128,33 @@ test("validateLocalImageFile messages keep provider-compatible wording", () => {
     mime: "image/png",
     sizeBytes: "fake-png-bytes".length
   });
+});
+
+test("execFileAsync streams stdout lines including a trailing unterminated fragment", async () => {
+  const lines: string[] = [];
+  await execFileAsync(
+    "node",
+    ["-e", "process.stdout.write('one\\ntwo\\nthree')"],
+    { onStdoutLine: (line) => lines.push(line) }
+  );
+  assert.deepEqual(lines, ["one", "two", "three"]);
+});
+
+test("execFileAsync kills the child when the abort signal fires", async () => {
+  const controller = new AbortController();
+  const pending = execFileAsync("node", ["-e", "setTimeout(() => {}, 5000)"], {
+    signal: controller.signal
+  });
+  setTimeout(() => controller.abort(), 20);
+  await assert.rejects(pending);
+});
+
+test("execFileAsync with an already-aborted signal rejects", async () => {
+  const controller = new AbortController();
+  controller.abort();
+  await assert.rejects(
+    execFileAsync("node", ["-e", "setTimeout(() => {}, 100)"], { signal: controller.signal })
+  );
 });
 
 test("every provider env key surfaces in the .env template", () => {

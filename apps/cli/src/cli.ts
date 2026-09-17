@@ -1,3 +1,10 @@
+/**
+ * @file cli.ts
+ * @author zhangbaohong
+ * @date 2026-09-17
+ * @description AI Video CLI 命令入口：解析参数并分发 init/create/generate/providers/render/cleanup 等子命令
+ * @see https://github.com/1241751430/AIVideo.git
+ */
 import * as p from "@clack/prompts";
 import { existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { basename, isAbsolute, join, resolve } from "node:path";
@@ -18,11 +25,10 @@ import {
   loadConfig,
   loadDotEnv,
   materializeProject,
-  nonEmptyFileExists,
   prepareGeneratedAssets,
   resolveProjectDir,
-  runConcurrent,
   selectSkill,
+  synthesizeNarration,
   trimProjectArtifacts,
   validateConfig
 } from "@aivideo/core";
@@ -47,11 +53,21 @@ export { assertPathWithin, getVideoReadySummary, inferInputLanguage, parseArgs, 
 export { parseStructuredBrief } from "./options.js";
 export type { ParsedArgs } from "./options.js";
 
+/**
+ * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+ * 功能：判断当前会话是否具备驱动 @clack 交互界面的 TTY 条件
+ */
 /** True when we can safely drive an @clack TUI over this session. */
 function interactiveSession(): boolean {
   return Boolean(process.stdin.isTTY && process.stdout.isTTY);
 }
 
+/**
+ * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+ * 功能：CLI 主入口，解析命令行并分发到对应子命令处理函数
+ * @param argv 命令行参数（默认取 process.argv 去头）
+ * @param cwd 工作目录（默认 process.cwd()）
+ */
 export async function main(argv = process.argv.slice(2), cwd = process.cwd()): Promise<void> {
   const parsed = parseArgs(argv);
 
@@ -88,6 +104,11 @@ export async function main(argv = process.argv.slice(2), cwd = process.cwd()): P
   }
 }
 
+/**
+ * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+ * 功能：初始化工作目录——写入配置模板、.env(.example) 并创建 project 目录
+ * @param cwd 工作目录
+ */
 export async function runInit(cwd: string): Promise<void> {
   const configPath = resolve(cwd, CONFIG_FILE);
   const envExamplePath = resolve(cwd, ".env.example");
@@ -113,12 +134,22 @@ export async function runInit(cwd: string): Promise<void> {
   console.log("- project/");
 }
 
+/**
+ * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+ * 功能：逐行列出内置内容 Skill 的 id、名称与描述
+ */
 function runSkillsList(): void {
   for (const skill of BUILTIN_SKILLS) {
     console.log(`${skill.id}\t${skill.name}\t${skill.description}`);
   }
 }
 
+/**
+ * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+ * 功能：按保留天数清理过期项目目录并打印删除结果
+ * @param cwd 工作目录
+ * @param options 命令行选项（读取 keep-days）
+ */
 function runCleanup(cwd: string, options: Record<string, string | boolean>): void {
   const config = loadConfig(cwd);
   const keepDays = parseKeepDays(getStringOption(options, "keep-days")) ?? 7;
@@ -130,6 +161,12 @@ function runCleanup(cwd: string, options: Record<string, string | boolean>): voi
   }
 }
 
+/**
+ * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+ * 功能：加载配置与环境变量，对 profile 内各提供者执行健康检查并逐行输出
+ * @param cwd 工作目录
+ * @param options 命令行选项（读取 profile / live）
+ */
 async function runProvidersTest(cwd: string, options: Record<string, string | boolean>): Promise<void> {
   loadDotEnv(cwd);
   const config = loadConfig(cwd);
@@ -144,6 +181,12 @@ async function runProvidersTest(cwd: string, options: Record<string, string | bo
   }
 }
 
+/**
+ * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+ * 功能：generate 命令主体——支持续跑已有项目或全新生成，再依次完成素材、配音与渲染
+ * @param cwd 工作目录
+ * @param options 命令行选项（brief/theme/content/project/dry-run 等）
+ */
 async function runGenerate(cwd: string, options: Record<string, string | boolean>): Promise<void> {
   await autoInit(cwd);
   loadDotEnv(cwd);
@@ -225,6 +268,12 @@ async function runGenerate(cwd: string, options: Record<string, string | boolean
   }
 }
 
+/**
+ * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+ * 功能：用 TUI 列出最近修改的项目供用户选择续跑，取消时返回 undefined
+ * @param cwd 工作目录
+ * @param config 全局应用配置（用于定位 projects 根目录）
+ */
 /** TUI picker offering the most recently modified projects for resume. */
 async function chooseResumeProject(cwd: string, config: AppConfig): Promise<string | undefined> {
   const projectsRoot = resolve(cwd, config.defaults.projectsDir);
@@ -260,6 +309,17 @@ async function chooseResumeProject(cwd: string, config: AppConfig): Promise<stri
   return String(value);
 }
 
+/**
+ * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+ * 功能：视频阶段总流程——准备场景素材、合成配音、渲染成片，并按需清理工作区
+ * @param projectDir 项目目录
+ * @param artifacts 已生成的脚本与分镜工件
+ * @param providers 当前 profile 装配的提供者集合
+ * @param options 命令行选项
+ * @param cwd 工作目录
+ * @param config 全局应用配置
+ * @param request 归一化后的生成请求
+ */
 async function runVideoPhase(
   projectDir: string,
   artifacts: AssetArtifacts,
@@ -306,7 +366,12 @@ async function runVideoPhase(
     const summary = parts.length > 0 ? `Prepared ${assetPrep.attempted} scene(s): ${parts.join(", ")}` : `Generated 0/${assetPrep.attempted} scene(s)`;
     console.log(summary + (assetPrep.failed > 0 ? `; ${assetPrep.failed} fell back to title cards.` : "."));
   }
-  await synthesizeNarration(projectDir, artifacts.storyboard.shots, providers.speech);
+  await synthesizeNarration({
+    projectDir,
+    shots: artifacts.storyboard.shots,
+    speechProvider: providers.speech,
+    reportProgress: (message) => console.log(message)
+  });
   console.log("Starting video render. This may take a while...");
   const renderSpinner = useSpinner ? p.spinner() : undefined;
   renderSpinner?.start("ffmpeg 渲染中...");
@@ -328,6 +393,14 @@ async function runVideoPhase(
 }
 
 /**
+ * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+ * 功能：解析 --project 续跑目标为项目目录，并校验其位于 projects 根目录内
+ * @param cwd 工作目录
+ * @param config 全局应用配置
+ * @param projectArg --project 传入的项目 id 或路径
+ * @returns 已存在的项目目录路径
+ */
+/**
  * Resolve a --project resume target the same way `render` does: absolute paths
  * pass through, bare ids resolve under the configured projects dir, and either
  * way the result must stay inside that dir.
@@ -344,6 +417,11 @@ function resolveResumeProjectDir(cwd: string, config: AppConfig, projectArg: str
   return projectDir;
 }
 
+/**
+ * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+ * 功能：首次运行缺少配置文件时自动执行 init
+ * @param cwd 工作目录
+ */
 async function autoInit(cwd: string): Promise<void> {
   const configPath = resolve(cwd, CONFIG_FILE);
   if (!existsSync(configPath)) {
@@ -352,6 +430,11 @@ async function autoInit(cwd: string): Promise<void> {
   }
 }
 
+/**
+ * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+ * 功能：create 命令主体——自动初始化后进入交互向导，确认后转入 generate 流程
+ * @param cwd 工作目录
+ */
 async function runCreate(cwd: string): Promise<void> {
   await autoInit(cwd);
   loadDotEnv(cwd);
@@ -364,42 +447,13 @@ async function runCreate(cwd: string): Promise<void> {
   await runGenerate(cwd, options);
 }
 
-async function synthesizeNarration(
-  projectDir: string,
-  shots: Array<{ id: string; narration: string }>,
-  speechProvider?: { synthesizeSpeech: (request: { text: string; outputPath: string }) => Promise<unknown> }
-): Promise<void> {
-  if (!speechProvider) {
-    console.log("No speech provider configured. Rendering will use silent audio.");
-    return;
-  }
-
-  console.log(`Synthesizing narration for ${shots.length} shot(s)...`);
-  const tasks = shots.map((shot, index) => async () => {
-    // WAV is the one container both engines produce faithfully: `say -o x.wav`
-    // and `espeak-ng -w x.wav` both write real WAV data, whereas espeak would
-    // emit WAV bytes under a misleading .aiff name.
-    const audioPath = join(projectDir, "audio", `${shot.id}.wav`);
-    // Resume support: a non-empty wav from a previous run means this shot's
-    // narration was already synthesized (local engines are free, but
-    // re-voicing overwrites a file the render may already reference — skip it).
-    if (nonEmptyFileExists(audioPath)) {
-      console.log(`- Narration ${index + 1}/${shots.length}: ${shot.id} (reused existing audio)`);
-      return;
-    }
-    console.log(`- Narration ${index + 1}/${shots.length}: ${shot.id}`);
-    try {
-      await speechProvider.synthesizeSpeech({
-        text: shot.narration,
-        outputPath: audioPath
-      });
-    } catch (error) {
-      console.log(`Speech synthesis skipped for ${shot.id}: ${(error as Error).message}`);
-    }
-  });
-  await runConcurrent(tasks, 3);
-}
-
+/**
+ * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+ * 功能：把命令行选项与默认配置归一化为 GenerateRequest
+ * @param config 全局应用配置（提供默认值）
+ * @param cwd 工作目录（解析相对图片路径）
+ * @param options 原始命令行选项
+ */
 function buildGenerateRequest(
   config: ReturnType<typeof loadConfig>,
   cwd: string,
@@ -429,6 +483,10 @@ function buildGenerateRequest(
   };
 }
 
+/**
+ * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+ * 功能：打印 CLI 使用说明、命令列表与交互式模式提示
+ */
 function printHelp(): void {
   console.log(`AI Video Agent CLI
 

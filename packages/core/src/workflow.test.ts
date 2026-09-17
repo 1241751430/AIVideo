@@ -1,3 +1,11 @@
+/**
+ * @file workflow.test.ts
+ * @author zhangbaohong
+ * @date 2026-09-17
+ * @description workflow/config/skills 的单元测试：技能自动选择、请求校验、产物生成与归一、SRT/Markdown 输出、过期项目清理，以及 prepareGeneratedAssets 的复用、越界防护、参考图混排等计费安全场景。
+ * @see https://github.com/1241751430/AIVideo.git
+ */
+
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -219,6 +227,10 @@ test("loadConfig applies model environment overrides", () => {
   }
 });
 
+/**
+ * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+ * 功能：测试辅助：把指定环境变量恢复为之前的值（原值为 undefined 时删除该键）。
+ */
 function restoreEnv(key: string, value: string | undefined): void {
   if (value === undefined) {
     delete process.env[key];
@@ -242,6 +254,10 @@ test("cleanupExpiredProjects removes only expired directories", () => {
   assert.match(removed[0] ?? "", /expired-project/);
 });
 
+/**
+ * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+ * 功能：测试辅助：构造一个 video 模式请求并生成全部产物，供资产阶段各测试复用。
+ */
 async function buildVideoArtifacts() {
   const request: GenerateRequest = {
     theme: "AI 智能体介绍",
@@ -254,6 +270,10 @@ async function buildVideoArtifacts() {
   return generateArtifacts({ request, providers: {}, skill });
 }
 
+/**
+ * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+ * 功能：测试辅助：构造 mock 远端视频 Provider，generateVideo 落盘假视频并回传输出路径（"given" 原样返回，函数则改写返回）。
+ */
 function videoProvider(returnedPath: "given" | ((input: string) => string)): VideoModelProvider {
   return {
     id: "mock-video",
@@ -360,6 +380,10 @@ test("prepareGeneratedAssets does not trust manifest-recorded paths outside the 
   }
 });
 
+/**
+ * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+ * 功能：测试辅助：按给定的用户图片列表生成 video 模式产物（参考镜混排场景）。
+ */
 async function buildReferenceArtifacts(imagePaths: string[]) {
   const request: GenerateRequest = {
     theme: "AI 智能体介绍",
@@ -373,6 +397,10 @@ async function buildReferenceArtifacts(imagePaths: string[]) {
   return generateArtifacts({ request, providers: {}, skill });
 }
 
+/**
+ * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+ * 功能：测试辅助：在临时目录写入 count 张假用户图片，返回其绝对路径列表。
+ */
 /** A user-supplied image directory: reference files live OUTSIDE the project. */
 function writeUserImages(count: number): string[] {
   const dir = mkdtempSync(join(tmpdir(), "aivideo-userimgs-"));

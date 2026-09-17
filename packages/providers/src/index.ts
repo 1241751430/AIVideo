@@ -1,3 +1,10 @@
+/**
+ * @file index.ts
+ * @author zhangbaohong
+ * @date 2026-09-17
+ * @description AI 视频生成各类模型提供者（文案/图片/视频/语音）的实现与注册装配入口
+ * @see https://github.com/1241751430/AIVideo.git
+ */
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import {
@@ -48,6 +55,14 @@ const TRUSTED_IMAGE_DOWNLOAD_SUFFIXES = [
   ".openai.com"
 ];
 
+/**
+ * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+ * 功能：以指数退避重试包裹异步调用，全部尝试失败后抛出最后一次错误
+ * @param fn 可能失败并需要重试的异步任务
+ * @param attempts 最大尝试次数（默认 RETRY_ATTEMPTS）
+ * @param baseMs 首次退避基数毫秒，第 n 次等待 baseMs×2^n
+ * @returns 任务成功的返回值
+ */
 async function withRetry<T>(fn: () => Promise<T>, attempts = RETRY_ATTEMPTS, baseMs = RETRY_BASE_MS): Promise<T> {
   let lastError: Error | undefined;
   for (let i = 0; i < attempts; i++) {
@@ -76,15 +91,31 @@ abstract class RemoteApiKeyProvider {
 
   readonly isRemote = true;
 
+  /**
+   * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+   * 功能：保存远程提供者的 id 与配置，供子类鉴权与健康检查使用
+   */
   constructor(
     readonly id: string,
     protected readonly config: ProviderConfig
   ) {}
 
+  /**
+   * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+   * 功能：按配置的 apiKeyEnv 从环境变量读取远程 API 密钥
+   * @returns 密钥字符串；未配置或环境变量缺失时返回 undefined
+   */
   protected getApiKey(): string | undefined {
     return this.config.apiKeyEnv ? process.env[this.config.apiKeyEnv] : undefined;
   }
 
+  /**
+   * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+   * 功能：远程提供者通用健康检查——先校验 baseURL 可信与密钥存在，live 模式再真实探测 GET /models
+   * @param options 检查选项，live=true 时才发起真实网络探测
+   * @param readyMessage 非 live 模式下配置就绪时的提示文案
+   * @returns 该提供者的健康检查结果
+   */
   protected async probe(
     options?: { live?: boolean },
     readyMessage = "Configured and ready for remote calls."
@@ -136,6 +167,11 @@ class LocalRuleTextProvider implements TextModelProvider {
   readonly capability = "text" as const;
   readonly isRemote = false;
 
+  /**
+   * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+   * 功能：报告内置离线文案提供者始终可用
+   * @returns 恒为 ok 的健康状态
+   */
   async test(): Promise<ProviderHealth> {
     return {
       providerId: this.id,
@@ -146,6 +182,11 @@ class LocalRuleTextProvider implements TextModelProvider {
     };
   }
 
+  /**
+   * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+   * 功能：不调用远程模型，用本地规则产出一份含单场景分镜的 JSON 文案
+   * @returns JSON 字符串形式的脚本文案
+   */
   async generateText(request: TextGenerationRequest): Promise<string> {
     return JSON.stringify({
       title: "本地规则生成文案",
@@ -173,10 +214,19 @@ class LocalRuleTextProvider implements TextModelProvider {
 class OpenAICompatibleTextProvider extends RemoteApiKeyProvider implements TextModelProvider {
   readonly capability = "text" as const;
 
+  /**
+   * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+   * 功能：复用 probe 完成 OpenAI 兼容文本提供者的健康检查
+   */
   async test(options?: { live?: boolean }): Promise<ProviderHealth> {
     return this.probe(options);
   }
 
+  /**
+   * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+   * 功能：调用 OpenAI 兼容 /chat/completions 接口生成文案，失败按退避策略重试
+   * @returns 模型返回的消息内容字符串
+   */
   async generateText(request: TextGenerationRequest): Promise<string> {
     assertSafeBaseURL(this.config);
     const apiKey = this.getApiKey();
@@ -225,8 +275,17 @@ class NoopImageProvider implements ImageModelProvider {
   readonly capability = "image" as const;
   readonly isRemote = false;
 
+  /**
+   * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+   * 功能：记录该 noop 图片提供者的 id
+   */
   constructor(readonly id: string) {}
 
+  /**
+   * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+   * 功能：报告图片生成未启用，渲染端将回退到参考图或标题卡
+   * @returns 恒为 ok 的健康状态
+   */
   async test(): Promise<ProviderHealth> {
     return {
       providerId: this.id,
@@ -237,6 +296,10 @@ class NoopImageProvider implements ImageModelProvider {
     };
   }
 
+  /**
+   * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+   * 功能：不生成任何图片，仅原样回显请求的输出路径
+   */
   async generateImage(request: ImageGenerationRequest): Promise<{ outputPath: string }> {
     return { outputPath: request.outputPath };
   }
@@ -258,10 +321,19 @@ class NoopImageProvider implements ImageModelProvider {
 class OpenAICompatibleImageProvider extends RemoteApiKeyProvider implements ImageModelProvider {
   readonly capability = "image" as const;
 
+  /**
+   * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+   * 功能：复用 probe 完成远程图片生成端点的健康检查
+   */
   async test(options?: { live?: boolean }): Promise<ProviderHealth> {
     return this.probe(options, "Configured and ready for remote image generation.");
   }
 
+  /**
+   * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+   * 功能：调用 OpenAI 兼容 /images/generations 生成图片，解析 b64_json 或下载 url 后写入 outputPath
+   * @returns 写盘后的图片输出路径
+   */
   async generateImage(request: ImageGenerationRequest): Promise<{ outputPath: string }> {
     assertSafeBaseURL(this.config);
     const apiKey = this.getApiKey();
@@ -325,6 +397,11 @@ class OpenAICompatibleImageProvider extends RemoteApiKeyProvider implements Imag
     return { outputPath: request.outputPath };
   }
 
+  /**
+   * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+   * 功能：解析本次生图请求应传给接口的 size：优先按宽高比查 sizeMap，其次 width×height，最后回退 default 映射
+   * @returns size 字符串；无法确定时返回 undefined（请求体不带 size）
+   */
   private resolveSize(request: ImageGenerationRequest): string | undefined {
     if (request.aspectRatio && this.config.sizeMap?.[request.aspectRatio]) {
       return this.config.sizeMap[request.aspectRatio];
@@ -335,6 +412,12 @@ class OpenAICompatibleImageProvider extends RemoteApiKeyProvider implements Imag
     return this.config.sizeMap?.["default"];
   }
 
+  /**
+   * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+   * 功能：下载图片响应字节，强制 HTTPS、校验受信主机并限制大小与非空响应
+   * @param url 接口返回的图片下载地址
+   * @returns 图片文件的完整字节内容
+   */
   private async downloadImage(url: string): Promise<Buffer> {
     const parsed = new URL(url);
     if (parsed.protocol !== "https:") {
@@ -369,8 +452,17 @@ class NoopVideoProvider implements VideoModelProvider {
   readonly capability = "video" as const;
   readonly isRemote = false;
 
+  /**
+   * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+   * 功能：记录该 noop 视频提供者的 id
+   */
   constructor(readonly id: string) {}
 
+  /**
+   * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+   * 功能：报告视频模型未配置，成片将由本地合成渲染
+   * @returns 恒为 ok 的健康状态
+   */
   async test(): Promise<ProviderHealth> {
     return {
       providerId: this.id,
@@ -381,6 +473,10 @@ class NoopVideoProvider implements VideoModelProvider {
     };
   }
 
+  /**
+   * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+   * 功能：不生成任何视频，仅原样回显请求的输出路径
+   */
   async generateVideo(request: VideoGenerationRequest): Promise<{ outputPath: string }> {
     return { outputPath: request.outputPath };
   }
@@ -404,10 +500,19 @@ class NoopVideoProvider implements VideoModelProvider {
 class ArkSeedanceVideoProvider extends RemoteApiKeyProvider implements VideoModelProvider {
   readonly capability = "video" as const;
 
+  /**
+   * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+   * 功能：复用 probe 完成远程视频生成端点的健康检查
+   */
   async test(options?: { live?: boolean }): Promise<ProviderHealth> {
     return this.probe(options, "Configured and ready for remote video generation.");
   }
 
+  /**
+   * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+   * 功能：按「建任务→轮询→下载」流程生成视频并写入 outputPath；整链不重试以避免重复计费
+   * @returns 写盘后的视频输出路径
+   */
   async generateVideo(request: VideoGenerationRequest): Promise<{ outputPath: string }> {
     assertSafeBaseURL(this.config);
     const apiKey = this.getApiKey();
@@ -426,6 +531,13 @@ class ArkSeedanceVideoProvider extends RemoteApiKeyProvider implements VideoMode
     return { outputPath: request.outputPath };
   }
 
+  /**
+   * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+   * 功能：调用 Ark 任务接口创建文生/图生（首帧）视频任务并返回任务 id
+   * @param request 视频生成请求（提示词、时长、比例、可选参考图）
+   * @param apiKey 远程接口鉴权密钥
+   * @returns 新建任务的 id
+   */
   private async createTask(request: VideoGenerationRequest, apiKey: string): Promise<string> {
     const duration = Math.max(2, Math.min(12, Math.round(request.durationSeconds)));
     const content: Array<Record<string, unknown>> = [{ type: "text", text: request.prompt }];
@@ -475,6 +587,13 @@ class ArkSeedanceVideoProvider extends RemoteApiKeyProvider implements VideoMode
     return payload.id;
   }
 
+  /**
+   * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+   * 功能：按固定间隔轮询视频任务状态直至成功、终态失败或整体超时
+   * @param taskId createTask 返回的任务 id
+   * @param apiKey 远程接口鉴权密钥
+   * @returns 任务成功后返回的视频下载地址
+   */
   private async pollTask(taskId: string, apiKey: string): Promise<string> {
     const deadline = Date.now() + VIDEO_POLL_TIMEOUT_MS;
     const headers = { Authorization: `Bearer ${apiKey}` };
@@ -517,6 +636,12 @@ class ArkSeedanceVideoProvider extends RemoteApiKeyProvider implements VideoMode
     throw new Error(`Provider ${this.id} video task ${taskId} timed out after ${VIDEO_POLL_TIMEOUT_MS}ms.`);
   }
 
+  /**
+   * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+   * 功能：下载视频响应字节，强制 HTTPS、校验受信主机并限制大小与非空响应
+   * @param url 任务成功后返回的视频下载地址
+   * @returns 视频文件的完整字节内容
+   */
   private async downloadVideo(url: string): Promise<Buffer> {
     const parsed = new URL(url);
     if (parsed.protocol !== "https:") {
@@ -551,8 +676,17 @@ class LocalSpeechProvider implements SpeechProvider {
   readonly capability = "speech" as const;
   readonly isRemote = false;
 
+  /**
+   * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+   * 功能：记录本地语音提供者的 id
+   */
   constructor(readonly id: string) {}
 
+  /**
+   * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+   * 功能：探测本机可用的语音合成引擎（macOS say 优先，其次 espeak-ng）
+   * @returns 可用引擎名；两者皆不可用时返回 null
+   */
   private async detectEngine(): Promise<"say" | "espeak-ng" | null> {
     try {
       await execFileAsync("say", ["-v", "?"]);
@@ -569,6 +703,11 @@ class LocalSpeechProvider implements SpeechProvider {
     return null;
   }
 
+  /**
+   * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+   * 功能：报告本地语音引擎是否可用
+   * @returns 探测到引擎时为 ok，否则附带缺失引擎说明
+   */
   async test(): Promise<ProviderHealth> {
     const engine = await this.detectEngine();
     if (engine) {
@@ -589,6 +728,11 @@ class LocalSpeechProvider implements SpeechProvider {
     };
   }
 
+  /**
+   * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+   * 功能：用本地引擎（say/espeak-ng）把文本合成为语音文件
+   * @returns 语音文件的输出路径
+   */
   async synthesizeSpeech(request: SpeechGenerationRequest): Promise<{ outputPath: string }> {
     mkdirSync(dirname(request.outputPath), { recursive: true });
     const engine = await this.detectEngine();
@@ -626,11 +770,21 @@ class ArkTTSSpeechProvider implements SpeechProvider {
   readonly capability = "speech" as const;
   readonly isRemote = true;
 
+  /**
+   * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+   * 功能：保存远程语音提供者的 id 与配置
+   */
   constructor(
     readonly id: string,
     private readonly config: ProviderConfig
   ) {}
 
+  /**
+   * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+   * 功能：校验 baseURL 与语音控制台凭据环境变量；接口按次计费，故 live 模式也不发真实请求
+   * @param options 检查选项（语音提供者不做真实探测，保留以对齐接口签名）
+   * @returns 凭据齐全即 ok，缺失时列出未配置的环境变量名
+   */
   async test(options?: { live?: boolean }): Promise<ProviderHealth> {
     assertSafeBaseURL(this.config);
     const missing = this.getMissingCredentials();
@@ -655,6 +809,11 @@ class ArkTTSSpeechProvider implements SpeechProvider {
     };
   }
 
+  /**
+   * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+   * 功能：远程合成语音并写入 outputPath；缺凭据时静默降级到本地引擎
+   * @returns 语音文件的输出路径
+   */
   async synthesizeSpeech(request: SpeechGenerationRequest): Promise<{ outputPath: string }> {
     assertSafeBaseURL(this.config);
     // Without the speech-console credentials there is nothing to bill: degrade
@@ -672,6 +831,12 @@ class ArkTTSSpeechProvider implements SpeechProvider {
     return { outputPath: request.outputPath };
   }
 
+  /**
+   * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+   * 功能：调用火山引擎 openspeech TTS 接口合成一次语音，校验返回码并解码音频
+   * @param request 语音合成请求（文本、音色覆盖、输出路径等）
+   * @returns 解码后的 wav 音频字节
+   */
   private async synthesize(request: SpeechGenerationRequest): Promise<Buffer> {
     const appId = this.getAppId();
     const accessToken = this.getAccessToken();
@@ -746,14 +911,26 @@ class ArkTTSSpeechProvider implements SpeechProvider {
     return audioBuffer;
   }
 
+  /**
+   * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+   * 功能：从 appIdEnv 指定的环境变量读取语音应用 appid
+   */
   private getAppId(): string | undefined {
     return this.config.appIdEnv ? process.env[this.config.appIdEnv] : undefined;
   }
 
+  /**
+   * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+   * 功能：从 apiKeyEnv 指定的环境变量读取语音访问令牌
+   */
   private getAccessToken(): string | undefined {
     return this.config.apiKeyEnv ? process.env[this.config.apiKeyEnv] : undefined;
   }
 
+  /**
+   * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+   * 功能：列出尚未配置的语音凭据环境变量名，供健康检查与降级判断
+   */
   private getMissingCredentials(): string[] {
     const missing: string[] = [];
     if (!this.config.appIdEnv || !process.env[this.config.appIdEnv]) {
@@ -766,6 +943,10 @@ class ArkTTSSpeechProvider implements SpeechProvider {
   }
 }
 
+/**
+ * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+ * 功能：从 extraBody 中剔除属于 app 段的 cluster 字段，剩余键并入 audio 段
+ */
 // `cluster` belongs to the `app` section; keep it out of the `audio` merge.
 function stripCluster(extraBody: Record<string, unknown>): Record<string, unknown> {
   const { cluster: _cluster, ...rest } = extraBody;
@@ -788,22 +969,46 @@ videoProviderRegistry.set("ark-seedance-video", (id, cfg) => new ArkSeedanceVide
 speechProviderRegistry.set("local-say", (id) => new LocalSpeechProvider(id));
 speechProviderRegistry.set("ark-tts-speech", (id, cfg) => new ArkTTSSpeechProvider(id, cfg));
 
+/**
+ * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+ * 功能：向文案提供者注册表登记一个 provider type 工厂
+ */
 export function registerTextProvider(type: string, factory: ProviderFactory<TextModelProvider>): void {
   textProviderRegistry.set(type, factory);
 }
 
+/**
+ * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+ * 功能：向图片提供者注册表登记一个 provider type 工厂
+ */
 export function registerImageProvider(type: string, factory: ProviderFactory<ImageModelProvider>): void {
   imageProviderRegistry.set(type, factory);
 }
 
+/**
+ * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+ * 功能：向视频提供者注册表登记一个 provider type 工厂
+ */
 export function registerVideoProvider(type: string, factory: ProviderFactory<VideoModelProvider>): void {
   videoProviderRegistry.set(type, factory);
 }
 
+/**
+ * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+ * 功能：向语音提供者注册表登记一个 provider type 工厂
+ */
 export function registerSpeechProvider(type: string, factory: ProviderFactory<SpeechProvider>): void {
   speechProviderRegistry.set(type, factory);
 }
 
+/**
+ * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+ * 功能：按配置从注册表实例化某能力的提供者；未指定或禁用返回 undefined，未知类型抛错
+ * @param registry 该能力对应的 type→工厂注册表
+ * @param config 全局应用配置（含各 provider 定义）
+ * @param providerId 选中的 provider id；缺省表示该能力未配置
+ * @param capabilityLabel 能力名，仅用于拼装错误信息
+ */
 function instantiateFromRegistry<T>(
   registry: Map<string, ProviderFactory<T>>,
   config: AppConfig,
@@ -824,6 +1029,12 @@ function instantiateFromRegistry<T>(
   return factory(providerId, providerConfig);
 }
 
+/**
+ * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+ * 功能：按 profile 装配文案/图片/视频/语音四类提供者的选择结果
+ * @param config 全局应用配置
+ * @param profileName 配置档名称；缺省使用默认档
+ */
 export function createProviderSelection(config: AppConfig, profileName?: string): ProviderSelection {
   const profile = resolveProfile(config, profileName);
 
@@ -835,6 +1046,13 @@ export function createProviderSelection(config: AppConfig, profileName?: string)
   };
 }
 
+/**
+ * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+ * 功能：对 profile 选中的各能力提供者并发执行健康检查并汇总结果
+ * @param config 全局应用配置
+ * @param profileName 配置档名称；缺省使用默认档
+ * @param live 是否发起真实网络探测
+ */
 export async function testProviders(
   config: AppConfig,
   profileName?: string,
@@ -852,6 +1070,13 @@ export async function testProviders(
   return Promise.all(checks.map((provider) => provider!.test({ live })));
 }
 
+/**
+ * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+ * 功能：带超时中止控制的 fetch 封装，超时后抛出含请求地址与毫秒数的错误
+ * @param input 请求 URL
+ * @param init fetch 请求初始化参数
+ * @param timeoutMs 超时毫秒数
+ */
 async function fetchWithTimeout(
   input: string,
   init: RequestInit,
@@ -871,6 +1096,10 @@ async function fetchWithTimeout(
   }
 }
 
+/**
+ * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+ * 功能：校验 provider baseURL 为 HTTPS 且主机在受信名单（或已显式允许自定义）
+ */
 function assertSafeBaseURL(config: ProviderConfig): void {
   if (!config.baseURL) {
     throw new Error("Provider baseURL is missing.");
@@ -889,6 +1118,10 @@ function assertSafeBaseURL(config: ProviderConfig): void {
   }
 }
 
+/**
+ * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+ * 功能：判断下载主机是否命中受信图片主机名单或受信后缀
+ */
 function isTrustedImageHost(hostname: string): boolean {
   if (TRUSTED_IMAGE_DOWNLOAD_HOSTS.includes(hostname)) {
     return true;
@@ -898,6 +1131,10 @@ function isTrustedImageHost(hostname: string): boolean {
   );
 }
 
+/**
+ * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+ * 功能：尽力读取错误响应体并截断为不超过 300 字符，读取失败返回空串
+ */
 async function safeReadErrorBody(response: Response): Promise<string> {
   try {
     const text = await response.text();
@@ -912,6 +1149,11 @@ async function safeReadErrorBody(response: Response): Promise<string> {
   }
 }
 
+/**
+ * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+ * 功能：把本地参考图片读取为 base64 data URI，发送前先做文件校验避免计费后失败
+ * @param filePath 本地图片路径
+ */
 // Reference images sent to video models as base64 data URIs. Ark accepts
 // roughly the 10MB cap enforced by validateLocalImageFile, and larger payloads
 // are rejected by the API — fail early with a clear local error instead of a

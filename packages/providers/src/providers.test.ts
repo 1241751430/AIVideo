@@ -1,3 +1,10 @@
+/**
+ * @file providers.test.ts
+ * @author zhangbaohong
+ * @date 2026-09-17
+ * @description providers 包单元测试：默认提供者选择与健康检查，以及 ArkTTS 语音、Ark Seedance 视频、OpenAI 兼容图片提供者的 mock fetch 行为验证
+ * @see https://github.com/1241751430/AIVideo.git
+ */
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -40,6 +47,10 @@ test("custom baseURL is rejected unless explicitly allowed", async () => {
 
 // --- ArkTTS speech provider (mocked fetch; no real network calls) ---
 
+/**
+ * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+ * 功能：构造选中远程语音提供者的测试用配置（新增 tts-test profile）
+ */
 function speechTestConfig(): AppConfig {
   const config = loadConfig(process.cwd());
   // A synthetic profile that selects the remote speech provider without
@@ -48,6 +59,11 @@ function speechTestConfig(): AppConfig {
   return config;
 }
 
+/**
+ * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+ * 功能：安装固定响应的 fetch 桩并记录每次请求，返回调用记录与还原函数
+ * @param handler 每次调用时生成响应体的函数
+ */
 function installFetchStub(handler: () => Response): { calls: Array<{ url: string; init: RequestInit }>; restore: () => void } {
   const calls: Array<{ url: string; init: RequestInit }> = [];
   const original = globalThis.fetch;
@@ -63,6 +79,11 @@ function installFetchStub(handler: () => Response): { calls: Array<{ url: string
   };
 }
 
+/**
+ * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+ * 功能：安装按脚本顺序消费预置响应的 fetch 桩，脚本耗尽后额外调用直接抛错
+ * @param script 依次返回的 Response 脚本
+ */
 /**
  * Sequential fetch stub: each call consumes the next canned Response (recording
  * the request for assertions). Throws loudly if the provider calls more times
@@ -89,6 +110,12 @@ function installScriptedFetch(script: Response[]): { calls: Array<{ url: string;
   };
 }
 
+/**
+ * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+ * 功能：在临时设置的环境变量下执行异步逻辑，结束后原样还原
+ * @param values 要设置的键值对，值为 undefined 表示临时删除
+ * @param run 在环境下执行的异步逻辑
+ */
 function withEnv(values: Record<string, string | undefined>, run: () => Promise<void>): Promise<void> {
   const saved: Record<string, string | undefined> = {};
   for (const key of Object.keys(values)) {
@@ -230,6 +257,10 @@ test("ark-tts-speech degrades to the local engine when credentials are missing",
 
 const ARK_TASK_URL = "https://ark.cn-beijing.volces.com/api/v3/contents/generations/tasks";
 
+/**
+ * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+ * 功能：构造使用 mock Ark Seedance 视频提供者的测试配置（video-test profile）
+ */
 function arkVideoTestConfig(): AppConfig {
   const config = loadConfig(process.cwd());
   config.profiles["video-test"] = { video: "video-test-provider" };
@@ -244,10 +275,20 @@ function arkVideoTestConfig(): AppConfig {
   return config;
 }
 
+/**
+ * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+ * 功能：把任意载荷包装成 JSON Response，便于脚本化 fetch 桩
+ */
 function jsonResponse(payload: unknown, status = 200): Response {
   return new Response(JSON.stringify(payload), { status });
 }
 
+/**
+ * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+ * 功能：生成一次成功「建任务→轮询→下载」的响应脚本
+ * @param videoUrl 任务成功后返回的视频下载地址
+ * @param pollStatuses 成功前的非终态轮询状态列表（每项会消耗真实 5s 等待）
+ */
 /**
  * Canned create→poll→download script for a successful generation, optionally
  * with non-terminal poll states before the success. Keep the non-terminal
@@ -264,6 +305,12 @@ function arkHappyScript(videoUrl: string, pollStatuses: string[] = ["queued"]): 
   ];
 }
 
+/**
+ * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+ * 功能：构造视频生成请求对象，可覆盖提示词、时长、宽高比与参考图路径
+ * @param outputPath 成片写入路径
+ * @param overrides 可选字段覆盖
+ */
 function videoRequest(
   outputPath: string,
   overrides: Partial<{
@@ -339,6 +386,11 @@ test("ark-seedance-video clamps duration to the model range and passes ratio", a
 const TINY_PNG_BASE64 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
 
+/**
+ * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+ * 功能：向临时目录写入一张 1x1 PNG 作为参考图测试素材并返回路径
+ * @param name 文件名（默认 reference.png）
+ */
 function writeTempPng(name = "reference.png"): string {
   const dir = mkdtempSync(join(tmpdir(), "aivideo-ref-"));
   const filePath = join(dir, name);
@@ -579,6 +631,10 @@ test("ark-seedance-video health check fails without an API key", async () => {
 
 // --- OpenAI-compatible image provider (mocked fetch) ---
 
+/**
+ * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+ * 功能：构造使用 OpenAI 兼容图片提供者（含 sizeMap/extraBody）的测试配置
+ */
 function imageTestConfig(): AppConfig {
   const config = loadConfig(process.cwd());
   config.profiles["image-test"] = { image: "image-test-provider" };

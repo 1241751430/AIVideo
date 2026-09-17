@@ -1,3 +1,11 @@
+/**
+ * @file types.ts
+ * @author zhangbaohong
+ * @date 2026-09-17
+ * @description 核心领域类型定义：生成请求与 Provider 能力枚举、创作产物（简报/脚本包/分镜/字幕/渲染清单）结构、应用与 Provider 配置结构，以及文本/图片/视频/语音四类模型 Provider 的接口契约。
+ * @see https://github.com/1241751430/AIVideo.git
+ */
+
 export type GenerationMode = "script" | "video";
 export type ProviderCapability = "text" | "image" | "video" | "speech";
 

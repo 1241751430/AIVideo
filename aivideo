@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# @file aivideo
+# @author zhangbaohong
+# @date 2026-09-17
+# @description 启动脚本：解析 AIVIDEO_MODE，自动准备 .env/构建，分发 docker/host/local 模式执行 CLI
+# @see https://github.com/1241751430/AIVideo.git
 # AI Video Agent launcher.
 # Usage: ./aivideo <command> [args...]
 #
@@ -16,10 +21,14 @@ STATE_DIR=".aivideo"
 DOCKER_STAMP="$STATE_DIR/.docker-built"
 FIRST_RUN_STAMP="$STATE_DIR/.first-run-complete"
 
+# 功能：判断是否首次运行（首跑标记文件不存在）
+# @author zhangbaohong @date 2026-09-17 @see https://github.com/1241751430/AIVideo.git
 is_first_run() {
   [ ! -f "$FIRST_RUN_STAMP" ]
 }
 
+# 功能：首次运行时向 stderr 打印一次性初始化提示
+# @author zhangbaohong @date 2026-09-17 @see https://github.com/1241751430/AIVideo.git
 print_first_run_notice() {
   local mode="$1"
   if is_first_run; then
@@ -28,11 +37,15 @@ print_first_run_notice() {
   fi
 }
 
+# 功能：写入首次运行完成标记，避免后续重复提示
+# @author zhangbaohong @date 2026-09-17 @see https://github.com/1241751430/AIVideo.git
 mark_first_run_complete() {
   mkdir -p "$STATE_DIR"
   touch "$FIRST_RUN_STAMP"
 }
 
+# 功能：当 .env 缺失时从 .env.example 自动生成
+# @author zhangbaohong @date 2026-09-17 @see https://github.com/1241751430/AIVideo.git
 ensure_env_file() {
   if [ ! -f ".env" ] && [ -f ".env.example" ]; then
     cp .env.example .env
@@ -40,8 +53,12 @@ ensure_env_file() {
   fi
 }
 
+# 功能：判断指定命令是否存在于 PATH 中
+# @author zhangbaohong @date 2026-09-17 @see https://github.com/1241751430/AIVideo.git
 have_cmd() { command -v "$1" >/dev/null 2>&1; }
 
+# 功能：检测 docker 守护进程与 docker compose 子命令是否可用
+# @author zhangbaohong @date 2026-09-17 @see https://github.com/1241751430/AIVideo.git
 docker_available() {
   have_cmd docker || return 1
   docker info >/dev/null 2>&1 || return 1
@@ -49,6 +66,8 @@ docker_available() {
   return 1
 }
 
+# 功能：按需构建 Docker 镜像后通过 docker compose 运行 CLI
+# @author zhangbaohong @date 2026-09-17 @see https://github.com/1241751430/AIVideo.git
 run_docker() {
   mkdir -p "$STATE_DIR"
   print_first_run_notice "Docker"
@@ -61,6 +80,8 @@ run_docker() {
   exec docker compose run --rm aivideo "$@"
 }
 
+# 功能：校验 Node/pnpm 并按需安装构建后，用宿主机 Node 直接运行 CLI
+# @author zhangbaohong @date 2026-09-17 @see https://github.com/1241751430/AIVideo.git
 run_host() {
   mkdir -p "$STATE_DIR"
   print_first_run_notice "host"

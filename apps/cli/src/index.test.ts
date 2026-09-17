@@ -1,3 +1,10 @@
+/**
+ * @file index.test.ts
+ * @author zhangbaohong
+ * @date 2026-09-17
+ * @description CLI 入口辅助函数（参数解析、brief 解析、语言推断、路径校验与渲染摘要）的单元测试
+ * @see https://github.com/1241751430/AIVideo.git
+ */
 import assert from "node:assert/strict";
 import test from "node:test";
 import {

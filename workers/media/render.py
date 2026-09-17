@@ -1,4 +1,11 @@
 #!/usr/bin/env python3
+"""
+媒体渲染脚本：驱动 ffmpeg 将标题卡、图片与视频素材按分镜渲染为片段，再拼接、烧录字幕并混入 BGM 产出最终视频。
+
+@author zhangbaohong
+@date 2026-09-17
+@see https://github.com/1241751430/AIVideo.git
+"""
 from __future__ import annotations
 
 import argparse
@@ -18,16 +25,28 @@ AUDIO_BITRATE = "192k"
 
 
 def run(command: list[str]) -> None:
+    """
+    功能：执行外部命令，命令失败时抛出 RuntimeError
+    @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+    """
     completed = subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
     if completed.returncode != 0:
         raise RuntimeError(completed.stderr.strip() or "command failed")
 
 
 def warn(message: str) -> None:
+    """
+    功能：向控制台输出 WARNING 级别的警告信息
+    @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+    """
     print(f"WARNING: {message}", flush=True)
 
 
 def ensure_binary(name: str) -> None:
+    """
+    功能：检查指定二进制程序存在于 PATH 中，否则抛出异常
+    @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+    """
     if shutil.which(name) is None:
         raise RuntimeError(f"{name} is required but not found in PATH")
 
@@ -42,6 +61,8 @@ def detect_gpu_encoder() -> str | None:
     - macOS: h264_videotoolbox (Apple VideoToolbox)
     - Linux/Windows NVIDIA: h264_nvenc
     - Linux VAAPI: h264_vaapi
+
+    @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
     """
     candidates: list[str]
     if platform.system() == "Darwin":
@@ -75,6 +96,8 @@ def resolve_video_encoder(gpu_flag: bool) -> str:
     When *gpu_flag* is True the function tries to auto-detect a hardware
     encoder.  If detection fails it falls back to ``libx264`` and prints
     a warning.
+
+    @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
     """
     if not gpu_flag:
         return "libx264"
@@ -89,6 +112,10 @@ def resolve_video_encoder(gpu_flag: bool) -> str:
 
 
 def resolve_media_path(project_dir: Path, value: str | None) -> str | None:
+    """
+    功能：将相对项目目录的媒体路径解析为绝对路径，空值返回 None
+    @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+    """
     if not value:
         return None
     candidate = Path(value)
@@ -98,6 +125,10 @@ def resolve_media_path(project_dir: Path, value: str | None) -> str | None:
 
 
 def resolve_project_path(project_dir: Path, value: str, label: str) -> Path:
+    """
+    功能：解析项目内路径并拒绝越出项目目录边界的访问
+    @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+    """
     candidate = (project_dir / value).resolve()
     project_root = project_dir.resolve()
     if candidate != project_root and project_root not in candidate.parents:
@@ -106,6 +137,10 @@ def resolve_project_path(project_dir: Path, value: str, label: str) -> Path:
 
 
 def escape_drawtext(value: str) -> str:
+    """
+    功能：转义 drawtext 滤镜文本参数中的特殊字符
+    @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+    """
     return (
         value.replace("\\", "\\\\")
         .replace(":", "\\:")
@@ -115,6 +150,10 @@ def escape_drawtext(value: str) -> str:
 
 
 def escape_filter_path(value: str) -> str:
+    """
+    功能：转义滤镜表达式中文件路径的特殊字符
+    @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+    """
     return (
         value.replace("\\", "\\\\")
         .replace(":", "\\:")
@@ -126,6 +165,10 @@ def escape_filter_path(value: str) -> str:
 
 
 def build_image_filter(width: int, height: int, duration: str) -> str:
+    """
+    功能：构建图片的放大缩放（zoompan）动效与淡入淡出滤镜链
+    @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+    """
     frames = max(1, int(round(float(duration) * int(OUTPUT_FPS))))
     return (
         f"scale={width * 2}:{height * 2}:force_original_aspect_ratio=increase,"
@@ -137,6 +180,10 @@ def build_image_filter(width: int, height: int, duration: str) -> str:
 
 
 def build_video_filter(width: int, height: int, duration: str) -> str:
+    """
+    功能：构建视频的缩放裁切、统一帧率与淡入淡出滤镜链
+    @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+    """
     return (
         f"scale={width}:{height}:force_original_aspect_ratio=increase,"
         f"crop={width}:{height},"
@@ -147,6 +194,10 @@ def build_video_filter(width: int, height: int, duration: str) -> str:
 
 
 def build_title_card_filter(width: int, height: int, title: str) -> str:
+    """
+    功能：构建标题卡的渐变背景、装饰条与文字绘制滤镜链
+    @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+    """
     title_size = max(44, min(72, width // 18))
     accent_height = max(10, height // 120)
     return (
@@ -160,6 +211,10 @@ def build_title_card_filter(width: int, height: int, title: str) -> str:
 
 
 def append_output_quality_settings(command: list[str], video_encoder: str) -> None:
+    """
+    功能：向 ffmpeg 命令追加统一的帧率、视频编码与音频质量参数
+    @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+    """
     command.extend(["-r", OUTPUT_FPS, "-c:v", video_encoder])
     if video_encoder == "libx264":
         command.extend(["-preset", "medium", "-crf", VIDEO_CRF])
@@ -180,6 +235,10 @@ def append_output_quality_settings(command: list[str], video_encoder: str) -> No
 
 
 def build_subtitle_burn_command(input_path: Path, captions: Path, output_path: Path) -> list[str]:
+    """
+    功能：构建将字幕烧录进视频的 ffmpeg 命令
+    @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+    """
     style = "FontName=Arial,FontSize=18,PrimaryColour=&H00FFFFFF,OutlineColour=&H80000000,BorderStyle=1,Outline=2,Shadow=1,MarginV=90,Alignment=2"
     return [
         "ffmpeg",
@@ -197,6 +256,10 @@ def build_subtitle_burn_command(input_path: Path, captions: Path, output_path: P
 
 
 def build_bgm_mix_command(input_path: Path, bgm: Path, output_path: Path) -> list[str]:
+    """
+    功能：构建将 BGM 经侧链压缩给人声让路后混音的 ffmpeg 命令
+    @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+    """
     return [
         "ffmpeg",
         "-y",
@@ -237,6 +300,10 @@ def build_clip_command(
     video_encoder: str = "libx264",
     asset_kind: str = "image",
 ) -> list[str]:
+    """
+    功能：根据素材类型（视频/图片/标题卡）构建单个分镜片段的渲染 ffmpeg 命令
+    @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+    """
     has_video_asset = asset_kind == "video" and bool(image_path and os.path.exists(image_path))
     has_image = (not has_video_asset) and bool(image_path and os.path.exists(image_path))
     has_audio = bool(audio_path and os.path.exists(audio_path))
@@ -366,6 +433,10 @@ def build_title_card_fallback_command(
     audio_path: str | None,
     video_encoder: str = "libx264",
 ) -> list[str]:
+    """
+    功能：构建素材渲染失败时兜底的纯色标题卡 ffmpeg 命令
+    @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+    """
     command = [
         "ffmpeg",
         "-y",
@@ -406,6 +477,10 @@ def build_title_card_fallback_command(
 
 
 def build_image_prepare_command(source_path: str, target_path: Path) -> list[str]:
+    """
+    功能：构建将源图片归一化为单帧 PNG 的 ffmpeg 命令
+    @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+    """
     return [
         "ffmpeg",
         "-y",
@@ -422,6 +497,10 @@ def build_image_prepare_command(source_path: str, target_path: Path) -> list[str
 
 
 def prepare_manifest_media(project_dir: Path, work_dir: Path, manifest: dict) -> None:
+    """
+    功能：批量预处理清单中所有分镜引用的图片与音频素材
+    @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+    """
     assets_dir = work_dir / "assets"
     assets_dir.mkdir(parents=True, exist_ok=True)
     for index, shot in enumerate(manifest["shots"]):
@@ -430,6 +509,10 @@ def prepare_manifest_media(project_dir: Path, work_dir: Path, manifest: dict) ->
 
 
 def prepare_shot_image(project_dir: Path, assets_dir: Path, shot: dict, index: int) -> None:
+    """
+    功能：预处理单个分镜的图片/视频素材，不可用时降级为标题卡
+    @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+    """
     image_path = resolve_media_path(project_dir, shot.get("assetPath"))
     if not image_path:
         return
@@ -462,6 +545,10 @@ def prepare_shot_image(project_dir: Path, assets_dir: Path, shot: dict, index: i
 
 
 def prepare_shot_audio(project_dir: Path, shot: dict, index: int) -> None:
+    """
+    功能：预处理单个分镜的旁白音频，不可用时降级为静音
+    @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+    """
     audio_path = resolve_media_path(project_dir, shot.get("audioPath"))
     if not audio_path:
         return
@@ -478,6 +565,10 @@ def prepare_shot_audio(project_dir: Path, shot: dict, index: int) -> None:
 
 
 def make_clip(project_dir: Path, work_dir: Path, shot: dict, width: int, height: int, index: int, video_encoder: str = "libx264") -> Path:
+    """
+    功能：渲染单个分镜片段的 mp4 文件，失败时依次回退软编码与纯标题卡
+    @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+    """
     duration_seconds = normalize_positive_number(shot.get("durationSeconds"), f"Shot {index + 1} duration")
     duration = str(duration_seconds)
     clip_path = work_dir / f"clip_{index:03d}.mp4"
@@ -508,6 +599,10 @@ def make_clip(project_dir: Path, work_dir: Path, shot: dict, width: int, height:
 
 
 def validate_manifest(manifest: dict) -> None:
+    """
+    功能：校验并规范化渲染清单的宽高与分镜时长字段
+    @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+    """
     width = normalize_positive_int(manifest.get("width"), "Manifest width")
     height = normalize_positive_int(manifest.get("height"), "Manifest height")
     shots = manifest.get("shots")
@@ -522,18 +617,30 @@ def validate_manifest(manifest: dict) -> None:
 
 
 def normalize_positive_int(value: object, label: str) -> int:
+    """
+    功能：校验取值为正整数并返回，非法时抛出异常
+    @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+    """
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         raise RuntimeError(f"{label} must be a positive integer")
     return value
 
 
 def normalize_positive_number(value: object, label: str) -> float:
+    """
+    功能：校验取值为正数并四舍五入到三位小数返回，非法时抛出异常
+    @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+    """
     if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
         raise RuntimeError(f"{label} must be a positive number")
     return round(float(value), 3)
 
 
 def probe_media(path: Path) -> dict:
+    """
+    功能：调用 ffprobe 获取媒体文件的格式与流信息字典
+    @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+    """
     completed = subprocess.run(
         [
             "ffprobe",
@@ -558,10 +665,18 @@ def probe_media(path: Path) -> dict:
 
 
 def probe_video(path: Path) -> dict:
+    """
+    功能：探测视频文件的媒体信息
+    @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+    """
     return probe_media(path)
 
 
 def has_audio_stream(path: Path) -> bool:
+    """
+    功能：判断媒体文件是否包含时长为正的音频流
+    @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+    """
     probe = probe_media(path)
     streams = probe.get("streams")
     if not isinstance(streams, list):
@@ -573,6 +688,10 @@ def has_audio_stream(path: Path) -> bool:
 
 
 def has_video_stream(path: Path) -> bool:
+    """
+    功能：判断媒体文件是否包含时长为正的视频流
+    @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+    """
     probe = probe_media(path)
     streams = probe.get("streams")
     if not isinstance(streams, list):
@@ -584,6 +703,10 @@ def has_video_stream(path: Path) -> bool:
 
 
 def validate_output_video(path: Path, width: int, height: int) -> None:
+    """
+    功能：校验渲染产出的视频存在、含视频流、分辨率匹配且时长为正
+    @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+    """
     if not path.exists() or path.stat().st_size <= 0:
         raise RuntimeError(f"Rendered video is missing or empty: {path}")
     probe = probe_video(path)
@@ -603,6 +726,10 @@ def validate_output_video(path: Path, width: int, height: int) -> None:
 
 
 def parse_probe_duration(probe: dict, video_stream: dict) -> float:
+    """
+    功能：从 ffprobe 结果中解析时长秒数，优先 format 再回退到流字段
+    @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+    """
     for value in (probe.get("format", {}).get("duration"), video_stream.get("duration")):
         try:
             duration = float(value)
@@ -619,6 +746,8 @@ def validate_manifest_paths(project_dir: Path, manifest: dict) -> Path:
     Video assets are pipeline-generated files that must live under the project;
     reference images (assetKind "image") may legitimately be user-supplied
     paths outside it, so only video is gated here.
+
+    @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
     """
     output_path = resolve_project_path(project_dir, manifest["outputFile"], "Output file")
     resolve_project_path(project_dir, manifest["captionsFile"], "Captions file")
@@ -632,6 +761,10 @@ def validate_manifest_paths(project_dir: Path, manifest: dict) -> Path:
 
 
 def render(project_dir: Path, manifest_path: Path, gpu: bool = False) -> Path:
+    """
+    功能：完整渲染流程——并行生成各分镜片段、拼接、烧录字幕、混入 BGM 并最终校验
+    @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+    """
     ensure_binary("ffmpeg")
     ensure_binary("ffprobe")
 
@@ -720,6 +853,10 @@ def render(project_dir: Path, manifest_path: Path, gpu: bool = False) -> Path:
 
 
 def find_bgm(project_dir: Path) -> Path | None:
+    """
+    功能：在项目 audio 目录下按支持的扩展名查找 BGM 音频文件
+    @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+    """
     for ext in ("mp3", "wav", "aac", "m4a", "ogg"):
         candidate = project_dir / "audio" / f"bgm.{ext}"
         if candidate.exists():
@@ -728,6 +865,10 @@ def find_bgm(project_dir: Path) -> Path | None:
 
 
 def main() -> int:
+    """
+    功能：命令行入口，解析参数并执行渲染，失败时输出错误并返回非零退出码
+    @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+    """
     parser = argparse.ArgumentParser()
     parser.add_argument("--project-dir", required=True)
     parser.add_argument("--manifest", required=True)

@@ -1,3 +1,11 @@
+/**
+ * @file config.ts
+ * @author zhangbaohong
+ * @date 2026-09-17
+ * @description 配置层：内置默认配置（Provider 目录与 profile 定义）、加载并合并 aivideo.config.yaml、环境变量覆盖与 .env 读取、profile 解析与自动推断，以及配置校验与模板导出。
+ * @see https://github.com/1241751430/AIVideo.git
+ */
+
 import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import YAML from "yaml";
@@ -180,6 +188,11 @@ const DEFAULT_CONFIG: AppConfig = {
   }
 };
 
+/**
+ * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+ * 功能：读取 cwd 下的 aivideo.config.yaml 并与默认配置逐层合并；文件不存在时直接返回默认配置的克隆，随后应用模型环境变量覆盖并校验 projectsDir 安全性。
+ * @returns 合并后的 AppConfig
+ */
 export function loadConfig(cwd: string): AppConfig {
   const configPath = resolve(cwd, CONFIG_FILE);
   if (!existsSync(configPath)) {
@@ -208,6 +221,10 @@ export function loadConfig(cwd: string): AppConfig {
   return config;
 }
 
+/**
+ * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+ * 功能：浅拷贝 DEFAULT_CONFIG 的 defaults/providers/profiles 三层结构，避免调用方修改污染默认值。
+ */
 function cloneDefaultConfig(): AppConfig {
   return {
     defaults: { ...DEFAULT_CONFIG.defaults },
@@ -220,6 +237,10 @@ function cloneDefaultConfig(): AppConfig {
   };
 }
 
+/**
+ * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+ * 功能：遍历配置中的 Provider，若其 modelEnv 指定的环境变量有值则覆盖 provider.model。
+ */
 function applyProviderEnvOverrides(config: AppConfig): void {
   for (const provider of Object.values(config.providers)) {
     if (!provider.modelEnv) {
@@ -232,6 +253,10 @@ function applyProviderEnvOverrides(config: AppConfig): void {
   }
 }
 
+/**
+ * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+ * 功能：校验 projectsDir 必须是相对路径且解析后仍位于 cwd 内，否则抛出说明性错误。
+ */
 function assertSafeProjectsDir(cwd: string, projectsDir: string): void {
   if (isAbsolute(projectsDir)) {
     throw new Error(`projectsDir must be a relative path, got: ${projectsDir}`);
@@ -242,6 +267,11 @@ function assertSafeProjectsDir(cwd: string, projectsDir: string): void {
   }
 }
 
+/**
+ * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+ * 功能：先解析出生效的 profile id，再从 config.profiles 取出对应 profile；未知 id 抛出错误。
+ * @returns 对应的 ProviderProfileConfig
+ */
 export function resolveProfile(config: AppConfig, requestedProfile?: string): ProviderProfileConfig {
   const profileId = resolveProfileId(config, requestedProfile);
   const profile = config.profiles[profileId];
@@ -251,6 +281,10 @@ export function resolveProfile(config: AppConfig, requestedProfile?: string): Pr
   return profile;
 }
 
+/**
+ * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+ * 功能：确定生效的 profile：显式传入优先（非空且非 "auto"），否则按已配置密钥的环境变量推断，最后回退 defaults.profile。
+ */
 export function resolveProfileId(config: AppConfig, requestedProfile?: string): string {
   const explicitProfile = normalizeProfileValue(requestedProfile);
   if (explicitProfile) {
@@ -260,6 +294,10 @@ export function resolveProfileId(config: AppConfig, requestedProfile?: string): 
   return inferProfileFromConfiguredKeys(config) ?? config.defaults.profile;
 }
 
+/**
+ * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+ * 功能：去除 profile 值首尾空白，空串或 "auto" 归一为 undefined，表示不显式指定。
+ */
 function normalizeProfileValue(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
   if (!trimmed || trimmed.toLowerCase() === "auto") {
@@ -268,6 +306,10 @@ function normalizeProfileValue(value: string | undefined): string | undefined {
   return trimmed;
 }
 
+/**
+ * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+ * 功能：按 profile 顺序检查其文本 Provider 的 apiKeyEnv 是否已在环境变量中配置，返回第一个匹配的 profile id。
+ */
 function inferProfileFromConfiguredKeys(config: AppConfig): string | undefined {
   for (const [profileId, profile] of Object.entries(config.profiles)) {
     const textProviderId = profile.text;
@@ -285,6 +327,10 @@ function inferProfileFromConfiguredKeys(config: AppConfig): string | undefined {
   return undefined;
 }
 
+/**
+ * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+ * 功能：解析 cwd 下的 .env 文件，仅把白名单前缀（OPENAI_、DASHSCOPE_、ARK_ 等）且尚未设置的键写入 process.env。
+ */
 export function loadDotEnv(cwd: string): void {
   const envPath = resolve(cwd, ".env");
   if (!existsSync(envPath)) {
@@ -312,6 +358,10 @@ export function loadDotEnv(cwd: string): void {
   }
 }
 
+/**
+ * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+ * 功能：返回 cwd 下已有的 aivideo.config.yaml 原文；不存在时把默认配置序列化成 YAML 模板返回。
+ */
 export function getConfigTemplate(cwd?: string): string {
   const target = resolve(cwd ?? process.cwd(), "aivideo.config.yaml");
   if (existsSync(target)) {
@@ -320,6 +370,10 @@ export function getConfigTemplate(cwd?: string): string {
   return YAML.stringify(DEFAULT_CONFIG);
 }
 
+/**
+ * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+ * 功能：返回 cwd 下已有的 .env.example 原文；不存在时返回内置的 DEFAULT_ENV_TEMPLATE。
+ */
 export function getEnvTemplate(cwd?: string): string {
   const target = resolve(cwd ?? process.cwd(), ".env.example");
   if (existsSync(target)) {
@@ -328,6 +382,10 @@ export function getEnvTemplate(cwd?: string): string {
   return DEFAULT_ENV_TEMPLATE;
 }
 
+/**
+ * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+ * 功能：收集所有 Provider 定义引用到的环境变量名（apiKeyEnv/appIdEnv/modelEnv），去重排序返回。
+ */
 /**
  * Every environment variable name referenced by the configured providers
  * (API keys, app ids, model overrides). Used by tests and tooling to keep the
@@ -345,6 +403,10 @@ export function collectProviderEnvKeys(config: AppConfig): string[] {
   return [...keys].sort();
 }
 
+/**
+ * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+ * 功能：校验配置一致性并返回告警列表：默认 profile 未定义、profile 引用未知 Provider、openai 兼容类 Provider 缺 baseURL/model/apiKeyEnv。
+ */
 export function validateConfig(config: AppConfig): string[] {
   const warnings: string[] = [];
 

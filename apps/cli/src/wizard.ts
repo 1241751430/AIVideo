@@ -1,3 +1,10 @@
+/**
+ * @file wizard.ts
+ * @author zhangbaohong
+ * @date 2026-09-17
+ * @description 交互式 create 向导（@clack TUI）：快速/高级两条流程收集生成选项并做计费确认
+ * @see https://github.com/1241751430/AIVideo.git
+ */
 import * as p from "@clack/prompts";
 import {
   AppConfig,
@@ -14,6 +21,12 @@ type WizardOptions = Record<string, string | boolean>;
 const BACK_SYMBOL = Symbol("wizard-back");
 const BACK_SENTINEL = "__clack_back__";
 
+/**
+ * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+ * 功能：驱动整个交互式创建向导，返回 runGenerate 所需选项；取消或非 TTY 时返回 undefined
+ * @param cwd 工作目录
+ * @param config 全局应用配置（提供默认值与模型展示）
+ */
 /**
  * Interactive "create" wizard (@clack TUI). Returns the option map for
  * `runGenerate`, or `undefined` when the user cancelled or the session is not
@@ -59,6 +72,10 @@ export async function runCreateWizard(cwd: string, config: AppConfig): Promise<W
   }
 }
 
+/**
+ * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+ * 功能：打印取消提示并返回 undefined，作为向导各步骤取消的统一出口
+ */
 function cancelWizard(): undefined {
   p.cancel("已取消，未生成任何内容。");
   return undefined;
@@ -68,6 +85,13 @@ function cancelWizard(): undefined {
 // Quick flow: structured brief -> optional duration -> reference images
 // ---------------------------------------------------------------------------
 
+/**
+ * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+ * 功能：快速流程——在 brief 基础上补问时长并收集参考图，取消返回 undefined
+ * @param config 全局应用配置（提供默认时长）
+ * @param cwd 工作目录
+ * @param options 已由 brief 解析出的初始选项（就地修改并返回）
+ */
 async function quickFlow(
   config: AppConfig,
   cwd: string,
@@ -116,6 +140,12 @@ interface AdvancedStep {
   required?: boolean;
 }
 
+/**
+ * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+ * 功能：高级流程——逐项提问、支持 /back 回退，最后收集参考图并汇总为选项
+ * @param config 全局应用配置（提供各项默认值）
+ * @param cwd 工作目录
+ */
 async function advancedFlow(config: AppConfig, cwd: string): Promise<WizardOptions | undefined> {
   const steps: AdvancedStep[] = [
     {
@@ -217,6 +247,11 @@ async function advancedFlow(config: AppConfig, cwd: string): Promise<WizardOptio
 // Reference images (shared by both flows)
 // ---------------------------------------------------------------------------
 
+/**
+ * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+ * 功能：询问是否上传参考图并循环收集经校验的本地图片路径，取消返回 undefined
+ * @param cwd 工作目录（解析相对图片路径）
+ */
 async function collectImages(cwd: string): Promise<string[] | undefined> {
   const wants = await p.confirm({
     message: "是否需要上传参考图片？",
@@ -272,6 +307,12 @@ async function collectImages(cwd: string): Promise<string[] | undefined> {
 // Billing confirmation page
 // ---------------------------------------------------------------------------
 
+/**
+ * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+ * 功能：渲染配置与计费确认页，仅当用户明确确认时返回 true
+ * @param config 全局应用配置（用于装配提供者展示计费项）
+ * @param options 向导收集到的生成选项
+ */
 async function confirmBilling(config: AppConfig, options: WizardOptions): Promise<boolean> {
   const providers = createProviderSelection(config);
   const lines: string[] = [];
@@ -316,6 +357,10 @@ async function confirmBilling(config: AppConfig, options: WizardOptions): Promis
   return confirmed === true;
 }
 
+/**
+ * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+ * 功能：把四类已选提供者整理为 [能力名, 提供者, 是否远程计费] 列表供确认页展示
+ */
 function providerEntries(
   providers: ProviderSelection
 ): Array<[string, { id: string }, boolean]> {
@@ -330,6 +375,10 @@ function providerEntries(
   return entries;
 }
 
+/**
+ * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+ * 功能：仅当选项值为字符串时原样返回，否则返回 undefined
+ */
 function asString(value: string | boolean | undefined): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
@@ -343,6 +392,13 @@ interface TextConfig {
   validate?: (value: string) => string | undefined;
 }
 
+/**
+ * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+ * 功能：封装文本提问，统一处理取消（Ctrl+C 或 "/cancel"）与 "/back" 回退
+ * @param message 提问文案
+ * @param config 占位符与校验器配置
+ * @returns 去空白后的答案；取消返回 undefined，回退返回 BACK_SYMBOL
+ */
 /**
  * Asks a text question. Returns the trimmed answer ("" when the user just
  * pressed Enter), `undefined` on cancel (Ctrl+C or "/cancel"), or
@@ -367,6 +423,14 @@ async function askText(message: string, config: TextConfig = {}): Promise<string
   return trimmed;
 }
 
+/**
+ * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+ * 功能：封装选择提问，自动附加「返回上一步」选项并归一化取消/回退
+ * @param message 提问文案
+ * @param options 候选项列表
+ * @param initialValue 初始选中值
+ * @returns 选中值；取消返回 undefined，回退返回 BACK_SYMBOL
+ */
 async function askSelect(
   message: string,
   options: Array<{ value: string; label?: string }>,

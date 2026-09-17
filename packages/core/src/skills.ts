@@ -1,3 +1,11 @@
+/**
+ * @file skills.ts
+ * @author zhangbaohong
+ * @date 2026-09-17
+ * @description 内置短视频创作技能库（通用营销、带货种草、知识口播、短剧情绪、企业宣传、教程演示六套文案与镜头规则），并提供按 id 查找与基于关键词打分的自动选技能力。
+ * @see https://github.com/1241751430/AIVideo.git
+ */
+
 import { SkillDefinition } from "./types.js";
 
 export const BUILTIN_SKILLS: SkillDefinition[] = [
@@ -108,10 +116,19 @@ const KEYWORD_MAP: Record<string, string[]> = {
   marketing: ["推广", "营销", "宣传", "活动", "转化", "增长", "曝光"]
 };
 
+/**
+ * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+ * 功能：按 id 在内置技能表中查找技能定义，找不到返回 undefined。
+ */
 export function getSkillById(skillId: string): SkillDefinition | undefined {
   return BUILTIN_SKILLS.find((skill) => skill.id === skillId);
 }
 
+/**
+ * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+ * 功能：把主题与正文拼成语料，按关键词与适用场景命中打分，选出得分最高的内置技能；全部为 0 分时回退第一个技能。
+ * @returns 选中的 SkillDefinition
+ */
 export function autoSelectSkill(input: {
   theme?: string;
   content?: string;

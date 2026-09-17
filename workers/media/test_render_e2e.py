@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""End-to-end render smoke test that requires real ffmpeg and ffprobe."""
+"""End-to-end render smoke test that requires real ffmpeg and ffprobe.
+
+@author zhangbaohong
+@date 2026-09-17
+@see https://github.com/1241751430/AIVideo.git
+"""
 import json
 import shutil
 import unittest
@@ -15,6 +20,10 @@ from render import probe_video, render
 )
 class TestRenderEndToEnd(unittest.TestCase):
     def test_renders_minimal_title_card_video(self):
+        """
+        功能：验证用真实 ffmpeg 端到端渲染最简标题卡视频且分辨率与时长正确
+        @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+        """
         with TemporaryDirectory() as tmp:
             project_dir = Path(tmp) / "project"
             captions_dir = project_dir / "captions"

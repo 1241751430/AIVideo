@@ -83,11 +83,23 @@ export interface CreateProjectBody {
   skill?: string;
   durationSeconds?: number;
   providerProfile?: string;
+  aspectRatio?: string;
+  language?: string;
+  platform?: string;
+  /** 参考图 base64 列表（data: URL 或裸 base64），服务端落盘为 inputImages。 */
+  images?: string[];
+}
+
+/** GET /api/healthz 响应：存活标记 + 配置告警列表。 */
+export interface HealthResponse {
+  ok: boolean;
+  warnings?: string[];
 }
 
 /** 工作台全部后端调用。 */
 export const api = {
   summary: () => request<SummaryResponse>("/api/summary"),
+  healthz: () => request<HealthResponse>("/api/healthz"),
   skills: () => request<{ skills: SkillCard[] }>("/api/skills"),
   listProjects: () => request<{ projects: ProjectListItem[] }>("/api/projects"),
   getProject: (id: string) => request<{ project: JobDto }>(`/api/projects/${encodeURIComponent(id)}`),
@@ -133,4 +145,12 @@ export function fileUrl(projectId: string, relativePath: string): string {
  */
 export function videoUrl(projectId: string): string {
   return `/api/projects/${encodeURIComponent(projectId)}/video`;
+}
+
+/**
+ * @author zhangbaohong  @date 2026-10-08  @see https://github.com/1241751430/AIVideo.git
+ * 功能：构造任务参考图预览 URL（GET /:id/input-image?index=，读 brief.inputImages）。
+ */
+export function inputImageUrl(projectId: string, index: number): string {
+  return `/api/projects/${encodeURIComponent(projectId)}/input-image?index=${index}`;
 }

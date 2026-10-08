@@ -2,7 +2,7 @@
  * @file review.test.ts
  * @author zhangbaohong
  * @date 2026-09-17
- * @description 检查点编辑与重试路由测试：并发闸门（running/queued 拒绝、cancelled 放行）、脚本元信息 PUT、单镜编辑失效矩阵（旁白删 wav、画面词删资产、字幕仅标失效）、单镜重试（删文件+重入对应阶段）、计费预览与重新渲染。
+ * @description 检查点编辑与重试路由测试：并发闸门（running/queued 拒绝、cancelled 放行）、脚本元信息 PUT、单镜编辑失效矩阵（旁白删 wav、画面词删资产、字幕仅标失效）、单镜重试（删文件+重入对应阶段）、镜头拖拽排序 PUT order、批量重试 retry-batch（缺省失败镜头/显式指定/闸门）、计费预览与重新渲染。
  * @see https://github.com/1241751430/AIVideo.git
  */
 import { test } from "node:test";
@@ -31,6 +31,30 @@ function writeShotFixtures(dir: string): void {
   });
   putJson(dir, "render-manifest.json", {
     shots: [{ shotId: "shot-1", assetKind: "generated-image", assetPath: "assets/shot-1.png", durationSeconds: 3 }],
+    outputFile: "output/final.mp4"
+  });
+  mkdirSync(join(dir, "audio"), { recursive: true });
+  mkdirSync(join(dir, "assets"), { recursive: true });
+  writeFileSync(join(dir, "audio", "shot-1.wav"), "wav", "utf8");
+  writeFileSync(join(dir, "assets", "shot-1.png"), "png", "utf8");
+}
+
+/**
+ * @author zhangbaohong  @date 2026-10-08  @see https://github.com/1241751430/AIVideo.git
+ * 功能：写入两镜 fixture：shot-1 有画面+配音，shot-2 无任何产物（批量重试缺省目标的对照样本）。
+ */
+function writeTwoShotFixtures(dir: string): void {
+  putJson(dir, "storyboard.json", {
+    shots: [
+      { id: "shot-1", title: "A", narration: "n1", caption: "c1", visualPrompt: "p1", durationSeconds: 3 },
+      { id: "shot-2", title: "B", narration: "n2", caption: "c2", visualPrompt: "p2", durationSeconds: 3 }
+    ]
+  });
+  putJson(dir, "render-manifest.json", {
+    shots: [
+      { shotId: "shot-1", assetKind: "generated-image", assetPath: "assets/shot-1.png", durationSeconds: 3 },
+      { shotId: "shot-2", assetKind: "generated-card", durationSeconds: 3 }
+    ],
     outputFile: "output/final.mp4"
   });
   mkdirSync(join(dir, "audio"), { recursive: true });
@@ -277,6 +301,195 @@ test("POST rerender：done 重排渲染、running 拒绝、未知 404", async ()
     await waitUntil(() => hung.runner.get(job.id)?.phase === "cancelled", "cancelled");
   } finally {
     ctx.cleanup();
+    hung.cleanup();
+  }
+});
+
+test("PUT shots/order：重排落盘并标 stale，非重排/非法 id/运行中各自拒绝", async () => {
+  const ctx = makeTestApp();
+  try {
+    const jobId = await createDoneJob(ctx);
+    const dir = join(ctx.projectsRoot, jobId);
+    writeTwoShotFixtures(dir);
+
+    const ok = await ctx.app.request(`/api/projects/${jobId}/shots/order`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ shotIds: ["shot-2", "shot-1"] })
+    });
+    assert.equal(ok.status, 200);
+    const body = (await ok.json()) as { ok: boolean; order: string[]; videoStale: boolean; job: { result?: { videoStale?: boolean } } };
+    assert.deepEqual(body.order, ["shot-2", "shot-1"]);
+    assert.equal(body.videoStale, true);
+    assert.equal(body.job.result?.videoStale, true);
+    const storyboard = JSON.parse(readFileSync(join(dir, "storyboard.json"), "utf8")) as {
+      shots: Array<{ id: string }>;
+    };
+    assert.deepEqual(storyboard.shots.map((shot) => shot.id), ["shot-2", "shot-1"]);
+
+    const dup = await ctx.app.request(`/api/projects/${jobId}/shots/order`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ shotIds: ["shot-1", "shot-1"] })
+    });
+    assert.equal(dup.status, 400, "重复 id 非重排");
+    const evil = await ctx.app.request(`/api/projects/${jobId}/shots/order`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ shotIds: ["../x", "shot-2"] })
+    });
+    assert.equal(evil.status, 404, "非法 shotId");
+    const missing = await ctx.app.request(`/api/projects/${jobId}/shots/order`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ shotIds: ["shot-1"] })
+    });
+    assert.equal(missing.status, 400, "缺项非重排");
+    assert.equal(
+      (
+        await ctx.app.request(`/api/projects/${jobId}/shots/order`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({})
+        })
+      ).status,
+      400,
+      "shotIds 必须是数组"
+    );
+    assert.equal(
+      (
+        await ctx.app.request(`/api/projects/ghost-7/shots/order`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ shotIds: ["shot-1"] })
+        })
+      ).status,
+      404,
+      "未知任务 404"
+    );
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test("PUT shots/order：running 拒绝 409", async () => {
+  const hung = makeTestApp({ stages: hangScriptStages });
+  try {
+    const res = await hung.app.request("/api/projects", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ briefText: "主题：占用排序" })
+    });
+    const { job } = (await res.json()) as { job: { id: string } };
+    await waitUntil(() => hung.runner.get(job.id)?.phase === "running", "running");
+    assert.equal(
+      (
+        await hung.app.request(`/api/projects/${job.id}/shots/order`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ shotIds: ["shot-1"] })
+        })
+      ).status,
+      409
+    );
+    await hung.app.request(`/api/projects/${job.id}/cancel`, { method: "POST" });
+    await waitUntil(() => hung.runner.get(job.id)?.phase === "cancelled", "cancelled");
+  } finally {
+    hung.cleanup();
+  }
+});
+
+test("POST shots/retry-batch：缺省只重排失败镜头、显式指定清产物、闸门与坏输入拒绝", async () => {
+  const ctx = makeTestApp();
+  try {
+    const jobId = await createDoneJob(ctx);
+    const dir = join(ctx.projectsRoot, jobId);
+    writeTwoShotFixtures(dir);
+
+    const def = await ctx.app.request(`/api/projects/${jobId}/shots/retry-batch`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({})
+    });
+    assert.equal(def.status, 200);
+    const defBody = (await def.json()) as { retried: number; deleted: string[] };
+    assert.equal(defBody.retried, 1, "缺省命中产物全空的 shot-2");
+    assert.deepEqual(defBody.deleted, []);
+    await waitUntil(() => ctx.runner.get(jobId)?.phase === "done", "缺省批重试跑完");
+
+    const explicit = await ctx.app.request(`/api/projects/${jobId}/shots/retry-batch`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ shotIds: ["shot-1"] })
+    });
+    assert.equal(explicit.status, 200);
+    const explicitBody = (await explicit.json()) as { retried: number; deleted: string[] };
+    assert.equal(explicitBody.retried, 1);
+    assert.deepEqual(explicitBody.deleted, ["assets/shot-1.png"]);
+    assert.equal(existsSync(join(dir, "assets", "shot-1.png")), false);
+    await waitUntil(() => ctx.runner.get(jobId)?.phase === "done", "显式批重试跑完");
+
+    // 补齐产物后缺省目标为空 → 不再重排
+    writeFileSync(join(dir, "audio", "shot-2.wav"), "wav", "utf8");
+    writeFileSync(join(dir, "assets", "shot-1.png"), "png", "utf8");
+    const none = await ctx.app.request(`/api/projects/${jobId}/shots/retry-batch`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({})
+    });
+    assert.equal(none.status, 200);
+    assert.equal(((await none.json()) as { retried: number }).retried, 0);
+
+    assert.equal(
+      (
+        await ctx.app.request(`/api/projects/${jobId}/shots/retry-batch`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ shotIds: [] })
+        })
+      ).status,
+      400,
+      "空数组拒绝"
+    );
+    assert.equal(
+      (
+        await ctx.app.request(`/api/projects/${jobId}/shots/retry-batch`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ shotIds: ["shot-9"] })
+        })
+      ).status,
+      404,
+      "未知镜头 404"
+    );
+    rmSync(join(dir, "render-manifest.json"));
+    assert.equal(
+      (await ctx.app.request(`/api/projects/${jobId}/shots/retry-batch`, { method: "POST", body: "{}" })).status,
+      404,
+      "缺 manifest → 404"
+    );
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test("POST shots/retry-batch：running 拒绝 409", async () => {
+  const hung = makeTestApp({ stages: hangScriptStages });
+  try {
+    const res = await hung.app.request("/api/projects", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ briefText: "主题：占用批重试" })
+    });
+    const { job } = (await res.json()) as { job: { id: string } };
+    await waitUntil(() => hung.runner.get(job.id)?.phase === "running", "running");
+    assert.equal(
+      (await hung.app.request(`/api/projects/${job.id}/shots/retry-batch`, { method: "POST", body: "{}" })).status,
+      409
+    );
+    await hung.app.request(`/api/projects/${job.id}/cancel`, { method: "POST" });
+    await waitUntil(() => hung.runner.get(job.id)?.phase === "cancelled", "cancelled");
+  } finally {
     hung.cleanup();
   }
 });

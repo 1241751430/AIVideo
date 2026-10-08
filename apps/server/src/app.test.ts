@@ -2,12 +2,13 @@
  * @file app.test.ts
  * @author zhangbaohong
  * @date 2026-09-17
- * @description 应用装配与路由测试：不起端口直接 app.request——创建校验、列表合并、详情、删除、取消、review 决策、工件快照、SSE 重放帧、媒体路径安全与 Range、静态页面与系统端点。
+ * @description 应用装配与路由测试：不起端口直接 app.request——创建校验（含参考图 base64 落盘与嗅探拒绝）、列表合并、详情、删除、取消、review 决策、工件快照、SSE 重放帧、媒体路径安全与 Range、静态页面缓存策略与系统端点。
  * @see https://github.com/1241751430/AIVideo.git
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { serverConfigFromEnv } from "./config.js";
 import { safeResolveProjectFile } from "./routes/media.js";
@@ -234,6 +235,65 @@ test("静态工作台页面与系统端点", async () => {
     assert.ok(summary.profiles.includes("default"));
   } finally {
     ctx.cleanup();
+  }
+});
+
+const PNG_B64 = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00]).toString("base64");
+const JPG_B64 = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00]).toString("base64");
+
+test("POST 创建带参考图：base64 落盘 input/，非法输入整体拒绝并清理", async () => {
+  const ctx = makeTestApp();
+  try {
+    const res = await ctx.app.request("/api/projects", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ briefText: "主题：带图", images: [`data:image/png;base64,${PNG_B64}`, JPG_B64] })
+    });
+    assert.equal(res.status, 201);
+    const { job } = (await res.json()) as { job: { id: string; request: JobRequest } };
+    assert.equal(job.request.inputImagePaths?.length, 2);
+    assert.ok(existsSync(join(ctx.projectsRoot, job.id, "input", "1.png")));
+    assert.ok(existsSync(join(ctx.projectsRoot, job.id, "input", "2.jpg")));
+
+    const tooMany = await ctx.app.request("/api/projects", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ briefText: "主题：超限", images: Array(21).fill(PNG_B64) })
+    });
+    assert.equal(tooMany.status, 400, "超过 20 张拒绝");
+
+    const badMagic = await ctx.app.request("/api/projects", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ briefText: "主题：坏图", images: [PNG_B64, Buffer.from("not-an-image").toString("base64")] })
+    });
+    assert.equal(badMagic.status, 400, "魔数不符拒绝");
+    assert.match(((await badMagic.json()) as { error: string }).error, /不是受支持的图片/);
+    // 第二张失败后，预生成目录整体清理：projectsRoot 只剩上面成功的任务目录
+    assert.equal(readdirSync(ctx.projectsRoot).length, 1);
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test("静态缓存头：入口 no-cache、哈希 assets immutable", async () => {
+  const publicDir = mkdtempSync(join(tmpdir(), "aivideo-static-"));
+  mkdirSync(join(publicDir, "assets"), { recursive: true });
+  writeFileSync(join(publicDir, "index.html"), "<!doctype html><title>t</title>", "utf8");
+  writeFileSync(join(publicDir, "assets", "index-AbC123.js"), "console.log(1)", "utf8");
+  const ctx = makeTestApp({ publicDir });
+  try {
+    const index = await ctx.app.request("/index.html");
+    assert.equal(index.status, 200);
+    assert.equal(index.headers.get("cache-control"), "no-cache");
+    const asset = await ctx.app.request("/assets/index-AbC123.js");
+    assert.equal(asset.status, 200);
+    assert.equal(asset.headers.get("cache-control"), "public, max-age=31536000, immutable");
+    const page = await ctx.app.request("/");
+    assert.equal(page.headers.get("cache-control"), "no-cache", "入口同样 no-cache");
+  } finally {
+    ctx.cleanup();
+    rmSync(publicDir, { recursive: true, force: true });
   }
 });
 

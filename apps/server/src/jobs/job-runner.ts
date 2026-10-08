@@ -85,11 +85,11 @@ export class JobRunner {
 
   /**
    * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
-   * 功能：创建任务（生成 projectId、落盘 job.json、入队并泵动执行），返回初始 Job。
-   * @param input execMode + 归一化后的 JobRequest
+   * 功能：创建任务（生成或使用路由预生成的 projectId、落盘 job.json、入队并泵动执行），返回初始 Job。
+   * @param input execMode + 归一化后的 JobRequest；projectId 可预置（创建时先落参考图再建任务）
    */
-  create(input: { execMode: ExecMode; request: JobRequest }): Job {
-    const projectId = createProjectId(input.request.theme ?? input.request.content ?? "project");
+  create(input: { execMode: ExecMode; request: JobRequest; projectId?: string }): Job {
+    const projectId = input.projectId ?? createProjectId(input.request.theme ?? input.request.content ?? "project");
     const now = new Date().toISOString();
     const job: Job = {
       id: projectId,

@@ -2018,6 +2018,83 @@ kbd {
   padding: 1px 5px;
 }
 
+/* ===== §phase-d 后端加项对接：创建页参考图上传区 ===== */
+.ref-dropzone {
+  border: 1.5px dashed var(--line-strong);
+  border-radius: var(--r-md);
+  padding: var(--sp-3);
+  background: var(--bg-raised);
+  transition: border-color var(--t-fast) var(--ease), box-shadow var(--t-fast) var(--ease);
+}
+
+.ref-dropzone.over {
+  border-color: var(--accent-cyan);
+  box-shadow: 0 0 0 3px rgba(34, 211, 238, 0.12);
+}
+
+.ref-drop-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12.5px;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.ref-drop-label:hover {
+  color: var(--text);
+}
+
+.ref-drop-label svg {
+  color: var(--accent-cyan);
+}
+
+.ref-drop-label input[type="file"] {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  overflow: hidden;
+}
+
+.ref-picks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  margin-top: var(--sp-2);
+}
+
+.ref-pick {
+  position: relative;
+  display: inline-block;
+}
+
+.ref-pick img {
+  width: 54px;
+  height: 54px;
+  object-fit: cover;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--line);
+  display: block;
+}
+
+.ref-remove {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  width: 20px;
+  height: 20px;
+  border-radius: var(--r-full);
+  background: var(--bg-deep);
+  border: 1px solid var(--line-strong);
+  color: var(--text-dim);
+}
+
+.ref-remove:hover {
+  color: var(--c-danger);
+  border-color: rgba(239, 68, 68, 0.5);
+}
+
 /* ===== §overlay 通知浮层（玻璃，只给悬浮物） ===== */
 .toast-stack {
   position: fixed;

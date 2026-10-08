@@ -75,6 +75,13 @@ export interface RetryResponse {
   deleted: string[];
 }
 
+/** 批量重试响应：重排的镜头数 + 被删除待重做的文件（项目相对路径）。 */
+export interface RetryBatchResponse {
+  ok: boolean;
+  retried: number;
+  deleted: string[];
+}
+
 /** 创建任务请求体（与 routes/projects.ts buildJobRequest 对齐）。 */
 export interface CreateProjectBody {
   briefText: string;
@@ -124,6 +131,12 @@ export const api = {
     request<RetryResponse>(`/api/projects/${encodeURIComponent(id)}/shots/${encodeURIComponent(shotId)}/retry`, {
       method: "POST",
       body: JSON.stringify({ target })
+    }),
+  /** 批量重试：缺省重排全部产物缺失的失败镜头（后端 POST /:id/shots/retry-batch，单次重排素材阶段）。 */
+  retryBatch: (id: string, shotIds?: string[]) =>
+    request<RetryBatchResponse>(`/api/projects/${encodeURIComponent(id)}/shots/retry-batch`, {
+      method: "POST",
+      body: JSON.stringify(shotIds ? { shotIds } : {})
     }),
   /** 镜头拖拽排序：按新顺序提交 shotId 列表（后端 PUT /:id/shots/order，Phase D 落地）。 */
   reorderShots: (id: string, shotIds: string[]) =>

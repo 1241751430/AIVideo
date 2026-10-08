@@ -2,11 +2,11 @@
  * @file CreateCard.tsx
  * @author zhangbaohong
  * @date 2026-09-17
- * @description 创建视图：brief 主输入（渐变聚焦描边）+ 实时键值解析预览 chips；执行/产物模式胶囊、时长滑块与预设、比例/平台/语言选择器（后端 buildJobRequest 均已支持）、Provider 配置选择、风格模板横滑画廊（含适用场景与语气）、⌘Enter 快捷提交。
+ * @description 创建视图：brief 主输入（渐变聚焦描边）+ 实时键值解析预览 chips；参考图拖拽/点击上传（base64 提交，服务端落盘 input/）；执行/产物模式胶囊、时长滑块与预设、比例/平台/语言选择器（后端 buildJobRequest 均已支持）、Provider 配置选择、风格模板横滑画廊（含适用场景与语气）、⌘Enter 快捷提交。
  * @see https://github.com/1241751430/AIVideo.git
  */
 import { useMemo, useState } from "react";
-import { Sparkles } from "lucide-react";
+import { ImagePlus, Sparkles, X } from "lucide-react";
 import type { SkillCard, SummaryResponse } from "@aivideo/shared";
 import { api } from "../api";
 import { useToast } from "../hooks/useToasts";
@@ -122,8 +122,27 @@ function parseBriefPreview(text: string): Array<{ key: string; value: string }> 
   return out.slice(0, 8);
 }
 
+/** 参考图待选项：dataURL 同时用于缩略预览与提交载荷。 */
+interface RefPick {
+  name: string;
+  dataUrl: string;
+}
+
 /**
- * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+ * @author zhangbaohong  @date 2026-10-08  @see https://github.com/1241751430/AIVideo.git
+ * 功能：把 File 读为 dataURL（Promise），读取失败 reject。
+ */
+function readAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolvePromise, rejectPromise) => {
+    const reader = new FileReader();
+    reader.onload = () => resolvePromise(String(reader.result ?? ""));
+    reader.onerror = () => rejectPromise(reader.error ?? new Error("读取文件失败"));
+    reader.readAsDataURL(file);
+  });
+}
+
+/**
+ * @author zhangbaohong  @date 2026-10-08  @see https://github.com/1241751430/AIVideo.git
  * 功能：渲染 brief 输入与全部创建选项，提交后回调进入任务详情。
  */
 export default function CreateCard({ summary, skills, onCreated }: Props) {
@@ -137,6 +156,8 @@ export default function CreateCard({ summary, skills, onCreated }: Props) {
   const [language, setLanguage] = useState("");
   const [platform, setPlatform] = useState("");
   const [profile, setProfile] = useState("");
+  const [refPicks, setRefPicks] = useState<RefPick[]>([]);
+  const [dragOver, setDragOver] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -144,6 +165,37 @@ export default function CreateCard({ summary, skills, onCreated }: Props) {
   const shownDuration = duration ?? defaultDuration;
 
   const parsed = useMemo(() => parseBriefPreview(brief), [brief]);
+
+  const addRefFiles = async (files: File[]): Promise<void> => {
+    const okTypes = ["image/png", "image/jpeg", "image/webp"];
+    const remaining = 20 - refPicks.length;
+    if (remaining <= 0) {
+      toast.error("参考图最多 20 张");
+      return;
+    }
+    const accepted: RefPick[] = [];
+    for (const file of files.slice(0, remaining)) {
+      if (!okTypes.includes(file.type)) {
+        toast.error(`「${file.name}」不是支持的图片格式（png/jpeg/webp）`);
+        continue;
+      }
+      if (file.size > 10 * 1024 * 1024) {
+        toast.error(`「${file.name}」超过 10MB 上限`);
+        continue;
+      }
+      try {
+        accepted.push({ name: file.name, dataUrl: await readAsDataUrl(file) });
+      } catch {
+        toast.error(`「${file.name}」读取失败`);
+      }
+    }
+    if (files.length > remaining) {
+      toast.error(`超出数量上限，仅接收前 ${remaining} 张`);
+    }
+    if (accepted.length > 0) {
+      setRefPicks((prev) => [...prev, ...accepted]);
+    }
+  };
 
   const submit = (): void => {
     if (!brief.trim()) {
@@ -162,7 +214,8 @@ export default function CreateCard({ summary, skills, onCreated }: Props) {
         providerProfile: profile || undefined,
         aspectRatio: aspect || undefined,
         language: language || undefined,
-        platform: platform || undefined
+        platform: platform || undefined,
+        images: refPicks.length > 0 ? refPicks.map((pick) => pick.dataUrl) : undefined
       })
       .then((res) => {
         toast.success("任务已创建，开始执行");
@@ -200,6 +253,52 @@ export default function CreateCard({ summary, skills, onCreated }: Props) {
             ))}
           </div>
         )}
+        <div
+          className={`ref-dropzone${dragOver ? " over" : ""}`}
+          onDragOver={(e) => {
+            e.preventDefault();
+            setDragOver(true);
+          }}
+          onDragLeave={() => setDragOver(false)}
+          onDrop={(e) => {
+            e.preventDefault();
+            setDragOver(false);
+            void addRefFiles(Array.from(e.dataTransfer.files));
+          }}
+        >
+          <label className="ref-drop-label">
+            <input
+              type="file"
+              accept="image/png,image/jpeg,image/webp"
+              multiple
+              onChange={(e) => {
+                if (e.target.files) {
+                  void addRefFiles(Array.from(e.target.files));
+                }
+                e.target.value = "";
+              }}
+            />
+            <ImagePlus size={15} aria-hidden="true" />
+            参考图（可选）：点击或拖入 png/jpeg/webp，单张 ≤10MB、最多 20 张
+          </label>
+          {refPicks.length > 0 && (
+            <div className="ref-picks">
+              {refPicks.map((pick, index) => (
+                <span className="ref-pick" key={`${pick.name}-${index}`}>
+                  <img src={pick.dataUrl} alt={pick.name} />
+                  <button
+                    type="button"
+                    className="icon-btn ref-remove"
+                    aria-label={`移除 ${pick.name}`}
+                    onClick={() => setRefPicks((prev) => prev.filter((_, i) => i !== index))}
+                  >
+                    <X size={11} />
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
         <div className="create-grid">
           <div className="cg-cell">
             <span className="cg-label">执行模式</span>

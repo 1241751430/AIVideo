@@ -35,6 +35,8 @@ export interface JobRequest {
   language?: string;
   platform?: string;
   providerProfile?: string;
+  /** 创建时上传的参考图落盘绝对路径（project/<id>/input/<n>.<ext>），经 toGenerateRequest 透传为 brief.inputImages。 */
+  inputImagePaths?: string[];
 }
 
 /** 落盘于 project/<id>/job.json 的任务实体。 */

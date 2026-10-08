@@ -2,13 +2,14 @@
  * @file projects.ts
  * @author zhangbaohong
  * @date 2026-09-17
- * @description 项目/任务路由：创建（brief 解析 + 校验）、列表（任务 + 无任务旧目录 + 损坏隔离）、详情、删除、取消、检查点决策、工件快照与 SSE 事件流。
+ * @description 项目/任务路由：创建（brief 解析 + 校验 + 参考图 base64 落盘 input/）、列表（任务 + 无任务旧目录 + 损坏隔离）、详情、删除、取消、检查点决策、工件快照与 SSE 事件流。
  * @see https://github.com/1241751430/AIVideo.git
  */
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { Hono } from "hono";
 import {
+  createProjectId,
   GenerateRequest,
   GenerationMode,
   inferInputLanguage,
@@ -42,14 +43,24 @@ export function projectRoutes(deps: ServerDeps): Hono {
     }
     let request: JobRequest;
     let execMode: ExecMode;
+    let projectId: string | undefined;
     try {
       const parsed = buildJobRequest(deps, body);
       request = parsed.request;
       execMode = parsed.execMode;
+      const rawImages = Array.isArray(body.images) ? body.images : [];
+      if (rawImages.length > 0) {
+        // 先预生成 projectId 并把参考图落盘到 input/，再建任务；createProjectId 含时间戳+uuid，无撞名竞态。
+        projectId = createProjectId(request.theme ?? request.content ?? "project");
+        request.inputImagePaths = persistInputImages(deps.projectsRoot, projectId, rawImages);
+      }
     } catch (error) {
+      if (projectId) {
+        rmSync(join(deps.projectsRoot, projectId), { recursive: true, force: true });
+      }
       return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
     }
-    const job = deps.runner.create({ execMode, request });
+    const job = deps.runner.create({ execMode, request, projectId });
     return c.json({ job: deps.runner.dto(job.id) }, 201);
   });
 
@@ -306,6 +317,61 @@ export function buildJobRequest(deps: ServerDeps, body: Record<string, unknown>)
     providerProfile
   };
   return { request, execMode };
+}
+
+/**
+ * @author zhangbaohong  @date 2026-10-08  @see https://github.com/1241751430/AIVideo.git
+ * 功能：创建时参考图落盘：解码 data-URL/裸 base64，按魔数识别 png/jpeg/webp、单张 ≤10MB、总数 ≤20，
+ * 写入 project/<id>/input/<n>.<ext>；任何一张非法即抛错（调用方清理整个预生成目录）。
+ * @returns 落盘后的绝对路径列表（顺序即提交顺序，对应 core 的位置所有权语义）
+ */
+function persistInputImages(projectsRoot: string, projectId: string, rawImages: unknown[]): string[] {
+  if (rawImages.length > 20) {
+    throw new Error("参考图最多 20 张");
+  }
+  const inputDir = join(projectsRoot, projectId, "input");
+  const written: string[] = [];
+  rawImages.forEach((raw, index) => {
+    if (typeof raw !== "string" || !raw.trim()) {
+      throw new Error(`images[${index}] 必须是非空 base64 字符串`);
+    }
+    const payload = raw.replace(/^data:[^,]*,/, "");
+    const buffer = Buffer.from(payload, "base64");
+    if (buffer.length === 0) {
+      throw new Error(`images[${index}] base64 解码为空`);
+    }
+    if (buffer.length > 10 * 1024 * 1024) {
+      throw new Error(`images[${index}] 超过 10MB 上限`);
+    }
+    const ext = sniffImageExt(buffer);
+    if (!ext) {
+      throw new Error(`images[${index}] 不是受支持的图片（png/jpeg/webp）`);
+    }
+    if (index === 0) {
+      mkdirSync(inputDir, { recursive: true });
+    }
+    const target = join(inputDir, `${index + 1}.${ext}`);
+    writeFileSync(target, buffer);
+    written.push(target);
+  });
+  return written;
+}
+
+/**
+ * @author zhangbaohong  @date 2026-10-08  @see https://github.com/1241751430/AIVideo.git
+ * 功能：按魔数嗅探图片扩展名：PNG(89 50 4E 47)/JPEG(FF D8)/WEBP(RIFF…WEBP)；未知返回 null。
+ */
+function sniffImageExt(buffer: Buffer): string | null {
+  if (buffer.length >= 4 && buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4e && buffer[3] === 0x47) {
+    return "png";
+  }
+  if (buffer.length >= 2 && buffer[0] === 0xff && buffer[1] === 0xd8) {
+    return "jpg";
+  }
+  if (buffer.length >= 12 && buffer.subarray(0, 4).toString("ascii") === "RIFF" && buffer.subarray(8, 12).toString("ascii") === "WEBP") {
+    return "webp";
+  }
+  return null;
 }
 
 /**

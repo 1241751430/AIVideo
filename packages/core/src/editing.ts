@@ -2,7 +2,7 @@
  * @file editing.ts
  * @author zhangbaohong
  * @date 2026-09-17
- * @description 人工编辑落盘与失效矩阵：把脚本元信息与单镜字段（旁白/时长/提示词/字幕等）的修改写回 project 下的各 JSON/MD 文件，并按规则删除随之过期的配音与付费资产，保证下一遍流水线只重做受影响的部分。
+ * @description 人工编辑落盘与失效矩阵：把脚本元信息与单镜字段（旁白/时长/提示词/字幕等）的修改写回 project 下的各 JSON/MD 文件，并按规则删除随之过期的配音与付费资产；另含拖拽排序 reorderShots（storyboard/manifest/script/captions 四写齐）；保证下一遍流水线只重做受影响的部分。
  * @see https://github.com/1241751430/AIVideo.git
  */
 
@@ -200,6 +200,62 @@ export function updateShot(projectDir: string, shotId: string, patch: ShotEditPa
 
   syncScriptPackageWithShot(projectDir, shotId, shot);
   return { assetInvalidated, audioInvalidated, deleted };
+}
+
+/** 镜头重排结果。 */
+export interface ShotReorderResult {
+  /** 生效的新镜头顺序（回显客户端提交的 shotIds）。 */
+  order: string[];
+}
+
+/**
+ * @author zhangbaohong  @date 2026-10-08  @see https://github.com/1241751430/AIVideo.git
+ * 功能：拖拽排序落盘：校验 shotIds 是分镜镜头 id 的精确重排后，同步重写 storyboard.json、render-manifest.json、
+ * （id 集合一致时）script.json 与 script.md 的镜头顺序，并按新序重建 captions.srt。已生成资产随 manifest 条目
+ * 自身的 assetPath 迁移、不需重生成；注意参考镜「失效后回退用户图」按新序号定位 inputImages（位置所有权语义）。
+ */
+export function reorderShots(projectDir: string, shotIds: string[]): ShotReorderResult {
+  if (!Array.isArray(shotIds) || shotIds.length === 0) {
+    throw new Error("shotIds must be a non-empty array of shot ids.");
+  }
+  for (const id of shotIds) {
+    if (typeof id !== "string" || !isValidShotId(id)) {
+      throw new Error(`Invalid shot id: ${JSON.stringify(id)}`);
+    }
+  }
+  const storyboard = loadStoryboard(projectDir);
+  const manifest = loadManifest(projectDir);
+  const current = storyboard.shots.map((shot) => shot.id);
+  const isPermutation =
+    shotIds.length === current.length && new Set(shotIds).size === shotIds.length && current.every((id) => shotIds.includes(id));
+  if (!isPermutation) {
+    throw new Error(`shotIds must be a permutation of the storyboard shots: ${current.join(", ")}`);
+  }
+  const shotById = new Map(storyboard.shots.map((shot) => [shot.id, shot]));
+  const manifestById = new Map(manifest.shots.map((entry) => [entry.shotId, entry]));
+  for (const id of shotIds) {
+    if (!manifestById.has(id)) {
+      throw new Error(`render-manifest.json is missing shot: ${id}`);
+    }
+  }
+  storyboard.shots = shotIds.map((id) => shotById.get(id)!);
+  manifest.shots = shotIds.map((id) => manifestById.get(id)!);
+
+  writeJsonFile(join(projectDir, "storyboard.json"), storyboard);
+  writeJsonFile(join(projectDir, "render-manifest.json"), manifest);
+  mkdirSync(join(projectDir, "captions"), { recursive: true });
+  writeFileSync(join(projectDir, "captions", "captions.srt"), toSrt(buildCaptions(storyboard)), "utf8");
+
+  const script = loadScriptPackage(projectDir);
+  if (script) {
+    const sceneById = new Map(script.scenes.map((scene) => [scene.id, scene]));
+    if (script.scenes.length === shotIds.length && shotIds.every((id) => sceneById.has(id))) {
+      script.scenes = shotIds.map((id) => sceneById.get(id)!);
+      writeJsonFile(join(projectDir, "script.json"), script);
+      writeFileSync(join(projectDir, "script.md"), toScriptMarkdown(script), "utf8");
+    }
+  }
+  return { order: [...shotIds] };
 }
 
 /**

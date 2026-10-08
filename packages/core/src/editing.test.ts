@@ -2,7 +2,7 @@
  * @file editing.test.ts
  * @author zhangbaohong
  * @date 2026-09-17
- * @description editing.ts 的单元测试：script.json 落盘、旁白/画面词/字幕编辑触发的失效矩阵、storyboard/manifest/captions/script 多处同步、非法输入拒绝与 outputFile 保持不变。
+ * @description editing.ts 的单元测试：script.json 落盘、旁白/画面词/字幕编辑触发的失效矩阵、storyboard/manifest/captions/script 多处同步、非法输入拒绝与 outputFile 保持不变；另覆盖 reorderShots 的精确重排落盘与拒绝分支。
  * @see https://github.com/1241751430/AIVideo.git
  */
 
@@ -11,10 +11,10 @@ import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { loadScriptPackage, updateScriptMeta, updateShot } from "./editing.js";
+import { loadScriptPackage, reorderShots, updateScriptMeta, updateShot } from "./editing.js";
 import { shotAudioPath, shotImagePath, shotVideoPath } from "./shotFiles.js";
 import { RenderManifest, Storyboard } from "./types.js";
-import { generateArtifacts, materializeProject } from "./workflow.js";
+import { buildCaptions, generateArtifacts, materializeProject, toSrt } from "./workflow.js";
 import { getSkillById } from "./skills.js";
 
 test("editing: materializeProject persists a machine-readable script.json", async () => {
@@ -117,6 +117,55 @@ test("editing: script meta updates rewrite script.md and keep the output filenam
   const after = JSON.parse(readFileSync(manifestPath, "utf8")) as RenderManifest;
   assert.equal(after.outputFile, before, "outputFile must stay stable for old links");
   assert.equal(after.bgmStyle, "轻快电子");
+});
+
+test("editing: reorderShots rewrites storyboard/manifest/script order and rebuilds captions.srt", async () => {
+  const { dir, artifacts } = await materializedProject();
+  const ids = artifacts.storyboard.shots.map((shot) => shot.id);
+  assert.ok(ids.length >= 2, "fixture needs at least two shots to reorder");
+
+  // 给首镜挂一个资产路径，验证重排时 manifest 条目连同自身 assetPath 迁移
+  const manifestPath = join(dir, "render-manifest.json");
+  const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as RenderManifest;
+  manifest.shots[0]!.assetKind = "video";
+  manifest.shots[0]!.assetPath = `assets/${ids[0]}.mp4`;
+  writeFileSync(manifestPath, JSON.stringify(manifest), "utf8");
+
+  const reversed = [...ids].reverse();
+  const result = reorderShots(dir, reversed);
+  assert.deepEqual(result.order, reversed);
+
+  const storyboard = JSON.parse(readFileSync(join(dir, "storyboard.json"), "utf8")) as Storyboard;
+  assert.deepEqual(
+    storyboard.shots.map((shot) => shot.id),
+    reversed
+  );
+  const rewritten = JSON.parse(readFileSync(manifestPath, "utf8")) as RenderManifest;
+  assert.deepEqual(
+    rewritten.shots.map((entry) => entry.shotId),
+    reversed
+  );
+  const lastEntry = rewritten.shots[rewritten.shots.length - 1]!;
+  assert.equal(lastEntry.assetPath, `assets/${ids[0]}.mp4`, "asset travels with its own manifest entry");
+
+  const script = loadScriptPackage(dir);
+  assert.deepEqual(
+    script!.scenes.map((scene) => scene.id),
+    reversed,
+    "script scenes follow the new order"
+  );
+  const srt = readFileSync(join(dir, "captions", "captions.srt"), "utf8");
+  assert.equal(srt, toSrt(buildCaptions(storyboard)), "captions rebuilt from the reordered storyboard");
+});
+
+test("editing: reorderShots rejects empty/duplicate/foreign/missing-id arrays", async () => {
+  const { dir, artifacts } = await materializedProject();
+  const ids = artifacts.storyboard.shots.map((shot) => shot.id);
+  assert.throws(() => reorderShots(dir, []), /non-empty/);
+  assert.throws(() => reorderShots(dir, [ids[0]!, ids[0]!]), /permutation/);
+  assert.throws(() => reorderShots(dir, [...ids, "shot-999"]), /permutation/);
+  assert.throws(() => reorderShots(dir, ids.slice(1)), /permutation/);
+  assert.throws(() => reorderShots(dir, [...ids].reverse().map((id, i) => (i === 0 ? "../../etc" : id))), /Invalid shot id/);
 });
 
 /**

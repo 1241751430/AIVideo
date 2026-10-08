@@ -2,14 +2,23 @@
  * @file review.ts
  * @author zhangbaohong
  * @date 2026-09-17
- * @description 检查点编辑与重试路由：脚本元信息 PUT、单镜字段 PUT（core 失效矩阵自动清理过期产物）、单镜素材/配音重试（删文件 + 重新入队对应阶段，复用续跑机制只重做该镜）、计费预览与重新渲染入口。
+ * @description 检查点编辑与重试路由：脚本元信息 PUT、单镜字段 PUT（core 失效矩阵自动清理过期产物）、镜头拖拽排序 PUT /:id/shots/order、单镜素材/配音重试（删文件 + 重新入队对应阶段，复用续跑机制只重做该镜）、批量重试失败镜头（单次重排素材阶段）、计费预览与重新渲染入口。
  * @see https://github.com/1241751430/AIVideo.git
  */
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { Hono } from "hono";
 import type { RenderManifest, ScriptMetaPatch, ShotEditPatch } from "@aivideo/core";
-import { deleteShotAudio, deleteShotGeneratedAssets, updateScriptMeta, updateShot } from "@aivideo/core";
+import {
+  deleteShotAudio,
+  deleteShotGeneratedAssets,
+  nonEmptyFileExists,
+  reorderShots,
+  shotImageRelative,
+  shotVideoRelative,
+  updateScriptMeta,
+  updateShot
+} from "@aivideo/core";
 import { buildCostPreview } from "../jobs/cost-preview.js";
 import type { ServerDeps } from "../app.js";
 import type { Job } from "../types.js";
@@ -42,6 +51,31 @@ export function reviewRoutes(deps: ServerDeps): Hono {
     }
     deps.runner.markVideoStale(guard.job.id);
     return c.json({ ok: true, videoStale: true, job: deps.runner.dto(guard.job.id) });
+  });
+
+  router.put("/:id/shots/order", async (c) => {
+    const guard = guardEditable(deps, c.req.param("id"));
+    if (!guard.ok) {
+      return c.json({ error: guard.error }, guard.status);
+    }
+    const body = (await c.req.json().catch(() => null)) as { shotIds?: unknown } | null;
+    if (!body || !Array.isArray(body.shotIds)) {
+      return c.json({ error: "shotIds must be an array of shot ids" }, 400);
+    }
+    try {
+      const result = reorderShots(guard.projectDir, body.shotIds as string[]);
+      deps.runner.markVideoStale(guard.job.id);
+      return c.json({
+        ok: true,
+        order: result.order,
+        videoStale: true,
+        job: deps.runner.dto(guard.job.id)
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const status = /Invalid shot id/.test(message) ? 404 : 400;
+      return c.json({ error: message }, status);
+    }
   });
 
   router.put("/:id/shots/:shotId", async (c) => {
@@ -107,6 +141,64 @@ export function reviewRoutes(deps: ServerDeps): Hono {
       return c.json({ error: "Task is busy; retry later" }, 409);
     }
     return c.json({ ok: true, deleted: deleted.map((file) => file.slice(guard.projectDir.length + 1)) });
+  });
+
+  router.post("/:id/shots/retry-batch", async (c) => {
+    const guard = guardEditable(deps, c.req.param("id"));
+    if (!guard.ok) {
+      return c.json({ error: guard.error }, guard.status);
+    }
+    const body = (await c.req.json().catch(() => null)) as { shotIds?: unknown } | null;
+    if (body?.shotIds !== undefined && !Array.isArray(body.shotIds)) {
+      return c.json({ error: "shotIds must be an array of shot ids" }, 400);
+    }
+    const manifest = readManifest(guard.projectDir);
+    if (!manifest) {
+      return c.json({ error: "render-manifest.json not found — generate the script first" }, 404);
+    }
+    let targets: string[];
+    if (Array.isArray(body?.shotIds)) {
+      const submitted = (body as { shotIds: unknown[] }).shotIds;
+      if (submitted.length === 0 || !submitted.every((id) => typeof id === "string" && id)) {
+        return c.json({ error: "shotIds must be a non-empty array of shot ids" }, 400);
+      }
+      targets = submitted as string[];
+    } else {
+      // 缺省目标 = 画面/配音全部缺失的失败镜头（与工件快照 files 判定同口径）
+      targets = manifest.shots
+        .filter((entry) => {
+          const id = String(entry.shotId ?? "");
+          const candidates = [shotVideoRelative(id), shotImageRelative(id), `audio/${id}.wav`];
+          if (typeof entry.assetPath === "string") {
+            candidates.push(entry.assetPath);
+          }
+          return !candidates.some((rel) => nonEmptyFileExists(resolve(guard.projectDir, rel)));
+        })
+        .map((entry) => String(entry.shotId));
+    }
+    if (targets.length === 0) {
+      return c.json({ ok: true, retried: 0, deleted: [] });
+    }
+    const deleted: string[] = [];
+    try {
+      for (const shotId of targets) {
+        deleted.push(...deleteShotGeneratedAssets(guard.projectDir, manifest, shotId).deleted);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const status = /Unknown shot|Invalid shot id/.test(message) ? 404 : 400;
+      return c.json({ error: message }, status);
+    }
+    // 单次重排素材阶段：续跑会补齐全部缺失画面并自动续走配音与渲染
+    const queued = deps.runner.rerun(guard.job.id, "assets");
+    if (!queued) {
+      return c.json({ error: "Task is busy; retry later" }, 409);
+    }
+    return c.json({
+      ok: true,
+      retried: targets.length,
+      deleted: deleted.map((file) => file.slice(guard.projectDir.length + 1))
+    });
   });
 
   router.get("/:id/cost-preview", (c) => {

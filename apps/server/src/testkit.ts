@@ -65,10 +65,14 @@ export interface TestAppContext {
 
 /**
  * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
- * 功能：装配测试应用：真实 JobRunner + 可注入假阶段/providersFor + 临时项目根。
+ * 功能：装配测试应用：真实 JobRunner + 可注入假阶段/providersFor/静态目录 + 临时项目根。
  */
 export function makeTestApp(
-  options: { stages?: StageRunner; providersFor?: (profile?: string) => ProviderSelection } = {}
+  options: {
+    stages?: StageRunner;
+    providersFor?: (profile?: string) => ProviderSelection;
+    publicDir?: string;
+  } = {}
 ): TestAppContext {
   const projectsRoot = mkdtempSync(join(tmpdir(), "aivideo-app-"));
   const config = makeConfig();
@@ -88,7 +92,7 @@ export function makeTestApp(
     providers: {},
     providersFor: options.providersFor ?? (() => ({})),
     runner,
-    publicDir: resolve(here, join("..", "public"))
+    publicDir: options.publicDir ?? resolve(here, join("..", "public"))
   });
   return { app, runner, projectsRoot, cleanup: () => rmSync(projectsRoot, { recursive: true, force: true }) };
 }

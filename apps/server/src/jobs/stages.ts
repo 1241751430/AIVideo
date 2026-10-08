@@ -51,7 +51,7 @@ export interface StageRunner {
 
 /**
  * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
- * 功能：把任务请求映射为 core 的 GenerateRequest（工作台不传图片与清理开关，产物一律持久化）。
+ * 功能：把任务请求映射为 core 的 GenerateRequest（创建时上传的参考图经 inputImagePaths 透传；产物一律持久化）。
  * @param job 任务实体
  */
 export function toGenerateRequest(job: Job): GenerateRequest {
@@ -59,7 +59,7 @@ export function toGenerateRequest(job: Job): GenerateRequest {
   return {
     theme: request.theme,
     content: request.content,
-    images: [],
+    images: request.inputImagePaths ?? [],
     skill: request.skill || "auto",
     mode: request.generationMode,
     aspectRatio: request.aspectRatio,

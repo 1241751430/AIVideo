@@ -74,7 +74,12 @@ export function buildApp(deps: ServerDeps): Hono {
         throw new Error("not a file");
       }
       const body = readFileSync(target);
-      return new Response(body, { headers: { "Content-Type": type } });
+      // 缓存策略：Vite 内容哈希产物永久缓存；入口 HTML 等其余文件协商不缓存，
+      // 防止改版后旧页引用已删 hash 资源导致白屏。
+      const cacheControl = /^assets\/[A-Za-z0-9._-]+$/.test(relative)
+        ? "public, max-age=31536000, immutable"
+        : "no-cache";
+      return new Response(body, { headers: { "Content-Type": type, "Cache-Control": cacheControl } });
     } catch {
       return c.json({ error: "not found" }, 404);
     }

@@ -2,7 +2,7 @@
  * @file TaskView.tsx
  * @author zhangbaohong
  * @date 2026-09-17
- * @description 任务详情视图：bento 任务头（状态徽标 + 参数 chips + 派生进度 stepper）、SSE 断线提示条、图标化操作组（刷新/取消/删除走确认框与 toast）；组合检查点操作条、计费卡、脚本编辑器、镜头墙、交付面板与运行日志，订阅 SSE 并在阶段/检查点变化后刷新工件快照。
+ * @description 任务详情视图：bento 任务头（状态徽标 + 参数 chips + 参考图条 + 派生进度 stepper）、SSE 断线提示条、图标化操作组（刷新/取消/删除走确认框与 toast）；组合检查点操作条、计费卡、脚本编辑器、镜头墙、交付面板与运行日志，订阅 SSE 并在阶段/检查点变化后刷新工件快照。
  * @see https://github.com/1241751430/AIVideo.git
  */
 import { useCallback, useEffect, useState } from "react";
@@ -16,6 +16,7 @@ import Chip from "./Chip";
 import ConfirmDialog from "./ConfirmDialog";
 import CostCard from "./CostCard";
 import DeliverPanel from "./DeliverPanel";
+import InputRefs from "./InputRefs";
 import LogPanel from "./LogPanel";
 import ScriptEditor from "./ScriptEditor";
 import ShotWall from "./ShotWall";
@@ -160,6 +161,7 @@ export default function TaskView({ jobId, onDeleted, onChanged }: Props) {
           <Chip label={job.request.platform ?? "平台默认"} title="发布平台" />
           {job.request.language && <Chip label={job.request.language} title="口播语言" />}
         </div>
+        <InputRefs projectId={job.projectId} />
         {job.error && <div className="error-line">{job.error}</div>}
         <div style={{ marginTop: 10 }}>
           <Stepper job={job} shots={artifacts?.shots ?? []} />
@@ -189,7 +191,13 @@ export default function TaskView({ jobId, onDeleted, onChanged }: Props) {
         />
       )}
 
-      <ShotWall jobId={job.id} shots={artifacts?.shots ?? []} busy={busy} onChanged={handleMutated} />
+      <ShotWall
+        jobId={job.id}
+        shots={artifacts?.shots ?? []}
+        busy={busy}
+        showRetry={job.request.generationMode !== "script"}
+        onChanged={handleMutated}
+      />
 
       {(artifacts?.shots.length || job.phase === "done" || job.request.generationMode === "script") && (
         <DeliverPanel job={job} artifacts={artifacts} onChanged={handleMutated} />

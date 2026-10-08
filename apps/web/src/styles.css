@@ -1764,6 +1764,260 @@ input[type="range"]:focus {
   color: var(--accent-violet);
 }
 
+/* ===== §phase-c 交互增强：镜头墙头 / 批量重试 / 灯箱 / 速查表 / 参考图条 / 旧项目只读 / 侧栏快捷键提示 ===== */
+.shot-wall-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.shot-wall-head h2 {
+  margin: 0;
+}
+
+.retry-all {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  font-size: 12.5px;
+  border-radius: var(--r-full);
+  border: 1px solid rgba(248, 113, 113, 0.4);
+  background: rgba(248, 113, 113, 0.08);
+  color: var(--c-failed);
+  transition: background var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease);
+}
+
+.retry-all:hover:not(:disabled) {
+  background: rgba(248, 113, 113, 0.16);
+  border-color: rgba(248, 113, 113, 0.7);
+}
+
+.shot-media img {
+  cursor: zoom-in;
+}
+
+.shot-expand {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 2;
+  background: rgba(6, 8, 12, 0.62);
+  border-color: var(--line-strong);
+  opacity: 0;
+  transition: opacity var(--t-base) var(--ease);
+}
+
+.shot-media:hover .shot-expand,
+.shot-expand:focus-visible {
+  opacity: 1;
+}
+
+/* 灯箱：暗幕 + 居中大图 + 两侧导航 + 底部字幕 */
+.lightbox .lightbox-stage {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-2);
+  max-width: min(94vw, 1160px);
+}
+
+.lightbox-stage img,
+.lightbox-stage video {
+  max-width: 100%;
+  max-height: 76vh;
+  border-radius: var(--r-md);
+  border: 1px solid var(--line-strong);
+  box-shadow: var(--sh-3);
+  background: var(--bg-deep);
+}
+
+.lightbox-close {
+  position: absolute;
+  top: -34px;
+  right: 0;
+}
+
+.lightbox-nav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  background: rgba(6, 8, 12, 0.62);
+  border-color: var(--line-strong);
+}
+
+.lightbox-nav.prev {
+  left: -56px;
+}
+
+.lightbox-nav.next {
+  right: -56px;
+}
+
+.lightbox-caption {
+  font-size: 12.5px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 1240px) {
+  .lightbox-nav.prev {
+    left: 6px;
+  }
+
+  .lightbox-nav.next {
+    right: 6px;
+  }
+}
+
+/* 快捷键速查表 */
+.sheet-card {
+  background: var(--bg-panel);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-lg);
+  box-shadow: var(--sh-3);
+  padding: var(--sp-4) var(--sp-5) var(--sp-5);
+  min-width: min(360px, 88vw);
+  max-width: min(460px, 92vw);
+  color: var(--text);
+}
+
+@supports (backdrop-filter: blur(1px)) {
+  .sheet-card {
+    background: var(--glass-bg);
+    backdrop-filter: var(--glass-blur);
+    box-shadow: var(--sh-3), var(--glass-hi);
+  }
+}
+
+.sheet-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-3);
+}
+
+.sheet-head svg {
+  color: var(--accent-cyan);
+}
+
+.sheet-head b {
+  font-size: 14px;
+}
+
+.sheet-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+
+.sheet-table td {
+  padding: 7px 4px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: middle;
+}
+
+.sheet-table tr:last-child td {
+  border-bottom: none;
+}
+
+kbd {
+  display: inline-block;
+  padding: 2px 7px;
+  margin-right: 4px;
+  border: 1px solid var(--line-strong);
+  border-bottom-width: 2px;
+  border-radius: 6px;
+  background: var(--bg-raised);
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+/* 任务头参考图条 */
+.ref-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  margin-top: var(--sp-2);
+}
+
+.ref-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+}
+
+.ref-thumb-link {
+  display: block;
+  border-radius: var(--r-sm);
+  outline: 1px solid var(--line);
+  transition: outline-color var(--t-fast) var(--ease), transform var(--t-fast) var(--ease);
+}
+
+.ref-thumb-link:hover {
+  outline-color: var(--accent-indigo);
+  transform: translateY(-1px);
+}
+
+.ref-thumb {
+  display: block;
+  width: 46px;
+  height: 46px;
+  object-fit: cover;
+  border-radius: var(--r-sm);
+}
+
+/* 旧项目 / 损坏项只读视图 */
+.legacy-view h2 {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.legacy-view h2 svg {
+  color: var(--c-stale);
+}
+
+.legacy-note {
+  margin-top: var(--sp-3);
+  font-size: 12.5px;
+  line-height: 1.7;
+}
+
+.folder-hint {
+  margin-top: var(--sp-2);
+  font-size: 12px;
+}
+
+/* 侧栏底部快捷键提示 */
+.shortcuts-hint {
+  margin-top: auto;
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.shortcuts-hint:hover {
+  color: var(--text-dim);
+}
+
+.shortcuts-hint kbd {
+  margin-right: 0;
+  font-size: 10px;
+  padding: 1px 5px;
+}
+
 /* ===== §overlay 通知浮层（玻璃，只给悬浮物） ===== */
 .toast-stack {
   position: fixed;

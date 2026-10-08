@@ -2,22 +2,27 @@
  * @file ShotWall.tsx
  * @author zhangbaohong
  * @date 2026-09-17
- * @description 镜头墙：缩略图优先的镜头卡网格——角标（时长/景别/转场/素材来源）、产物齐备小灯与拖拽排序把手（调 PUT /:id/shots/order，失败即回滚）；标题/旁白/字幕/提示词/时长编辑收进折叠抽屉，保存与单镜重试以 toast 反馈；core 失效矩阵自动删除过期产物。
+ * @description 镜头墙：缩略图优先的镜头卡网格——角标（时长/景别/转场/素材来源）、产物齐备小灯与拖拽排序把手（调 PUT /:id/shots/order，失败即回滚）；标题/旁白/字幕/提示词/时长编辑收进折叠抽屉，保存与单镜重试以 toast 反馈；缩略区可点开灯箱（←/→ 跨镜、Esc），顶部提供「重试失败镜头」批量入口；core 失效矩阵自动删除过期产物。
  * @see https://github.com/1241751430/AIVideo.git
  */
 import { useEffect, useMemo, useState } from "react";
-import { Clock, GripVertical, Image as ImageIcon, Mic, Pencil, Video } from "lucide-react";
+import { Clock, GripVertical, Image as ImageIcon, Maximize2, Mic, Pencil, Video } from "lucide-react";
 import type { ShotArtifactEntry } from "@aivideo/shared";
 import { api, fileUrl } from "../api";
 import { useToast } from "../hooks/useToasts";
 import Chip from "./Chip";
 import EmptyState from "./EmptyState";
+import Lightbox from "./Lightbox";
+import type { LightboxItem } from "./Lightbox";
+import RetryQueue from "./RetryQueue";
 
 /** ShotWall 组件入参。 */
 interface Props {
   jobId: string;
   shots: ShotArtifactEntry[];
   busy: boolean;
+  /** 是否显示批量重试入口（仅脚本模式镜头本就不产画面，不应提示重试）。 */
+  showRetry: boolean;
   onChanged: () => void;
 }
 
@@ -79,13 +84,14 @@ function keyOf(entry: ShotArtifactEntry, index: number): string {
  * @author zhangbaohong  @date 2026-10-08  @see https://github.com/1241751430/AIVideo.git
  * 功能：渲染镜头墙网格；支持把手拖拽排序（乐观更新 + 失败回滚），无工件时空态。
  */
-export default function ShotWall({ jobId, shots, busy, onChanged }: Props) {
+export default function ShotWall({ jobId, shots, busy, showRetry, onChanged }: Props) {
   const toast = useToast();
   const ids = useMemo(() => shots.map(keyOf), [shots]);
   const signature = ids.join("|");
   const [order, setOrder] = useState<string[]>(ids);
   const [dragId, setDragId] = useState<string | null>(null);
   const [overId, setOverId] = useState<string | null>(null);
+  const [lightIdx, setLightIdx] = useState<number | null>(null);
 
   useEffect(() => {
     // 服务端工件刷新后对齐本地顺序（同一集合内保持乐观序）；signature 变化即 ids 变化
@@ -134,13 +140,46 @@ export default function ShotWall({ jobId, shots, busy, onChanged }: Props) {
     commitOrder(next);
   };
 
+  // 灯箱条目：有画面产物的镜头按当前展示序进入 ←/→ 轮播
+  const lightItems: LightboxItem[] = [];
+  const lightIdxByKey = new Map<string, number>();
+  ordered.forEach((entry, index) => {
+    const key = keyOf(entry, index);
+    const src = entry.files.video ?? entry.files.image ?? entry.files.manifestAsset;
+    if (src && entry.shotId) {
+      lightIdxByKey.set(key, lightItems.length);
+      lightItems.push({
+        id: key,
+        title: formOf(entry).title || key,
+        src: fileUrl(jobId, src),
+        kind: entry.files.video ? "video" : "image"
+      });
+    }
+  });
+  const failedShotIds = showRetry
+    ? ordered
+        .filter(
+          (entry) =>
+            entry.shotId &&
+            !entry.files.video &&
+            !entry.files.image &&
+            !entry.files.manifestAsset &&
+            !entry.files.audio
+        )
+        .map((entry) => String(entry.shotId))
+    : [];
+
   return (
     <section className="card">
-      <h2>
-        镜头墙{" "}
-        {shots.length > 0 && <span className="muted shot-count">{shots.length} 镜</span>}
-        {canDrag && <span className="muted drag-hint">· 按住把手可拖拽排序</span>}
-      </h2>
+      <div className="shot-wall-head">
+        <h2>
+          镜头墙{" "}
+          {shots.length > 0 && <span className="muted shot-count">{shots.length} 镜</span>}
+          {canDrag && <span className="muted drag-hint">· 按住把手可拖拽排序</span>}
+        </h2>
+        <span className="spacer" />
+        <RetryQueue jobId={jobId} failedShotIds={failedShotIds} busy={busy} onChanged={onChanged} />
+      </div>
       {shots.length === 0 ? (
         <EmptyState icon={Video} title="镜头墙为空" hint="脚本生成后，这里会列出每个镜头的预览与编辑入口" />
       ) : (
@@ -177,11 +216,18 @@ export default function ShotWall({ jobId, shots, busy, onChanged }: Props) {
                   setDragId(null);
                   setOverId(null);
                 }}
+                onExpand={() => {
+                  const li = lightIdxByKey.get(keyOf(entry, index));
+                  if (li !== undefined) {
+                    setLightIdx(li);
+                  }
+                }}
               />
             </div>
           ))}
         </div>
       )}
+      <Lightbox items={lightItems} index={lightIdx} onIndex={setLightIdx} onClose={() => setLightIdx(null)} />
     </section>
   );
 }
@@ -197,6 +243,8 @@ interface CardProps {
   dragging: boolean;
   onDragStart: () => void;
   onDragEnd: () => void;
+  /** 打开灯箱（仅镜头有画面产物时传入）。 */
+  onExpand?: () => void;
 }
 
 /**
@@ -212,7 +260,8 @@ function ShotCard({
   canDrag,
   dragging,
   onDragStart,
-  onDragEnd
+  onDragEnd,
+  onExpand
 }: CardProps) {
   const toast = useToast();
   const shotId = String(entry.shotId ?? `shot-${index + 1}`);
@@ -320,9 +369,22 @@ function ShotCard({
       </header>
       <div className="shot-media">
         {entry.files.video ? (
-          <video controls preload="metadata" src={fileUrl(jobId, entry.files.video)} />
+          <>
+            <video controls preload="metadata" src={fileUrl(jobId, entry.files.video)} />
+            {onExpand && (
+              <button className="icon-btn shot-expand" aria-label="放大播放本镜" onClick={onExpand}>
+                <Maximize2 size={13} />
+              </button>
+            )}
+          </>
         ) : assetFile ? (
-          <img src={fileUrl(jobId, assetFile)} alt={shotId} loading="lazy" />
+          <img
+            src={fileUrl(jobId, assetFile)}
+            alt={shotId}
+            loading="lazy"
+            onClick={onExpand}
+            title={onExpand ? "点击放大查看" : undefined}
+          />
         ) : (
           <div className="shot-media-empty">
             <ImageIcon size={20} aria-hidden="true" />

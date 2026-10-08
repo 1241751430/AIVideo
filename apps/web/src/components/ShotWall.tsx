@@ -2,12 +2,16 @@
  * @file ShotWall.tsx
  * @author zhangbaohong
  * @date 2026-09-17
- * @description 镜头墙：逐镜卡片展示可预览的视频/图片/配音，就地编辑标题、旁白、字幕、画面提示词与时长（core 失效矩阵自动删除过期产物），并提供「重新生成素材 / 重新配音」单镜重试入口。
+ * @description 镜头墙：缩略图优先的镜头卡网格——角标（时长/景别/转场/素材来源）、产物齐备小灯与拖拽排序把手（调 PUT /:id/shots/order，失败即回滚）；标题/旁白/字幕/提示词/时长编辑收进折叠抽屉，保存与单镜重试以 toast 反馈；core 失效矩阵自动删除过期产物。
  * @see https://github.com/1241751430/AIVideo.git
  */
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { Clock, GripVertical, Image as ImageIcon, Mic, Pencil, Video } from "lucide-react";
 import type { ShotArtifactEntry } from "@aivideo/shared";
 import { api, fileUrl } from "../api";
+import { useToast } from "../hooks/useToasts";
+import Chip from "./Chip";
+import EmptyState from "./EmptyState";
 
 /** ShotWall 组件入参。 */
 interface Props {
@@ -53,19 +57,128 @@ function formOf(entry: ShotArtifactEntry): ShotForm {
 }
 
 /**
- * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
- * 功能：渲染镜头墙网格；无工件时给出占位提示。
+ * @author zhangbaohong  @date 2026-10-08  @see https://github.com/1241751430/AIVideo.git
+ * 功能：读取条目的字符串字段（storyboard 优先）。
+ */
+function sbField(entry: ShotArtifactEntry, key: string): string | null {
+  const fromSb = (entry.storyboard as Record<string, unknown> | null)?.[key];
+  const fromEntry = (entry as Record<string, unknown>)[key];
+  const value = typeof fromSb === "string" ? fromSb : typeof fromEntry === "string" ? fromEntry : null;
+  return value && value.trim() ? value : null;
+}
+
+/**
+ * @author zhangbaohong  @date 2026-10-08  @see https://github.com/1241751430/AIVideo.git
+ * 功能：镜头键（shotId，缺失时按位兜底）。
+ */
+function keyOf(entry: ShotArtifactEntry, index: number): string {
+  return String(entry.shotId ?? `shot-${index + 1}`);
+}
+
+/**
+ * @author zhangbaohong  @date 2026-10-08  @see https://github.com/1241751430/AIVideo.git
+ * 功能：渲染镜头墙网格；支持把手拖拽排序（乐观更新 + 失败回滚），无工件时空态。
  */
 export default function ShotWall({ jobId, shots, busy, onChanged }: Props) {
+  const toast = useToast();
+  const ids = useMemo(() => shots.map(keyOf), [shots]);
+  const signature = ids.join("|");
+  const [order, setOrder] = useState<string[]>(ids);
+  const [dragId, setDragId] = useState<string | null>(null);
+  const [overId, setOverId] = useState<string | null>(null);
+
+  useEffect(() => {
+    // 服务端工件刷新后对齐本地顺序（同一集合内保持乐观序）；signature 变化即 ids 变化
+    const same = order.length === ids.length && ids.every((id) => order.includes(id));
+    if (!same) {
+      setOrder(ids);
+    }
+  }, [signature]);
+
+  const byId = new Map(shots.map((entry, index) => [keyOf(entry, index), entry]));
+  const ordered: ShotArtifactEntry[] = [];
+  order.forEach((id) => {
+    const entry = byId.get(id);
+    if (entry) {
+      ordered.push(entry);
+      byId.delete(id);
+    }
+  });
+  byId.forEach((entry) => ordered.push(entry));
+  const canDrag = !busy && shots.length > 1 && shots.every((entry, index) => entry.shotId !== undefined);
+
+  const commitOrder = (next: string[]): void => {
+    const prev = order;
+    setOrder(next);
+    api
+      .reorderShots(jobId, next)
+      .then(() => {
+        toast.success("镜头顺序已保存，成片标记为待重新渲染");
+        onChanged();
+      })
+      .catch((err: Error) => {
+        setOrder(prev);
+        toast.error(`排序保存失败：${err.message}`);
+      });
+  };
+
+  const handleDrop = (targetId: string): void => {
+    if (!dragId || dragId === targetId) {
+      return;
+    }
+    const next = order.filter((id) => id !== dragId);
+    next.splice(next.indexOf(targetId), 0, dragId);
+    if (next.length !== order.length) {
+      return;
+    }
+    commitOrder(next);
+  };
+
   return (
     <section className="card">
-      <h2>镜头墙</h2>
+      <h2>
+        镜头墙{" "}
+        {shots.length > 0 && <span className="muted shot-count">{shots.length} 镜</span>}
+        {canDrag && <span className="muted drag-hint">· 按住把手可拖拽排序</span>}
+      </h2>
       {shots.length === 0 ? (
-        <div className="muted">脚本生成后，这里会列出每个镜头的预览与编辑入口。</div>
+        <EmptyState icon={Video} title="镜头墙为空" hint="脚本生成后，这里会列出每个镜头的预览与编辑入口" />
       ) : (
         <div className="shot-grid">
-          {shots.map((entry, index) => (
-            <ShotCard key={String(entry.shotId ?? index)} jobId={jobId} entry={entry} index={index} busy={busy} onChanged={onChanged} />
+          {ordered.map((entry, index) => (
+            <div
+              key={keyOf(entry, index)}
+              className={`shot-drop${overId === keyOf(entry, index) && dragId ? " drag-over" : ""}`}
+              onDragOver={(e) => {
+                if (!canDrag || !dragId) {
+                  return;
+                }
+                e.preventDefault();
+                setOverId(keyOf(entry, index));
+              }}
+              onDrop={(e) => {
+                e.preventDefault();
+                setOverId(null);
+                if (canDrag) {
+                  handleDrop(keyOf(entry, index));
+                }
+              }}
+            >
+              <ShotCard
+                jobId={jobId}
+                entry={entry}
+                index={index}
+                busy={busy}
+                onChanged={onChanged}
+                canDrag={canDrag}
+                dragging={dragId === keyOf(entry, index)}
+                onDragStart={() => setDragId(keyOf(entry, index))}
+                onDragEnd={() => {
+                  setDragId(null);
+                  setOverId(null);
+                }}
+              />
+            </div>
           ))}
         </div>
       )}
@@ -73,27 +186,39 @@ export default function ShotWall({ jobId, shots, busy, onChanged }: Props) {
   );
 }
 
+/** ShotCard 组件入参。 */
+interface CardProps {
+  jobId: string;
+  entry: ShotArtifactEntry;
+  index: number;
+  busy: boolean;
+  onChanged: () => void;
+  canDrag: boolean;
+  dragging: boolean;
+  onDragStart: () => void;
+  onDragEnd: () => void;
+}
+
 /**
- * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
- * 功能：单镜卡片——媒体预览 + 编辑表单 + 保存/重试与失效反馈。
+ * @author zhangbaohong  @date 2026-10-08  @see https://github.com/1241751430/AIVideo.git
+ * 功能：单镜卡片——媒体缩略区 + 信息角标 + 折叠编辑抽屉 + 保存/重试（toast 反馈）。
  */
 function ShotCard({
   jobId,
   entry,
   index,
   busy,
-  onChanged
-}: {
-  jobId: string;
-  entry: ShotArtifactEntry;
-  index: number;
-  busy: boolean;
-  onChanged: () => void;
-}) {
+  onChanged,
+  canDrag,
+  dragging,
+  onDragStart,
+  onDragEnd
+}: CardProps) {
+  const toast = useToast();
   const shotId = String(entry.shotId ?? `shot-${index + 1}`);
   const [form, setForm] = useState<ShotForm>(() => formOf(entry));
-  const [message, setMessage] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [open, setOpen] = useState(false);
   const dirty = (): boolean =>
     form.title !== formOf(entry).title ||
     form.narration !== formOf(entry).narration ||
@@ -113,11 +238,9 @@ function ShotCard({
       patch.durationSeconds = Number(form.durationSeconds);
     }
     if (Object.keys(patch).length === 0) {
-      setMessage("没有修改");
       return;
     }
     setSaving(true);
-    setMessage(null);
     api
       .updateShot(jobId, shotId, patch)
       .then((res) => {
@@ -131,98 +254,147 @@ function ShotCard({
         if (res.deleted.length > 0) {
           notes.push(`已清理 ${res.deleted.join("、")}`);
         }
-        setMessage(notes.length > 0 ? `已保存：${notes.join("；")}` : "已保存");
+        toast.success(notes.length > 0 ? `镜头已保存：${notes.join("；")}` : "镜头已保存");
         onChanged();
       })
-      .catch((err: Error) => setMessage(err.message))
+      .catch((err: Error) => toast.error(`保存失败：${err.message}`))
       .finally(() => setSaving(false));
   };
 
   const retry = (target: "asset" | "audio"): void => {
-    setMessage(null);
     api
       .retryShot(jobId, shotId, target)
       .then((res) => {
-        setMessage(
+        toast.success(
           res.deleted.length > 0
             ? `已删除 ${res.deleted.join("、")}，任务重新排队执行${target === "asset" ? "素材" : "配音"}阶段`
-            : `该镜头暂无${target === "asset" ? "素材" : "配音"}文件，任务重新排队执行对应阶段`
+            : `任务已重新排队执行${target === "asset" ? "素材" : "配音"}阶段`
         );
         onChanged();
       })
-      .catch((err: Error) => setMessage(err.message));
+      .catch((err: Error) => toast.error(`重试失败：${err.message}`));
   };
 
   const assetFile = entry.files.video ?? entry.files.image ?? entry.files.manifestAsset;
+  const duration = form.durationSeconds ? `${form.durationSeconds}s` : null;
+  const metaChips = [
+    { label: sbField(entry, "shotType"), title: "景别" },
+    { label: sbField(entry, "transition"), title: "转场" },
+    { label: sbField(entry, "assetSource"), title: "素材来源" }
+  ].filter((c): c is { label: string; title: string } => Boolean(c.label));
 
   return (
-    <div className="shot-card">
-      <div className="shot-title">
-        <span>
-          {index + 1}. {form.title || shotId}
+    <article className={`shot-card${dragging ? " dragging" : ""}${open ? " editing" : ""}`}>
+      <header className="shot-head">
+        {canDrag && (
+          <button
+            className="drag-handle"
+            draggable
+            title="按住拖拽调整镜头顺序"
+            aria-label="拖拽排序"
+            onDragStart={(e) => {
+              e.dataTransfer.effectAllowed = "move";
+              onDragStart();
+            }}
+            onDragEnd={onDragEnd}
+          >
+            <GripVertical size={15} />
+          </button>
+        )}
+        <span className="shot-no">{index + 1}</span>
+        <span className="shot-name" title={shotId}>
+          {form.title || shotId}
         </span>
-        <span className="muted" style={{ fontSize: 11 }}>
-          {shotId}
+        <span className="shot-assets" title="产物齐备情况">
+          <Video size={13} className={entry.files.video || entry.files.image || entry.files.manifestAsset ? "on" : ""} aria-label="画面" />
+          <Mic size={13} className={entry.files.audio ? "on" : ""} aria-label="配音" />
         </span>
+        <button
+          className={`icon-btn edit-toggle${dirty() ? " dirty" : ""}`}
+          aria-expanded={open}
+          title={open ? "收起编辑" : "编辑本镜"}
+          onClick={() => setOpen((v) => !v)}
+        >
+          <Pencil size={13} />
+        </button>
+      </header>
+      <div className="shot-media">
+        {entry.files.video ? (
+          <video controls preload="metadata" src={fileUrl(jobId, entry.files.video)} />
+        ) : assetFile ? (
+          <img src={fileUrl(jobId, assetFile)} alt={shotId} loading="lazy" />
+        ) : (
+          <div className="shot-media-empty">
+            <ImageIcon size={20} aria-hidden="true" />
+            <span>尚无画面产物</span>
+          </div>
+        )}
+        {duration && (
+          <span className="shot-badge duration">
+            <Clock size={11} aria-hidden="true" />
+            {duration}
+          </span>
+        )}
       </div>
-      {entry.files.video ? (
-        <video controls preload="metadata" src={fileUrl(jobId, entry.files.video)} />
-      ) : assetFile ? (
-        <img src={fileUrl(jobId, assetFile)} alt={shotId} loading="lazy" />
-      ) : (
-        <div className="muted" style={{ fontSize: 12 }}>
-          尚无画面产物（素材阶段生成后可见）
+      {metaChips.length > 0 && (
+        <div className="shot-badges">
+          {metaChips.map((c) => (
+            <Chip key={c.title} label={c.label} title={c.title} />
+          ))}
         </div>
       )}
-      {entry.files.audio ? <audio controls preload="none" src={fileUrl(jobId, entry.files.audio)} /> : null}
-      <label className="field">
-        标题
-        <input disabled={busy} value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} />
-      </label>
-      <label className="field">
-        旁白（改动将删除本镜配音）
-        <textarea
-          rows={2}
-          disabled={busy}
-          value={form.narration}
-          onChange={(e) => setForm({ ...form, narration: e.target.value })}
-        />
-      </label>
-      <label className="field">
-        字幕
-        <input disabled={busy} value={form.caption} onChange={(e) => setForm({ ...form, caption: e.target.value })} />
-      </label>
-      <label className="field">
-        画面提示词（改动将删除本镜素材）
-        <textarea
-          rows={2}
-          disabled={busy}
-          value={form.visualPrompt}
-          onChange={(e) => setForm({ ...form, visualPrompt: e.target.value })}
-        />
-      </label>
-      <label className="field">
-        时长（秒）
-        <input
-          type="number"
-          min={1}
-          disabled={busy}
-          value={form.durationSeconds}
-          onChange={(e) => setForm({ ...form, durationSeconds: e.target.value })}
-        />
-      </label>
-      <div className="row">
-        <button className="primary" disabled={busy || saving || !dirty()} onClick={save}>
-          {saving ? "保存中…" : "保存"}
-        </button>
-        <button disabled={busy} title="删除本镜素材并重新排队素材阶段" onClick={() => retry("asset")}>
-          重生成素材
-        </button>
-        <button disabled={busy} title="删除本镜配音并重新排队旁白阶段" onClick={() => retry("audio")}>
-          重配音
-        </button>
-      </div>
-      {message && <div className={message.startsWith("已") ? "notice" : "error-line"}>{message}</div>}
-    </div>
+      {entry.files.audio && <audio controls preload="none" src={fileUrl(jobId, entry.files.audio)} />}
+      {open && (
+        <div className="shot-drawer">
+          <label className="field">
+            标题
+            <input disabled={busy} value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} />
+          </label>
+          <label className="field">
+            旁白（改动将删除本镜配音）
+            <textarea
+              rows={2}
+              disabled={busy}
+              value={form.narration}
+              onChange={(e) => setForm({ ...form, narration: e.target.value })}
+            />
+          </label>
+          <label className="field">
+            字幕
+            <input disabled={busy} value={form.caption} onChange={(e) => setForm({ ...form, caption: e.target.value })} />
+          </label>
+          <label className="field">
+            画面提示词（改动将删除本镜素材）
+            <textarea
+              rows={2}
+              disabled={busy}
+              value={form.visualPrompt}
+              onChange={(e) => setForm({ ...form, visualPrompt: e.target.value })}
+            />
+          </label>
+          <label className="field">
+            时长（秒）
+            <input
+              type="number"
+              min={1}
+              disabled={busy}
+              value={form.durationSeconds}
+              onChange={(e) => setForm({ ...form, durationSeconds: e.target.value })}
+            />
+          </label>
+          <div className="row">
+            <button className="primary" disabled={busy || saving || !dirty()} onClick={save}>
+              {saving ? "保存中…" : "保存"}
+            </button>
+            <button disabled={busy} title="删除本镜素材并重新排队素材阶段" onClick={() => retry("asset")}>
+              重生成素材
+            </button>
+            <button disabled={busy} title="删除本镜配音并重新排队旁白阶段" onClick={() => retry("audio")}>
+              重配音
+            </button>
+          </div>
+        </div>
+      )}
+    </article>
   );
 }

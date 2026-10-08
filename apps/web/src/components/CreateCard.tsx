@@ -2,12 +2,15 @@
  * @file CreateCard.tsx
  * @author zhangbaohong
  * @date 2026-09-17
- * @description 创建视图（Runway 式顶部输入 + 剪映式模板卡）：一段 brief 文本，配合执行/产物模式、风格模板卡、时长与 provider profile 选择，提交后回调进入任务详情。
+ * @description 创建视图：brief 主输入（渐变聚焦描边）+ 实时键值解析预览 chips；执行/产物模式胶囊、时长滑块与预设、比例/平台/语言选择器（后端 buildJobRequest 均已支持）、Provider 配置选择、风格模板横滑画廊（含适用场景与语气）、⌘Enter 快捷提交。
  * @see https://github.com/1241751430/AIVideo.git
  */
-import { useState } from "react";
+import { useMemo, useState } from "react";
+import { Sparkles } from "lucide-react";
 import type { SkillCard, SummaryResponse } from "@aivideo/shared";
 import { api } from "../api";
+import { useToast } from "../hooks/useToasts";
+import Chip from "./Chip";
 
 /** CreateCard 组件入参。 */
 interface Props {
@@ -16,19 +19,131 @@ interface Props {
   onCreated: (jobId: string) => void;
 }
 
+/** 比例候选（core sizeMap 支持的四档 + 默认）。 */
+const ASPECTS = ["9:16", "16:9", "1:1", "4:5"];
+
+/** 平台候选。 */
+const PLATFORMS: Array<{ value: string; label: string }> = [
+  { value: "douyin", label: "抖音" },
+  { value: "kuaishou", label: "快手" },
+  { value: "xiaohongshu", label: "小红书" },
+  { value: "bilibili", label: "B 站" },
+  { value: "tiktok", label: "TikTok" },
+  { value: "youtube", label: "YouTube" }
+];
+
+/** 语言候选（BCP-47，与 core 推断结果对齐）。 */
+const LANGUAGES: Array<{ value: string; label: string }> = [
+  { value: "zh-CN", label: "简体中文" },
+  { value: "en-US", label: "英语" },
+  { value: "ja-JP", label: "日语" },
+  { value: "ko-KR", label: "韩语" },
+  { value: "ru-RU", label: "俄语" }
+];
+
+/** 时长预设。 */
+const DUR_PRESETS = [15, 30, 45, 60, 90];
+
+/** 本地镜像 core BRIEF_KEY_MAP 的常见拼写 → 规范键。 */
+const BRIEF_KEY_ALIASES: Record<string, string> = {
+  theme: "theme",
+  topic: "theme",
+  title: "theme",
+  "主题": "theme",
+  "标题": "theme",
+  content: "content",
+  brief: "content",
+  description: "content",
+  "内容": "content",
+  "主要内容": "content",
+  mode: "mode",
+  "模式": "mode",
+  "输出模式": "mode",
+  skill: "skill",
+  "模板": "skill",
+  "风格模板": "skill",
+  aspect: "aspect",
+  ratio: "aspect",
+  aspectratio: "aspect",
+  "比例": "aspect",
+  "视频比例": "aspect",
+  duration: "duration",
+  length: "duration",
+  "时长": "duration",
+  "视频时长": "duration",
+  language: "language",
+  lang: "language",
+  "语言": "language",
+  platform: "platform",
+  "平台": "platform",
+  profile: "profile",
+  provider: "profile",
+  providerprofile: "profile",
+  "模型配置": "profile",
+  "配置档": "profile",
+  image: "images",
+  images: "images",
+  "图片": "images",
+  "参考图片": "images"
+};
+
+const KEY_LABELS: Record<string, string> = {
+  theme: "主题",
+  content: "内容",
+  mode: "模式",
+  skill: "模板",
+  aspect: "比例",
+  duration: "时长",
+  language: "语言",
+  platform: "平台",
+  profile: "配置",
+  images: "参考图"
+};
+
+/**
+ * @author zhangbaohong  @date 2026-10-08  @see https://github.com/1241751430/AIVideo.git
+ * 功能：前端镜像解析 brief 的「键：值」分段，仅用于预览展示（最终以后端解析为准）。
+ * @param text brief 原文
+ */
+function parseBriefPreview(text: string): Array<{ key: string; value: string }> {
+  const out: Array<{ key: string; value: string }> = [];
+  for (const seg of text.split(/[;\n；]+/)) {
+    const match = seg.trim().match(/^([^:：]{1,16})\s*[:：]\s*(.+)$/);
+    if (!match) {
+      continue;
+    }
+    const rawKey = (match[1] ?? "").trim().toLowerCase();
+    const value = (match[2] ?? "").trim();
+    const canonical = BRIEF_KEY_ALIASES[rawKey];
+    if (canonical && value) {
+      out.push({ key: canonical, value });
+    }
+  }
+  return out.slice(0, 8);
+}
+
 /**
  * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
- * 功能：渲染 brief 输入与选项并创建任务。
+ * 功能：渲染 brief 输入与全部创建选项，提交后回调进入任务详情。
  */
 export default function CreateCard({ summary, skills, onCreated }: Props) {
+  const toast = useToast();
   const [brief, setBrief] = useState("");
   const [execMode, setExecMode] = useState<"auto" | "guided">("auto");
   const [generationMode, setGenerationMode] = useState<"video" | "script">("video");
   const [skill, setSkill] = useState("auto");
-  const [duration, setDuration] = useState<number | "">("");
+  const [duration, setDuration] = useState<number | null>(null);
+  const [aspect, setAspect] = useState("");
+  const [language, setLanguage] = useState("");
+  const [platform, setPlatform] = useState("");
   const [profile, setProfile] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const defaultDuration = summary?.defaults.durationSeconds ?? 30;
+  const shownDuration = duration ?? defaultDuration;
+
+  const parsed = useMemo(() => parseBriefPreview(brief), [brief]);
 
   const submit = (): void => {
     if (!brief.trim()) {
@@ -43,10 +158,16 @@ export default function CreateCard({ summary, skills, onCreated }: Props) {
         mode: execMode,
         generationMode,
         skill,
-        durationSeconds: duration === "" ? undefined : Number(duration),
-        providerProfile: profile || undefined
+        durationSeconds: shownDuration,
+        providerProfile: profile || undefined,
+        aspectRatio: aspect || undefined,
+        language: language || undefined,
+        platform: platform || undefined
       })
-      .then((res) => onCreated(res.job.id))
+      .then((res) => {
+        toast.success("任务已创建，开始执行");
+        onCreated(res.job.id);
+      })
       .catch((err: Error) => {
         setError(err.message);
         setBusy(false);
@@ -54,55 +175,123 @@ export default function CreateCard({ summary, skills, onCreated }: Props) {
   };
 
   return (
-    <section className="card">
-      <h2>从一个想法开始</h2>
+    <section className="card create-hero">
+      <h2>
+        <Sparkles size={16} className="h2-ico" aria-hidden="true" />
+        从一个想法开始
+      </h2>
       <div className="create-form">
         <textarea
-          placeholder="例如：主题：夏季防晒喷雾测评；时长：45s；平台：抖音。也可以直接写一段口播想法，结构化键会被自动解析。"
+          className="brief-input"
+          placeholder="例如：主题：夏季防晒喷雾测评；时长：45s；平台：抖音。也可以直接写一段口播想法，结构化键会被自动解析。（⌘/Ctrl + Enter 快速生成）"
           value={brief}
           onChange={(e) => setBrief(e.target.value)}
+          onKeyDown={(e) => {
+            if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+              submit();
+            }
+          }}
+          aria-label="创作描述"
         />
-        <div className="form-row">
-          <label>
-            执行模式
+        {parsed.length > 0 && (
+          <div className="brief-chips" title="本地预览解析，最终以后端解析为准">
+            {parsed.map((item, index) => (
+              <Chip key={`${item.key}-${index}`} tone="brand" label={`${KEY_LABELS[item.key] ?? item.key}：${item.value}`} />
+            ))}
+          </div>
+        )}
+        <div className="create-grid">
+          <div className="cg-cell">
+            <span className="cg-label">执行模式</span>
             <span className="radio-group">
-              <label>
+              <label className={`pill${execMode === "auto" ? " on" : ""}`}>
                 <input type="radio" checked={execMode === "auto"} onChange={() => setExecMode("auto")} />
                 全自动
               </label>
-              <label>
+              <label className={`pill${execMode === "guided" ? " on" : ""}`}>
                 <input type="radio" checked={execMode === "guided"} onChange={() => setExecMode("guided")} />
                 分步确认
               </label>
             </span>
-          </label>
-          <label>
-            产物模式
+          </div>
+          <div className="cg-cell">
+            <span className="cg-label">产物模式</span>
             <span className="radio-group">
-              <label>
+              <label className={`pill${generationMode === "video" ? " on" : ""}`}>
                 <input type="radio" checked={generationMode === "video"} onChange={() => setGenerationMode("video")} />
                 完整视频
               </label>
-              <label>
+              <label className={`pill${generationMode === "script" ? " on" : ""}`}>
                 <input type="radio" checked={generationMode === "script"} onChange={() => setGenerationMode("script")} />
                 仅脚本分镜
               </label>
             </span>
-          </label>
-          <label>
-            时长（秒）
+          </div>
+          <div className="cg-cell">
+            <span className="cg-label">
+              时长 <b className="cg-value">{shownDuration}s</b>
+              {duration === null && <em className="muted">（默认）</em>}
+            </span>
+            <div className="dur-row">
+              {DUR_PRESETS.map((preset) => (
+                <button
+                  key={preset}
+                  className={`fchip${shownDuration === preset && duration !== null ? " selected" : ""}`}
+                  onClick={() => setDuration(preset)}
+                >
+                  {preset}s
+                </button>
+              ))}
+              <button className="fchip" title="恢复服务端默认时长" onClick={() => setDuration(null)}>
+                默认
+              </button>
+            </div>
             <input
-              type="number"
+              type="range"
               min={5}
-              max={600}
-              placeholder={summary ? String(summary.defaults.durationSeconds) : ""}
-              value={duration}
-              onChange={(e) => setDuration(e.target.value === "" ? "" : Number(e.target.value))}
+              max={180}
+              step={5}
+              value={shownDuration}
+              aria-label="时长滑块（秒）"
+              onChange={(e) => setDuration(Number(e.target.value))}
             />
+          </div>
+          <label className="cg-cell">
+            <span className="cg-label">画面比例</span>
+            <select value={aspect} onChange={(e) => setAspect(e.target.value)}>
+              <option value="">默认（{summary?.defaults.aspectRatio ?? "9:16"}）</option>
+              {ASPECTS.map((a) => (
+                <option key={a} value={a}>
+                  {a}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="cg-cell">
+            <span className="cg-label">发布平台</span>
+            <select value={platform} onChange={(e) => setPlatform(e.target.value)}>
+              <option value="">默认（{summary?.defaults.platform ?? "douyin"}）</option>
+              {PLATFORMS.map((p) => (
+                <option key={p.value} value={p.value}>
+                  {p.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="cg-cell">
+            <span className="cg-label">口播语言</span>
+            <select value={language} onChange={(e) => setLanguage(e.target.value)}>
+              <option value="">默认（{summary?.defaults.language ?? "zh-CN"}，可自动推断）</option>
+              {LANGUAGES.map((l) => (
+                <option key={l.value} value={l.value}>
+                  {l.label}
+                </option>
+              ))}
+            </select>
           </label>
           {summary && summary.profiles.length > 1 && (
-            <label>
-              Provider 配置
+            <label className="cg-cell">
+              <span className="cg-label">Provider 配置</span>
               <select value={profile} onChange={(e) => setProfile(e.target.value)}>
                 <option value="">默认（{summary.activeProfile}）</option>
                 {summary.profiles
@@ -120,7 +309,7 @@ export default function CreateCard({ summary, skills, onCreated }: Props) {
           <div className="muted" style={{ marginBottom: 6 }}>
             风格模板
           </div>
-          <div className="skill-cards">
+          <div className="skill-rail">
             <button
               type="button"
               className={`skill-card${skill === "auto" ? " selected" : ""}`}
@@ -135,9 +324,20 @@ export default function CreateCard({ summary, skills, onCreated }: Props) {
                 type="button"
                 className={`skill-card${skill === item.id ? " selected" : ""}`}
                 onClick={() => setSkill(item.id)}
+                title={item.tone ? `语气：${item.tone}` : undefined}
               >
                 <div className="name">{item.name}</div>
                 <div className="desc">{item.description}</div>
+                {(item.suitableFor.length > 0 || item.tone) && (
+                  <div className="skill-meta">
+                    {item.suitableFor.slice(0, 3).map((tag) => (
+                      <span key={tag} className="skill-tag">
+                        {tag}
+                      </span>
+                    ))}
+                    {item.tone && <span className="skill-tone">{item.tone}</span>}
+                  </div>
+                )}
               </button>
             ))}
           </div>

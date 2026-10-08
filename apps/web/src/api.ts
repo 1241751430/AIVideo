@@ -125,6 +125,12 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ target })
     }),
+  /** 镜头拖拽排序：按新顺序提交 shotId 列表（后端 PUT /:id/shots/order，Phase D 落地）。 */
+  reorderShots: (id: string, shotIds: string[]) =>
+    request<{ ok: boolean }>(`/api/projects/${encodeURIComponent(id)}/shots/order`, {
+      method: "PUT",
+      body: JSON.stringify({ shotIds })
+    }),
   costPreview: (id: string) => request<{ preview: CostPreview }>(`/api/projects/${encodeURIComponent(id)}/cost-preview`),
   rerender: (id: string) => request<{ ok: boolean }>(`/api/projects/${encodeURIComponent(id)}/rerender`, { method: "POST" }),
   openFolder: (id: string) =>

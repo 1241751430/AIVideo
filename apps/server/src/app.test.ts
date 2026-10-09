@@ -117,13 +117,22 @@ test("GET /:id/artifacts 汇总工件与成片就绪", async () => {
     mkdirSync(join(dir, "assets"), { recursive: true });
     mkdirSync(join(dir, "audio"), { recursive: true });
     mkdirSync(join(dir, "output"), { recursive: true });
-    writeFileSync(join(dir, "storyboard.json"), JSON.stringify({ shots: [{ id: "shot-01", narration: "n" }] }), "utf8");
+    writeFileSync(join(dir, "storyboard.json"), JSON.stringify({ shots: [{ id: "shot-01", narration: "n" }, { id: "shot-02", narration: "n" }, { id: "shot-03", narration: "n" }] }), "utf8");
+    mkdirSync(join(dir, "input"), { recursive: true });
     writeFileSync(join(dir, "assets", "shot-01.png"), "png", "utf8");
+    writeFileSync(join(dir, "input", "1.png"), "png", "utf8");
     writeFileSync(join(dir, "audio", "shot-01.wav"), "wav", "utf8");
     writeFileSync(join(dir, "output", "final.mp4"), "0123456789", "utf8");
     writeFileSync(
       join(dir, "render-manifest.json"),
-      JSON.stringify({ shots: [{ shotId: "shot-01", assetPath: "assets/shot-01.png" }], outputFile: "output/final.mp4" }),
+      JSON.stringify({
+        shots: [
+          { shotId: "shot-01", assetPath: "assets/shot-01.png" },
+          { shotId: "shot-02", assetPath: join(dir, "input", "1.png") },
+          { shotId: "shot-03", assetPath: "/etc/hostname" }
+        ],
+        outputFile: "output/final.mp4"
+      }),
       "utf8"
     );
     const body = (await (await ctx.app.request(`/api/projects/${jobId}/artifacts`)).json()) as {
@@ -137,6 +146,8 @@ test("GET /:id/artifacts 汇总工件与成片就绪", async () => {
       audio: "audio/shot-01.wav",
       manifestAsset: "assets/shot-01.png"
     });
+    assert.equal(body.shots[1]?.files.manifestAsset, "input/1.png", "项目内绝对 assetPath 归一化为相对路径");
+    assert.equal(body.shots[2]?.files.manifestAsset, null, "越界绝对 assetPath 拒绝外泄");
   } finally {
     ctx.cleanup();
   }

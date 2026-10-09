@@ -6,7 +6,7 @@
  * @see https://github.com/1241751430/AIVideo.git
  */
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { Hono } from "hono";
 import {
   createProjectId,
@@ -180,7 +180,7 @@ export function projectRoutes(deps: ServerDeps): Hono {
           video: exists(shotVideo) ? shotVideo : null,
           image: exists(shotImage) ? shotImage : null,
           audio: exists(audioRelative) ? audioRelative : null,
-          manifestAsset: typeof entry.assetPath === "string" && exists(entry.assetPath) ? entry.assetPath : null
+          manifestAsset: serveableAssetPath(dir, entry.assetPath)
         }
       };
     });
@@ -251,6 +251,33 @@ export function projectRoutes(deps: ServerDeps): Hono {
   });
 
   return router;
+}
+
+/**
+ * @author zhangbaohong  @date 2026-10-08  @see https://github.com/1241751430/AIVideo.git
+ * 功能：把 manifest 的 assetPath 归一化为可供 /file 使用的项目内相对路径；绝对路径仅当解析后落在项目目录内且文件非空时转相对，越界、缺失或空文件返回 null。
+ * @param projectDir 项目目录绝对路径
+ * @param assetPath manifest 镜头 assetPath 原值（相对或绝对）
+ * @returns 项目相对路径或 null
+ */
+function serveableAssetPath(projectDir: string, assetPath: unknown): string | null {
+  if (typeof assetPath !== "string" || !assetPath) {
+    return null;
+  }
+  const target = resolve(projectDir, assetPath);
+  try {
+    const st = statSync(target);
+    if (!st.isFile() || st.size === 0) {
+      return null;
+    }
+  } catch {
+    return null;
+  }
+  const rel = relative(projectDir, target);
+  if (!rel || rel.startsWith("..") || isAbsolute(rel)) {
+    return null;
+  }
+  return rel;
 }
 
 /**

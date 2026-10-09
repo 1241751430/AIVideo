@@ -164,17 +164,87 @@ def escape_filter_path(value: str) -> str:
     )
 
 
+_CJK_FONT_FILES: dict[str, list[str]] = {
+    "Linux": [
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otf",
+        "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+        "/usr/share/fonts/wenquanyi/wqy-microhei/wqy-microhei.ttc",
+    ],
+    "Darwin": [
+        "/System/Library/Fonts/PingFang.ttc",
+        "/System/Library/Fonts/STHeiti Light.ttc",
+    ],
+    "Windows": [
+        "C:\\Windows\\Fonts\\msyh.ttc",
+        "C:\\Windows\\Fonts\\msyh.ttf",
+        "C:\\Windows\\Fonts\\simhei.ttf",
+    ],
+}
+
+_TEXT_FONT_PATH: str | None | bool = False
+_CAPTION_FONT_FAMILY: str | None | bool = False
+
+
+def resolve_text_font_file() -> str | None:
+    """
+    功能：探测当前平台第一个可用的含中文字形的字体文件（供 drawtext 用），结果进程内缓存；找不到返回 None 维持原行为
+    @author zhangbaohong  @date 2026-10-08  @see https://github.com/1241751430/AIVideo.git
+    """
+    global _TEXT_FONT_PATH
+    if _TEXT_FONT_PATH is False:
+        candidates = _CJK_FONT_FILES.get(platform.system(), [])
+        _TEXT_FONT_PATH = next((path for path in candidates if Path(path).is_file()), None)
+    return _TEXT_FONT_PATH
+
+
+def resolve_caption_font_family() -> str:
+    """
+    功能：探测字幕烧录（libass）用的中文字体族名；Linux 走 fc-list 查询含中文的族名，探测不到回退 Arial 由 libass 自行回退
+    @author zhangbaohong  @date 2026-10-08  @see https://github.com/1241751430/AIVideo.git
+    """
+    global _CAPTION_FONT_FAMILY
+    if _CAPTION_FONT_FAMILY is False:
+        system = platform.system()
+        family: str | None = None
+        if system == "Darwin":
+            family = "PingFang SC"
+        elif system == "Windows":
+            family = "Microsoft YaHei"
+        elif shutil.which("fc-list"):
+            try:
+                completed = subprocess.run(
+                    ["fc-list", "-f", "%{family}\n", ":lang=zh"],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    text=True,
+                    timeout=5,
+                )
+                if completed.returncode == 0:
+                    for line in completed.stdout.splitlines():
+                        name = line.split(",")[0].strip()
+                        if name:
+                            family = name
+                            break
+            except Exception:
+                family = None
+        _CAPTION_FONT_FAMILY = family
+    return _CAPTION_FONT_FAMILY or "Arial"
+
+
 def build_image_filter(width: int, height: int, duration: str) -> str:
     """
     功能：构建图片的放大缩放（zoompan）动效与淡入淡出滤镜链
     @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
     """
     frames = max(1, int(round(float(duration) * int(OUTPUT_FPS))))
+    fade_out_start = max(0.0, float(duration) - 0.35)
     return (
         f"scale={width * 2}:{height * 2}:force_original_aspect_ratio=increase,"
         f"crop={width}:{height},"
         f"zoompan=z='min(zoom+0.0008,1.08)':d={frames}:s={width}x{height}:fps={OUTPUT_FPS},"
-        f"fade=t=in:st=0:d=0.25,fade=t=out:st=max(0\\,{float(duration) - 0.35:.3f}):d=0.35,"
+        f"fade=t=in:st=0:d=0.25,fade=t=out:st={fade_out_start:.3f}:d=0.35,"
         "format=yuv420p"
     )
 
@@ -188,7 +258,7 @@ def build_video_filter(width: int, height: int, duration: str) -> str:
         f"scale={width}:{height}:force_original_aspect_ratio=increase,"
         f"crop={width}:{height},"
         f"fps={OUTPUT_FPS},"
-        f"fade=t=in:st=0:d=0.25,fade=t=out:st=max(0\\,{float(duration) - 0.35:.3f}):d=0.35,"
+        f"fade=t=in:st=0:d=0.25,fade=t=out:st={max(0.0, float(duration) - 0.35):.3f}:d=0.35,"
         "format=yuv420p"
     )
 
@@ -200,11 +270,13 @@ def build_title_card_filter(width: int, height: int, title: str) -> str:
     """
     title_size = max(44, min(72, width // 18))
     accent_height = max(10, height // 120)
+    font_file = resolve_text_font_file()
+    font_arg = f"fontfile={escape_filter_path(font_file)}:" if font_file else ""
     return (
         f"geq=r='16+34*Y/H':g='24+24*X/W':b='38+70*(1-Y/H)',"
         f"drawbox=x=0:y={height - accent_height}:w={width}:h={accent_height}:color=0x6d5dfc@0.95:t=fill,"
         f"drawbox=x={width * 0.08:.0f}:y={height * 0.34:.0f}:w={width * 0.84:.0f}:h={height * 0.28:.0f}:color=black@0.35:t=fill,"
-        f"drawtext=text='{title}':fontcolor=white:fontsize={title_size}:line_spacing=16:"
+        f"drawtext={font_arg}text='{title}':fontcolor=white:fontsize={title_size}:line_spacing=16:"
         "box=1:boxcolor=black@0.22:boxborderw=28:x=(w-text_w)/2:y=(h-text_h)/2,"
         "format=yuv420p"
     )
@@ -239,7 +311,7 @@ def build_subtitle_burn_command(input_path: Path, captions: Path, output_path: P
     功能：构建将字幕烧录进视频的 ffmpeg 命令
     @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
     """
-    style = "FontName=Arial,FontSize=18,PrimaryColour=&H00FFFFFF,OutlineColour=&H80000000,BorderStyle=1,Outline=2,Shadow=1,MarginV=90,Alignment=2"
+    style = f"FontName={resolve_caption_font_family()},FontSize=18,PrimaryColour=&H00FFFFFF,OutlineColour=&H80000000,BorderStyle=1,Outline=2,Shadow=1,MarginV=90,Alignment=2"
     return [
         "ffmpeg",
         "-y",

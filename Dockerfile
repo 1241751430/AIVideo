@@ -35,7 +35,7 @@ ENV PATH="$PNPM_HOME:$PATH"
 WORKDIR /app
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends python3 ffmpeg ca-certificates espeak-ng \
+  && apt-get install -y --no-install-recommends python3 ffmpeg ca-certificates espeak-ng fontconfig fonts-noto-cjk \
   && rm -rf /var/lib/apt/lists/*
 
 RUN corepack enable

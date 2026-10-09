@@ -69,13 +69,25 @@ Verify: `ffmpeg -version && ffprobe -version`
 ./aivideo serve          # then open http://127.0.0.1:8787
 ```
 
-A local-first, no-login web workbench (screenshot placeholder: `docs/screenshots/shot-wall.png`) built on top of the same pipeline the CLI uses:
+A local-first, no-login dark workbench built on the same pipeline the CLI uses:
 
-- **Create** — brief box + built-in skill cards, execution mode (auto / guided step-by-step checkpoints) and output mode (video / script-only)
-- **Pipeline stepper** — ①script → ②billing → ③assets → ④narration → ⑤render, with live SSE logs; guided mode pauses at each checkpoint (script review / cost confirm / shot wall / narration preview / final accept)
-- **Shot wall** — per-shot video/image preview, narration audition, inline editing of title/narration/visual prompt/caption/duration, single-shot regeneration ("retry asset / retry audio") that only re-does that shot
-- **Delivery** — in-browser video playback (HTTP Range), download, and **Open Folder** which launches Finder/Explorer/xdg-open on the project directory
+- **Create (bento)** — brief box with live structured-key chips, built-in skill card gallery, execution mode (auto / guided step-by-step checkpoints) and output mode (video / script-only); pick aspect ratio / language / platform; **drag-and-drop reference images** (png / jpg / webp, ≤20 files, ≤10 MB each — the first shots use them as scene assets)
+- **Pipeline stepper** — ①script → ②billing → ③assets → ④narration → ⑤render with a derived progress bar and live SSE logs; guided mode pauses at each checkpoint (script review / cost confirm / shot wall / narration preview / final accept)
+- **Shot wall** — thumbnail-first cards with duration / shot-type / transition / asset badges, per-shot video/image preview and narration audition, inline editing drawer (title / narration / visual prompt / caption / duration), single-shot regeneration ("retry asset / retry audio"), **drag-handle reordering** (rewrites storyboard, manifest, captions and marks the video stale) and **one-click batch retry** of all failed shots
+- **Delivery** — cinema-style in-browser player (HTTP Range), download, and **Open Folder** which launches Finder/Explorer/xdg-open on the project directory
+- **Workbench ergonomics** — sidebar search + status filters with relative timestamps, log toolbar (keyword filter / follow-bottom toggle / copy-all / expand), shot lightbox, glass toasts and confirm dialogs, hash deep-links (`#/job/<id>`) that survive refresh, a live health light + provider badges, and read-only views for legacy / corrupt project dirs
 - **Resume-safe** — server restart re-queues interrupted jobs; disk artifacts are the single source of truth
+
+### Keyboard shortcuts
+
+| Key | Action |
+|-----|--------|
+| `N` | New project (go to the create page) |
+| `/` | Focus the sidebar search box |
+| `?` | Open the shortcuts cheat-sheet |
+| `Esc` | Close the top-most overlay (lightbox / sheet / dialog) |
+| `⌘`/`Ctrl` + `Enter` | Submit the create form |
+| `←` / `→` | Previous / next shot inside the lightbox |
 
 Notes:
 
@@ -88,17 +100,21 @@ Notes:
 
 | Endpoint | Purpose |
 |----------|---------|
-| `POST /api/projects` | Create job (`briefText`, `mode`, `generationMode`, `skill`, `durationSeconds`, `providerProfile`) |
+| `POST /api/projects` | Create job (`briefText`, `images` as base64 data-URLs, `mode`, `generationMode`, `skill`, `durationSeconds`, `aspectRatio`, `language`, `platform`, `providerProfile`) |
 | `GET /api/projects` / `GET /api/projects/:id` | List / inspect jobs + legacy project dirs |
 | `DELETE /api/projects/:id` / `POST /api/projects/:id/cancel` | Remove / cancel |
 | `GET /api/projects/:id/events` | SSE stream (status + logs, `Last-Event-ID` replay) |
 | `POST /api/projects/:id/review` | Checkpoint decision: `approve` / `cancel` / `redo-stage` |
 | `PUT /api/projects/:id/artifacts/script` · `PUT /api/projects/:id/shots/:shotId` | Inline edits (invalidation matrix applied automatically) |
+| `PUT /api/projects/:id/shots/order` | Reorder shots (`shotIds` permutation; rewrites storyboard/manifest/captions/script, marks video stale) |
 | `POST /api/projects/:id/shots/:shotId/retry` | Single-shot retry: `target: asset` or `audio` |
+| `POST /api/projects/:id/shots/retry-batch` | Batch retry (explicit `shotIds` or default: every shot with no assets) — one re-queue |
 | `GET /api/projects/:id/cost-preview` · `POST /api/projects/:id/rerender` | Billing gate data · re-queue render |
-| `GET /api/projects/:id/file?path=` · `GET /api/projects/:id/video` | Sandboxed artifact preview / Range video stream |
+| `GET /api/projects/:id/file?path=` · `GET /api/projects/:id/video` · `GET /api/projects/:id/input-image?index=` | Sandboxed artifact preview / Range video stream / uploaded reference image |
 | `POST /api/projects/:id/open-folder` | Open project dir in the host file manager |
 | `GET /api/healthz` · `GET /api/skills` · `GET /api/summary` | Liveness · skill cards · active providers/defaults |
+
+Static assets are served with cache headers: `index.html` is `no-cache`, hashed bundles under `assets/` are `immutable` — a UI update never leaves a stale shell behind.
 
 ## Structured Brief Input
 
@@ -108,7 +124,7 @@ Notes:
 Theme: Summer sunscreen spray; Content: lightweight, non-greasy; Aspect: 9:16; Duration: 30s
 ```
 
-Free-form descriptions also work. Images can be passed via `--images` or uploaded during `create`.
+Free-form descriptions also work. Images can be passed via `--images`, uploaded during `create`, or dragged into the workbench create page.
 
 ## Deployment
 

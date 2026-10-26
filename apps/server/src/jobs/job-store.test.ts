@@ -105,6 +105,22 @@ test("scanProjects 合并任务与无任务目录并标记损坏", () => {
   }
 });
 
+test("scanProjects 跳过非法目录名且不抛错", () => {
+  const { root, cleanup } = tempRoot();
+  try {
+    writeJob(root, makeJob("alpha", { phase: "done" }));
+    // 手工在 project/ 下建的目录（含空格）不是合法项目 id：任何路由都无法寻址，扫描必须跳过而不是崩掉。
+    mkdirSync(join(root, "my project"), { recursive: true });
+    writeFileSync(join(root, "my project", JOB_FILE), JSON.stringify(makeJob("my project")), "utf8");
+
+    const entries = scanProjects(root);
+    assert.deepEqual(entries.map((entry) => entry.projectId), ["alpha"]);
+    assert.equal(readJob(root, "my project"), null, "非法 id 读不到东西，也不该抛错");
+  } finally {
+    cleanup();
+  }
+});
+
 test("removeProject 删除目录；非法 id 拒绝", () => {
   const { root, cleanup } = tempRoot();
   try {

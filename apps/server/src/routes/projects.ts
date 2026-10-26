@@ -140,6 +140,10 @@ export function projectRoutes(deps: ServerDeps): Hono {
 
   router.get("/:id/artifacts", (c) => {
     const id = c.req.param("id");
+    // 非法 id 直接拒绝：下面要按它拼路径并 readFileSync，不能让它越过 projectsRoot。
+    if (!isValidProjectId(id)) {
+      return c.json({ error: "Invalid project id" }, 400);
+    }
     const project = deps.runner.get(id);
     const dir = deps.runner.projectDirOf(id);
     if (!project && !existsSync(dir)) {
@@ -196,6 +200,10 @@ export function projectRoutes(deps: ServerDeps): Hono {
 
   router.get("/:id/events", (c) => {
     const id = c.req.param("id");
+    // 与 DELETE/artifacts 同口径：非法 id 不应被拼进文件系统路径。
+    if (!isValidProjectId(id)) {
+      return c.json({ error: "Invalid project id" }, 400);
+    }
     if (!deps.runner.get(id) && !existsSync(join(deps.projectsRoot, id))) {
       return c.json({ error: "Unknown project" }, 404);
     }

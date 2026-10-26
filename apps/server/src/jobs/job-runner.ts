@@ -6,12 +6,11 @@
  * @see https://github.com/1241751430/AIVideo.git
  */
 import { existsSync } from "node:fs";
-import { join } from "node:path";
 import type { AppConfig, ProviderSelection } from "@aivideo/core";
 import { createProjectId } from "@aivideo/core";
 import type { CheckpointKind, ExecMode, Job, JobDto, JobPhase, JobRequest, StageKind } from "../types.js";
 import { EventHub, JobEventLog } from "./events.js";
-import { scanProjects, writeJob } from "./job-store.js";
+import { projectDirOf as resolveProjectDir, scanProjects, writeJob } from "./job-store.js";
 import { defaultStages, hasRemoteProviders, type StageContext, type StageDeps, type StageRunner } from "./stages.js";
 
 /** JobRunner 的注入依赖（全部可测：routes 测试注入假 stages）。 */
@@ -275,10 +274,10 @@ export class JobRunner {
 
   /**
    * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
-   * 功能：项目目录绝对路径。
+   * 功能：项目目录绝对路径（与 job-store 共用同一套 id 校验与越界断言，非法 id 抛错而不是裸拼接）。
    */
   projectDirOf(projectId: string): string {
-    return join(this.deps.projectsRoot, projectId);
+    return resolveProjectDir(this.deps.projectsRoot, projectId);
   }
 
   /**

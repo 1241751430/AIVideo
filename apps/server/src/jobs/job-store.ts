@@ -49,17 +49,18 @@ export function writeJob(projectsRoot: string, job: Job): void {
 
 /**
  * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
- * 功能：读取并解析 job.json；不存在或无法解析/形状不符返回 null（调用方结合文件存在性判定损坏）。
+ * 功能：读取并解析 job.json；id 非法、文件不存在或无法解析/形状不符均返回 null（调用方结合文件存在性判定损坏）。
  * @param projectsRoot 项目根目录
  * @param projectId 项目 id
  * @returns 解析出的任务或 null
  */
 export function readJob(projectsRoot: string, projectId: string): Job | null {
-  const target = jobFilePath(projectsRoot, projectId);
-  if (!existsSync(target)) {
-    return null;
-  }
   try {
+    // 路径构造也在 try 内：磁盘上的目录名不受本应用控制，非法 id 不该让调用方（boot/列表）崩掉。
+    const target = jobFilePath(projectsRoot, projectId);
+    if (!existsSync(target)) {
+      return null;
+    }
     const parsed = JSON.parse(readFileSync(target, "utf8")) as Job;
     if (!parsed || typeof parsed !== "object" || parsed.projectId !== projectId || typeof parsed.phase !== "string") {
       return null;
@@ -73,6 +74,8 @@ export function readJob(projectsRoot: string, projectId: string): Job | null {
 /**
  * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
  * 功能：扫描 projectsRoot 下的一级目录，返回每个项目的磁盘条目（job.json 解析结果 + 是否损坏），按 id 排序。
+ * 目录名不是合法项目 id 的（例如手工建的 `my project`）直接跳过：本应用的任何路由都无法按这种 id 寻址，
+ * 列出来只会给出点进去必报错的条目，而 boot 与列表接口不该被这种目录拖垮。
  * @param projectsRoot 项目根目录
  * @returns 项目磁盘条目数组
  */
@@ -82,6 +85,9 @@ export function scanProjects(projectsRoot: string): ProjectDiskEntry[] {
   }
   const entries: ProjectDiskEntry[] = [];
   for (const name of readdirSync(projectsRoot).sort()) {
+    if (!isValidProjectId(name)) {
+      continue;
+    }
     let dirIsDirectory = false;
     try {
       dirIsDirectory = statSync(join(projectsRoot, name)).isDirectory();
@@ -110,9 +116,9 @@ export function removeProject(projectsRoot: string, projectId: string): void {
 
 /**
  * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
- * 功能：校验 projectId 合法并返回其项目目录绝对路径（越界抛错）。
+ * 功能：校验 projectId 合法并返回其项目目录绝对路径（越界抛错）。runner 与各路由共用这一个入口，避免各自裸 join。
  */
-function projectDirOf(projectsRoot: string, projectId: string): string {
+export function projectDirOf(projectsRoot: string, projectId: string): string {
   if (!isValidProjectId(projectId)) {
     throw new Error(`Invalid project id: ${JSON.stringify(projectId)}`);
   }

@@ -102,6 +102,8 @@ test("GET/DELETE /api/projects/:id 与取消/review 边界", async () => {
     assert.equal((await ctx.app.request("/api/projects/legacy-2", { method: "DELETE" })).status, 200);
     assert.equal((await ctx.app.request("/api/projects/ghost-3", { method: "DELETE" })).status, 404);
     assert.equal((await ctx.app.request("/api/projects/a..b", { method: "DELETE" })).status, 400, "非法 id 拒绝");
+    assert.equal((await ctx.app.request("/api/projects/a..b/artifacts")).status, 400, "artifacts 非法 id 拒绝");
+    assert.equal((await ctx.app.request("/api/projects/a..b/events")).status, 400, "events 非法 id 拒绝");
     assert.equal((await ctx.app.request(`/api/projects/${jobId}`, { method: "DELETE" })).status, 200);
     assert.equal((await ctx.app.request(`/api/projects/${jobId}`)).status, 404, "forget 后消失");
   } finally {

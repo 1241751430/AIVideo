@@ -54,6 +54,16 @@ export interface Job {
   request: JobRequest;
   /** 排队/恢复时要从哪个阶段继续；缺省表示从 script 开始。boot 恢复与检查点推进都靠它定位断点。 */
   resumeStage?: StageKind;
+  /**
+   * 显式重跑信号：等于某阶段时，该阶段不得走「产物已存在就跳过」的续跑复用。
+   * 「要不要重跑」由调用方显式声明，不从产物是否存在反推（目前只被 script 阶段消费）。
+   */
+  force?: StageKind;
+  /**
+   * 本次运行的终点阶段：只执行 resumeStage→endStage 这一段，到达终点即收尾为 done。
+   * 镜头重试/重新渲染靠它把「重做目标阶段」和「跑完整条链」区分开；缺省表示跑到底。
+   */
+  endStage?: StageKind;
   /** done 之后又编辑了产物时为真，UI 提示重新渲染。 */
   result?: { videoStale?: boolean };
   /** phase=failed 的错误摘要。 */

@@ -145,7 +145,14 @@ export class JobRunner {
       return false;
     }
     this.queue = this.queue.filter((id) => id !== jobId);
-    this.setStatus(job, { phase: "cancelled", stage: undefined, checkpoint: undefined, resumeStage: undefined });
+    this.setStatus(job, {
+      phase: "cancelled",
+      stage: undefined,
+      checkpoint: undefined,
+      resumeStage: undefined,
+      force: undefined,
+      endStage: undefined
+    });
     if (this.active?.jobId === jobId) {
       this.active.controller.abort();
     }
@@ -172,7 +179,7 @@ export class JobRunner {
       if (!stage || !["script", "assets", "audio", "render"].includes(stage)) {
         return false;
       }
-      this.beginRun(job, stage);
+      this.beginRun(job, stage, { force: stage });
       return true;
     }
     switch (job.checkpoint) {
@@ -223,15 +230,18 @@ export class JobRunner {
 
   /**
    * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
-   * 功能：对非活动任务重新入队执行指定阶段（镜头重试/重渲染入口；磁盘复用保证只重做受影响部分）。
+   * 功能：对非活动任务重新入队，只执行 stage→endStage 这一段（镜头重试/重渲染的入口）；到达 endStage 即收尾，不再顺势跑完整条链。
+   * @param jobId 任务 id
+   * @param stage 起始阶段
+   * @param endStage 终点阶段（缺省等于 stage，即「只重做这一段」）
    * @returns 是否成功入队；running/queued 或未知任务拒绝
    */
-  rerun(jobId: string, stage: StageKind): boolean {
+  rerun(jobId: string, stage: StageKind, endStage: StageKind = stage): boolean {
     const job = this.jobs.get(jobId);
     if (!job || job.phase === "running" || job.phase === "queued") {
       return false;
     }
-    this.beginRun(job, stage);
+    this.beginRun(job, stage, { endStage });
     return true;
   }
 
@@ -282,10 +292,20 @@ export class JobRunner {
 
   /**
    * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
-   * 功能：检查点通过后重新入队执行指定阶段。
+   * 功能：把任务重新排队到指定阶段：写入起始阶段与可选的显式重跑/终点语义后入队。
+   * @param job 任务实体
+   * @param stage 起始阶段
+   * @param options.force 该阶段不得走产物复用的显式信号
+   * @param options.endStage 到达即收尾的终点阶段
    */
-  private beginRun(job: Job, stage: StageKind): void {
+  private beginRun(
+    job: Job,
+    stage: StageKind,
+    options: { force?: StageKind; endStage?: StageKind } = {}
+  ): void {
     job.resumeStage = stage;
+    job.force = options.force;
+    job.endStage = options.endStage;
     this.setStatus(job, { phase: "queued", checkpoint: undefined, stage: undefined });
     this.enqueue(job.id);
   }
@@ -338,7 +358,13 @@ export class JobRunner {
             return;
           }
           const message = error instanceof Error ? error.message : String(error);
-          this.setStatus(current, { phase: "failed", stage: undefined, error: message });
+          this.setStatus(current, {
+            phase: "failed",
+            stage: undefined,
+            force: undefined,
+            endStage: undefined,
+            error: message
+          });
           this.emit(current, "log", { message: `阶段 ${stage} 失败：${message}` });
           return;
         }
@@ -347,6 +373,20 @@ export class JobRunner {
           return;
         }
         current.resumeStage = undefined;
+        // force 只对本次入队的起始阶段有效：该阶段已跑完，信号随之消费。
+        current.force = undefined;
+        if (current.endStage === stage) {
+          // 终点语义：只重做了这一段，后续阶段（尤其渲染）不再顺带走一遍。
+          // 除 render 之外的终点都意味着成片没跟着更新，标为过期。
+          this.setStatus(current, {
+            phase: "done",
+            stage: undefined,
+            endStage: undefined,
+            result: { videoStale: stage !== "render" }
+          });
+          this.emit(current, "log", { message: `阶段 ${stage} 完成（本次运行的终点）` });
+          return;
+        }
         const next = this.nextAfterStage(current, stage);
         if (next.kind === "stage") {
           this.setStatus(current, { phase: "running", stage: next.stage });
@@ -356,7 +396,7 @@ export class JobRunner {
           this.setStatus(current, { phase: "awaiting", stage: undefined, checkpoint: next.checkpoint });
           return;
         }
-        this.setStatus(current, { phase: "done", stage: undefined, result: { videoStale: false } });
+        this.setStatus(current, { phase: "done", stage: undefined, endStage: undefined, result: { videoStale: false } });
         this.emit(current, "log", { message: "任务完成" });
         return;
       }
@@ -439,7 +479,9 @@ export class JobRunner {
    */
   private setStatus(
     job: Job,
-    patch: Partial<Pick<Job, "phase" | "stage" | "checkpoint" | "resumeStage" | "error" | "result">>
+    patch: Partial<
+      Pick<Job, "phase" | "stage" | "checkpoint" | "resumeStage" | "force" | "endStage" | "error" | "result">
+    >
   ): void {
     Object.assign(job, patch, { updatedAt: new Date().toISOString() });
     writeJob(this.deps.projectsRoot, job);

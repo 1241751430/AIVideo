@@ -80,6 +80,11 @@ export interface StoryboardShot {
   durationSeconds: number;
   transition: string;
   assetSource: "reference_image" | "generated_image" | "title_card";
+  /**
+   * 参考镜绑定的 `brief.inputImages` 下标（按 id 绑定，不随镜头顺序漂移）。
+   * 只有 assetSource=reference_image 的镜头有值；早期项目缺该字段时由读取方回退到镜头当前下标。
+   */
+  inputImageIndex?: number;
 }
 
 export interface Storyboard {

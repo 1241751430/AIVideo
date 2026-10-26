@@ -136,6 +136,7 @@ export function reviewRoutes(deps: ServerDeps): Hono {
         return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
       }
     }
+    // 单镜重试只重做目标阶段：画面更新后成片被标为过期，由用户决定是否重新渲染。
     const queued = deps.runner.rerun(guard.job.id, target === "asset" ? "assets" : "audio");
     if (!queued) {
       return c.json({ error: "Task is busy; retry later" }, 409);
@@ -189,7 +190,7 @@ export function reviewRoutes(deps: ServerDeps): Hono {
       const status = /Unknown shot|Invalid shot id/.test(message) ? 404 : 400;
       return c.json({ error: message }, status);
     }
-    // 单次重排素材阶段：续跑会补齐全部缺失画面并自动续走配音与渲染
+    // 单次重排素材阶段即可：批量重试只补齐缺失画面，不替用户重渲成片（成片会标为过期）。
     const queued = deps.runner.rerun(guard.job.id, "assets");
     if (!queued) {
       return c.json({ error: "Task is busy; retry later" }, 409);

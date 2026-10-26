@@ -76,7 +76,7 @@ A local-first, no-login dark workbench built on the same pipeline the CLI uses:
 - **Shot wall** — thumbnail-first cards with duration / shot-type / transition / asset badges, per-shot video/image preview and narration audition, inline editing drawer (title / narration / visual prompt / caption / duration), single-shot regeneration ("retry asset / retry audio"), **drag-handle reordering** (rewrites storyboard, manifest, captions and marks the video stale) and **one-click batch retry** of all failed shots
 - **Delivery** — cinema-style in-browser player (HTTP Range), download, and **Open Folder** which launches Finder/Explorer/xdg-open on the project directory
 - **Workbench ergonomics** — sidebar search + status filters with relative timestamps, log toolbar (keyword filter / follow-bottom toggle / copy-all / expand), shot lightbox, glass toasts and confirm dialogs, hash deep-links (`#/job/<id>`) that survive refresh, a live health light + provider badges, and read-only views for legacy / corrupt project dirs
-- **Resume-safe** — server restart re-queues interrupted jobs; disk artifacts are the single source of truth
+- **Resume-safe** — server restart re-queues interrupted jobs; disk artifacts are the single source of truth. Redo and retry run only the target stage (or an explicitly requested range) and stop at its end instead of rolling on through the rest of the chain
 
 ### Keyboard shortcuts
 
@@ -108,7 +108,7 @@ Notes:
 | `PUT /api/projects/:id/artifacts/script` · `PUT /api/projects/:id/shots/:shotId` | Inline edits (invalidation matrix applied automatically) |
 | `PUT /api/projects/:id/shots/order` | Reorder shots (`shotIds` permutation; rewrites storyboard/manifest/captions/script, marks video stale) |
 | `POST /api/projects/:id/shots/:shotId/retry` | Single-shot retry: `target: asset` or `audio` |
-| `POST /api/projects/:id/shots/retry-batch` | Batch retry (explicit `shotIds` or default: every shot with no assets) — one re-queue |
+| `POST /api/projects/:id/shots/retry-batch` | Batch retry (explicit `shotIds` or default: every shot with no assets) — one re-queue of the assets stage, which finishes there and leaves the video marked stale |
 | `GET /api/projects/:id/cost-preview` · `POST /api/projects/:id/rerender` | Billing gate data · re-queue render |
 | `GET /api/projects/:id/file?path=` · `GET /api/projects/:id/video` · `GET /api/projects/:id/input-image?index=` | Sandboxed artifact preview / Range video stream / uploaded reference image |
 | `POST /api/projects/:id/open-folder` | Open project dir in the host file manager |

@@ -458,6 +458,94 @@ test("shots mix per-shot: first N animate the user images, the rest are generate
   }
 });
 
+test("reordering the storyboard keeps each reference shot on its own user image", async () => {
+  const projectDir = mkdtempSync(join(tmpdir(), "aivideo-refreorder-"));
+  const inputImages = writeUserImages(2);
+  const artifacts = await buildReferenceArtifacts(inputImages);
+  const original = [...artifacts.storyboard.shots];
+  assert.ok(original.length >= 3);
+  // Reversing moves the reference shots to positions that no longer match the
+  // images they were built against; the binding must travel with the shot id.
+  const reordered = [...original].reverse();
+  artifacts.storyboard.shots = reordered;
+  const moved = reordered.filter(
+    (shot) => shot.assetSource === "reference_image" && shot.inputImageIndex !== reordered.indexOf(shot)
+  );
+  assert.ok(moved.length > 0, "fixture must actually move a reference shot off its bound position");
+
+  const capturedRefs = new Map<string, string[] | undefined>();
+  const providers: ProviderSelection = {
+    video: {
+      id: "capture-reordered-video",
+      capability: "video",
+      isRemote: true,
+      async test() {
+        return { providerId: "capture-reordered-video", capability: "video", ok: true, message: "ok", liveChecked: false };
+      },
+      async generateVideo(request) {
+        const shot = reordered.find((candidate) => request.outputPath.endsWith(`${candidate.id}.mp4`));
+        capturedRefs.set(shot?.id ?? "unknown", request.referenceImagePaths);
+        mkdirSync(join(request.outputPath, ".."), { recursive: true });
+        writeFileSync(request.outputPath, "fake video bytes");
+        return { outputPath: request.outputPath };
+      }
+    }
+  };
+  const result = await prepareGeneratedAssets({ projectDir, artifacts, providers });
+  assert.equal(result.failed, 0);
+  for (const shot of reordered) {
+    const bound = shot.assetSource === "reference_image" ? shot.inputImageIndex : undefined;
+    assert.deepEqual(
+      capturedRefs.get(shot.id),
+      bound === undefined ? undefined : [inputImages[bound]!],
+      `shot ${shot.id} must animate the image bound to it by id`
+    );
+  }
+  // The moved reference shots are proof the lookup is by id, not by position:
+  // a positional read would have handed them a different file (or none).
+  for (const shot of moved) {
+    assert.notEqual(capturedRefs.get(shot.id), undefined);
+  }
+});
+
+test("a legacy storyboard without inputImageIndex falls back to the shot's position", async () => {
+  const projectDir = mkdtempSync(join(tmpdir(), "aivideo-reflegacy-"));
+  const inputImages = writeUserImages(2);
+  const artifacts = await buildReferenceArtifacts(inputImages);
+  // Projects written before the id binding existed never recorded the field;
+  // back then reference shots occupied the first N positions, so position is
+  // the correct fallback.
+  for (const shot of artifacts.storyboard.shots) {
+    delete shot.inputImageIndex;
+  }
+
+  const capturedRefs = new Map<string, string[] | undefined>();
+  const providers: ProviderSelection = {
+    video: {
+      id: "capture-legacy-video",
+      capability: "video",
+      isRemote: true,
+      async test() {
+        return { providerId: "capture-legacy-video", capability: "video", ok: true, message: "ok", liveChecked: false };
+      },
+      async generateVideo(request) {
+        const shot = artifacts.storyboard.shots.find((candidate) => request.outputPath.endsWith(`${candidate.id}.mp4`));
+        capturedRefs.set(shot?.id ?? "unknown", request.referenceImagePaths);
+        mkdirSync(join(request.outputPath, ".."), { recursive: true });
+        writeFileSync(request.outputPath, "fake video bytes");
+        return { outputPath: request.outputPath };
+      }
+    }
+  };
+  await prepareGeneratedAssets({ projectDir, artifacts, providers });
+  artifacts.storyboard.shots.forEach((shot, index) => {
+    assert.deepEqual(
+      capturedRefs.get(shot.id),
+      index < inputImages.length ? [inputImages[index]!] : undefined
+    );
+  });
+});
+
 test("a reference shot that fails to animate keeps its free user image (never billed for an image)", async () => {
   const projectDir = mkdtempSync(join(tmpdir(), "aivideo-refkeep-"));
   const inputImages = writeUserImages(1);

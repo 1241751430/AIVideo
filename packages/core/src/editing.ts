@@ -9,7 +9,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { BriefDocument, RenderManifest, ScriptPackage, Storyboard } from "./types.js";
-import { buildCaptions, toScriptMarkdown, toSrt, MAX_DURATION_SECONDS, MIN_SHOT_DURATION_SECONDS } from "./workflow.js";
+import { buildCaptions, resolveInputImageIndex, toScriptMarkdown, toSrt, MAX_DURATION_SECONDS, MIN_SHOT_DURATION_SECONDS } from "./workflow.js";
 import { deleteShotAudio, deleteShotGeneratedAssets, isValidShotId } from "./shotFiles.js";
 import { nonEmptyFileExists, writeJsonFile } from "./utils.js";
 
@@ -212,7 +212,7 @@ export interface ShotReorderResult {
  * @author zhangbaohong  @date 2026-10-08  @see https://github.com/1241751430/AIVideo.git
  * 功能：拖拽排序落盘：校验 shotIds 是分镜镜头 id 的精确重排后，同步重写 storyboard.json、render-manifest.json、
  * （id 集合一致时）script.json 与 script.md 的镜头顺序，并按新序重建 captions.srt。已生成资产随 manifest 条目
- * 自身的 assetPath 迁移、不需重生成；注意参考镜「失效后回退用户图」按新序号定位 inputImages（位置所有权语义）。
+ * 自身的 assetPath 迁移、不需重生成；参考镜的用户图按 inputImageIndex（id 绑定）跟随镜头移动，重排不会换图。
  */
 export function reorderShots(projectDir: string, shotIds: string[]): ShotReorderResult {
   if (!Array.isArray(shotIds) || shotIds.length === 0) {
@@ -260,13 +260,14 @@ export function reorderShots(projectDir: string, shotIds: string[]): ShotReorder
 
 /**
  * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
- * 功能：参考图镜头在生成资产被删后回退到 brief.inputImages 中同序号的用户图（仍存在且非空时）；其余镜头返回 undefined（回退标题卡）。
+ * 功能：参考图镜头在生成资产被删后回退到该镜头按 id 绑定的用户图（brief.inputImages[inputImageIndex]，旧项目回退到当前位置；仍存在且非空时）；其余镜头返回 undefined（回退标题卡）。
  */
 /**
  * A reference shot keeps its (free) user image as the asset fallback after the
  * generated video/image files are deleted; every other shot resets to the
- * title-card placeholder. Mirrors buildRenderManifest's provenance rule:
- * shot i owns inputImages[i].
+ * title-card placeholder. Mirrors buildRenderManifest's provenance rule: a
+ * reference shot points at the image bound to it by id, not at inputImages
+ * indexed by its current position.
  */
 function restoreSpecForShot(
   projectDir: string,
@@ -278,7 +279,7 @@ function restoreSpecForShot(
     return undefined;
   }
   const brief = readJsonOrNull<BriefDocument>(join(projectDir, "brief.json"));
-  const userImage = brief?.inputImages?.[shotIndex];
+  const userImage = brief?.inputImages?.[resolveInputImageIndex(shot, shotIndex)];
   if (userImage && nonEmptyFileExists(userImage)) {
     return { assetKind: "image", assetPath: userImage };
   }

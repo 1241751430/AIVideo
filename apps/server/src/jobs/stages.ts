@@ -91,11 +91,12 @@ export function hasRemoteProviders(providers: ProviderSelection): boolean {
 export const defaultStages: StageRunner = {
   /**
    * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
-   * 功能：脚本阶段：选择 Skill、生成脚本与分镜并 materialize 落盘；storyboard 已存在时跳过（重启续跑不重复付费）。
+   * 功能：脚本阶段：选择 Skill、生成脚本与分镜并 materialize 落盘；storyboard 已存在时跳过（重启续跑不重复付费），
+   * 除非 job.force 显式要求重跑——「要不要重做」由调用方声明，不从产物是否存在反推。
    */
   async runScript(ctx) {
     ctx.signal.throwIfAborted();
-    if (loadAssetArtifacts(ctx.projectDir)) {
+    if (ctx.job.force !== "script" && loadAssetArtifacts(ctx.projectDir)) {
       ctx.log("发现已有脚本与分镜，跳过生成（续跑复用）");
       return;
     }

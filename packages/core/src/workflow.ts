@@ -311,15 +311,17 @@ export async function prepareGeneratedAssets(input: {
   );
   const size = ASPECT_SIZES[artifacts.brief.aspectRatio] ?? { width: 1080, height: 1920 };
 
-  // Each user image is pinned to the shot at its own index (see buildStoryboard)
-  // — the same mapping buildRenderManifest records per-shot. Provenance is
-  // pinned to the brief, never to the manifest, so a tampered manifest cannot
-  // smuggle an arbitrary local file into a provider upload.
+  // Each user image is bound to its shot by id (StoryboardShot.inputImageIndex)
+  // at build time, never by the shot's current position — reordering the
+  // storyboard must not hand a shot somebody else's photo. Projects written
+  // before the field existed fall back to the position, which was correct back
+  // then because builds assign reference shots to the first N positions.
+  // Provenance is pinned to the brief, never to the manifest, so a tampered
+  // manifest cannot smuggle an arbitrary local file into a provider upload.
   const inputImages = artifacts.brief.inputImages ?? [];
   const shotIndexById = new Map(
     artifacts.storyboard.shots.map((shot, index) => [shot.id, index])
   );
-
   type PendingShot = (typeof generatedShots)[number];
   type ManifestShot = (typeof artifacts.renderManifest.shots)[number];
 
@@ -332,12 +334,12 @@ export async function prepareGeneratedAssets(input: {
    */
   function firstFrameFor(shot: PendingShot, manifestShot: ManifestShot): string[] | undefined {
     if (shot.assetSource === "reference_image") {
-      const index = shotIndexById.get(shot.id);
-      if (index === undefined || index >= inputImages.length) {
+      const shotIndex = shotIndexById.get(shot.id);
+      if (shotIndex === undefined) {
         return undefined;
       }
-      const candidate = inputImages[index]!;
-      return nonEmptyFileExists(candidate) ? [candidate] : undefined;
+      const candidate = inputImages[resolveInputImageIndex(shot, shotIndex)];
+      return candidate && nonEmptyFileExists(candidate) ? [candidate] : undefined;
     }
     if (manifestShot.assetKind === "image" && manifestShot.assetPath) {
       const sceneImage = resolve(projectDir, manifestShot.assetPath);
@@ -747,29 +749,50 @@ function normalizeScriptPackage(script: ScriptPackage, brief: BriefDocument): Sc
 }
 
 /**
+ * @author zhangbaohong  @date 2026-10-26  @see https://github.com/1241751430/AIVideo.git
+ * 功能：解析参考镜绑定的 brief.inputImages 下标：优先用镜头自带的 inputImageIndex（按 id 绑定），缺失时回退到当前下标——旧项目在生成时参考镜恰好占据前 N 个位置，回退即正确。
+ * @param shot 分镜镜头（至少含 inputImageIndex）
+ * @param fallbackIndex 该镜头在当前 storyboard 中的位置
+ * @returns 应使用的 brief.inputImages 下标
+ */
+export function resolveInputImageIndex(
+  shot: Pick<StoryboardShot, "inputImageIndex">,
+  fallbackIndex: number
+): number {
+  return shot.inputImageIndex ?? fallbackIndex;
+}
+
+/**
  * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
  * 功能：由脚本 scenes 构建分镜：首镜 cut 其余 fade；按「每张用户图只喂一个镜头」规则分配 reference_image/generated_image/title_card 资产来源。
  */
 function buildStoryboard(request: GenerateRequest, script: ScriptPackage): Storyboard {
-  const shots: StoryboardShot[] = script.scenes.map((scene, index) => ({
-    id: scene.id,
-    title: scene.heading,
-    narration: scene.narration,
-    caption: scene.caption,
-    visualPrompt: scene.visualPrompt,
-    shotType: scene.shotType,
-    durationSeconds: scene.durationSeconds,
-    transition: index === 0 ? "cut" : "fade",
+  const shots: StoryboardShot[] = script.scenes.map((scene, index) => {
     // Per-shot mixing: each user image is spent on exactly one shot (shot i
     // takes images[i]); once they run out, later shots fall back to generated
     // assets. Reusing one photo across the whole video reads as a slideshow.
-    assetSource:
-      request.images && index < request.images.length
+    const ownsImage = Boolean(request.images && index < request.images.length);
+    return {
+      id: scene.id,
+      title: scene.heading,
+      narration: scene.narration,
+      caption: scene.caption,
+      visualPrompt: scene.visualPrompt,
+      shotType: scene.shotType,
+      durationSeconds: scene.durationSeconds,
+      transition: index === 0 ? "cut" : "fade",
+      assetSource: ownsImage
         ? "reference_image"
         : request.mode === "video"
           ? "generated_image"
-          : "title_card"
-  }));
+          : "title_card",
+      // The binding is recorded once, by id, at build time: reordering shots
+      // later must not move the user's photo to a different shot. Only
+      // reference shots carry the key, so the in-memory storyboard stays
+      // byte-identical to what storyboard.json round-trips back.
+      ...(ownsImage ? { inputImageIndex: index } : {})
+    };
+  });
 
   return {
     aspectRatio: request.aspectRatio,
@@ -807,11 +830,13 @@ function buildRenderManifest(input: {
 }): RenderManifest {
   const size = ASPECT_SIZES[input.request.aspectRatio]!;
   const shots = input.storyboard.shots.map((shot, index) => {
-    // Mirror buildStoryboard's per-shot rule: a reference shot consumes the
-    // image at its own index (reference shots are exactly the first N shots);
-    // every other shot starts as a title card and gets a generated asset.
+    // A reference shot points at the user image bound to it by id
+    // (inputImageIndex), not at whatever position it currently occupies; every
+    // other shot starts as a title card and gets a generated asset.
     const referencedImage =
-      shot.assetSource === "reference_image" ? input.images[index] : undefined;
+      shot.assetSource === "reference_image"
+        ? input.images[resolveInputImageIndex(shot, index)]
+        : undefined;
     const hasReference = Boolean(referencedImage);
     return {
       shotId: shot.id,

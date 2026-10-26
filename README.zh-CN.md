@@ -76,7 +76,7 @@
 - **镜头墙** — 缩略图优先的镜头卡（时长/景别/转场/素材来源角标）、逐镜画面/视频预览与旁白试听、就地编辑抽屉（标题/旁白/画面词/字幕/时长）、单镜「重生成素材 / 重配音」、**拖把手排序**（同步重写分镜/manifest/字幕/脚本并标记成片过期）与**一键批量重试**全部失败镜头
 - **交付** — 影院式在线播放（HTTP Range）、下载、**打开文件夹**（按平台拉起 Finder/资源管理器/xdg-open）
 - **工作台手感** — 侧栏搜索 + 状态筛选（相对时间、运行呼吸点）、日志工具条（关键字过滤 / 跟底开关 / 一键复制 / 展开）、镜头灯箱、玻璃 toast 与确认弹窗、hash 深链（`#/job/<id>` 刷新可恢复）、服务健康灯 + provider 能力徽章、旧项目与损坏目录只读视图
-- **断点续跑** — 服务重启自动重新排队中断任务，磁盘产物即唯一真相源
+- **断点续跑** — 服务重启自动重新排队中断任务，磁盘产物即唯一真相源；重做与重试只跑目标阶段（或显式指定的区间），到终点即收尾，不顺手重跑后续阶段
 
 ### 键盘快捷键
 
@@ -108,7 +108,7 @@
 | `PUT /api/projects/:id/artifacts/script` · `PUT /api/projects/:id/shots/:shotId` | 就地编辑（自动执行失效矩阵） |
 | `PUT /api/projects/:id/shots/order` | 镜头拖拽排序（`shotIds` 全量重排，同步分镜/manifest/字幕/脚本并标记成片过期） |
 | `POST /api/projects/:id/shots/:shotId/retry` | 单镜重试（`target: asset` 或 `audio`） |
-| `POST /api/projects/:id/shots/retry-batch` | 批量重试（显式 `shotIds`，缺省=所有无产物镜头，只重排一次阶段） |
+| `POST /api/projects/:id/shots/retry-batch` | 批量重试（显式 `shotIds`，缺省=所有无产物镜头，只重排一次素材阶段、到该阶段即收尾） |
 | `GET /api/projects/:id/cost-preview` · `POST /api/projects/:id/rerender` | 计费预览 · 重新排队渲染 |
 | `GET /api/projects/:id/file?path=` · `GET /api/projects/:id/video` · `GET /api/projects/:id/input-image?index=` | 沙箱化工件预览 / Range 流式播放 / 参考图预览 |
 | `POST /api/projects/:id/open-folder` | 拉起宿主文件管理器打开项目目录 |

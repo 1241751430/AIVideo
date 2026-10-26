@@ -2,7 +2,7 @@
  * @file RetryQueue.tsx
  * @author zhangbaohong
  * @date 2026-10-08
- * @description 「重试全部失败镜头」按钮：files 全空的镜头数大于 0 时出现；一次调用批量重试端点（POST /:id/shots/retry-batch）清理全部失败镜头产物并单次重排素材阶段——续跑会自动补齐缺失画面并续走配音/渲染（服务端 busy 时 409，如实提示等待）。
+ * @description 「重试全部失败镜头」按钮：files 全空的镜头数大于 0 时出现；一次调用批量重试端点（POST /:id/shots/retry-batch）清理全部失败镜头产物并单次重排素材阶段——该阶段跑完即收尾，成片会标为过期、由用户自己决定何时重新渲染（服务端 busy 时 409，如实提示等待）。
  * @see https://github.com/1241751430/AIVideo.git
  */
 import { useState } from "react";
@@ -34,7 +34,7 @@ export default function RetryQueue({ jobId, failedShotIds, busy, onChanged }: Pr
     api
       .retryBatch(jobId, failedShotIds)
       .then((res) => {
-        toast.success(`已重排素材阶段：${res.retried} 个失败镜头的缺失画面将补齐，并续走配音与渲染`);
+        toast.success(`已重排素材阶段：${res.retried} 个失败镜头将补齐缺失画面；成片需在交付面板手动重新渲染`);
         onChanged();
       })
       .catch((err: Error) => toast.error(`重试失败：${err.message}`))

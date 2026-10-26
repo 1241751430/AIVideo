@@ -52,16 +52,25 @@ function makeRequest(theme = "测试主题"): JobRequest {
   };
 }
 
+/** 单次阶段调用时阶段内可见的重跑信号快照。 */
+interface StageSignal {
+  stage: StageKind;
+  force?: StageKind;
+  endStage?: StageKind;
+}
+
 /**
  * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
- * 功能：假阶段执行器：记录调用顺序，可注入挂起/失败行为。
+ * 功能：假阶段执行器：记录调用顺序与阶段内可见的 force/endStage 信号，可注入挂起/失败行为。
  */
 function makeFakeStages(
   hooks: { hang?: (stage: StageKind, ctx: StageContext) => Promise<void>; failAt?: StageKind } = {}
-): { stages: StageRunner; calls: StageKind[] } {
+): { stages: StageRunner; calls: StageKind[]; signals: StageSignal[] } {
   const calls: StageKind[] = [];
+  const signals: StageSignal[] = [];
   const run = (stage: StageKind) => async (ctx: StageContext): Promise<void> => {
     calls.push(stage);
+    signals.push({ stage, force: ctx.job.force, endStage: ctx.job.endStage });
     if (hooks.hang) {
       await hooks.hang(stage, ctx);
     }
@@ -76,7 +85,8 @@ function makeFakeStages(
       runAudio: run("audio"),
       runRender: run("render")
     },
-    calls
+    calls,
+    signals
   };
 }
 
@@ -170,15 +180,128 @@ test("guided 在存在远端提供者时插入 cost 检查点", async () => {
   }
 });
 
-test("redo-stage 重新入队执行指定阶段", async () => {
+test("redo-stage 重新入队执行指定阶段并携带显式重跑信号", async () => {
+  const { stages, calls, signals } = makeFakeStages();
+  const { runner, cleanup } = makeRunner({ stages });
+  try {
+    const job = runner.create({ execMode: "guided", request: makeRequest() });
+    await waitUntil(() => runner.get(job.id)?.checkpoint === "script", "awaiting script");
+    // 首次生成：无显式重跑信号，源阶段按「产物已存在就复用」的默认规则走。
+    assert.deepEqual(signals, [{ stage: "script", force: undefined, endStage: undefined }]);
+    assert.equal(runner.review(job.id, "redo-stage", "script"), true);
+    await waitUntil(() => calls.filter((stage) => stage === "script").length === 2, "script rerun");
+    // 重做这一遍必须带 force：否则 runScript 见到已落盘的分镜会静默复用、等于没重做。
+    assert.deepEqual(signals[1], { stage: "script", force: "script", endStage: undefined });
+    await waitUntil(() => runner.get(job.id)?.checkpoint === "script", "awaiting script again");
+    // 信号只在本次入队的起始阶段有效，跑完即被消费，不能残留到下一次运行。
+    assert.equal(runner.get(job.id)?.force, undefined);
+    assert.equal(runner.get(job.id)?.endStage, undefined);
+  } finally {
+    cleanup();
+  }
+});
+
+test("redo-stage 只重做该阶段：到检查点即停，不顺势跑完后续阶段", async () => {
   const { stages, calls } = makeFakeStages();
   const { runner, cleanup } = makeRunner({ stages });
   try {
     const job = runner.create({ execMode: "guided", request: makeRequest() });
     await waitUntil(() => runner.get(job.id)?.checkpoint === "script", "awaiting script");
-    assert.equal(runner.review(job.id, "redo-stage", "script"), true);
-    await waitUntil(() => calls.filter((stage) => stage === "script").length === 2, "script rerun");
-    await waitUntil(() => runner.get(job.id)?.checkpoint === "script", "awaiting script again");
+    assert.equal(runner.review(job.id, "redo-stage", "assets"), true);
+    await waitUntil(() => runner.get(job.id)?.checkpoint === "shots", "awaiting shots");
+    assert.deepEqual(calls, ["script", "assets"]);
+    assert.equal(runner.get(job.id)?.phase, "awaiting");
+  } finally {
+    cleanup();
+  }
+});
+
+test("rerun 只跑目标阶段：到 endStage 即收尾并把成片标为过期", async () => {
+  const { stages, calls } = makeFakeStages();
+  const { runner, cleanup } = makeRunner({ stages });
+  try {
+    const job = runner.create({ execMode: "auto", request: makeRequest() });
+    await waitUntil(() => runner.get(job.id)?.phase === "done", "initial done");
+    assert.deepEqual(calls, ["script", "assets", "audio", "render"]);
+    calls.length = 0;
+
+    // 镜头重试/批量重试的形态：只重排素材阶段，不替用户重渲整条链。
+    assert.equal(runner.rerun(job.id, "assets"), true);
+    await waitUntil(() => runner.get(job.id)?.phase === "done" && calls.length > 0, "assets rerun done");
+    assert.deepEqual(calls, ["assets"], "只执行 assets，后续 audio/render 不跟随");
+    assert.equal(runner.get(job.id)?.result?.videoStale, true, "素材更新后成片尚未重渲");
+    assert.equal(runner.get(job.id)?.endStage, undefined, "终点信号已消费");
+  } finally {
+    cleanup();
+  }
+});
+
+test("rerun 显式指定终点区间：stage→endStage 逐段执行", async () => {
+  const { stages, calls } = makeFakeStages();
+  const { runner, cleanup } = makeRunner({ stages });
+  try {
+    const job = runner.create({ execMode: "auto", request: makeRequest() });
+    await waitUntil(() => runner.get(job.id)?.phase === "done", "initial done");
+    calls.length = 0;
+
+    assert.equal(runner.rerun(job.id, "assets", "render"), true);
+    await waitUntil(() => runner.get(job.id)?.phase === "done", "range rerun done");
+    assert.deepEqual(calls, ["assets", "audio", "render"]);
+    assert.equal(runner.get(job.id)?.result?.videoStale, false, "终点是 render，成片已更新");
+  } finally {
+    cleanup();
+  }
+});
+
+test("rerun render 只重渲成片：成片不算过期", async () => {
+  const { stages, calls } = makeFakeStages();
+  const { runner, cleanup } = makeRunner({ stages });
+  try {
+    const job = runner.create({ execMode: "auto", request: makeRequest() });
+    await waitUntil(() => runner.get(job.id)?.phase === "done", "initial done");
+    calls.length = 0;
+
+    assert.equal(runner.rerun(job.id, "render"), true);
+    await waitUntil(() => runner.get(job.id)?.phase === "done", "render rerun done");
+    assert.deepEqual(calls, ["render"]);
+    assert.equal(runner.get(job.id)?.result?.videoStale, false);
+  } finally {
+    cleanup();
+  }
+});
+
+test("rerun 拒绝运行中/排队中的任务", async () => {
+  const gate = { release: () => {} };
+  const blocked = new Promise<void>((resolve) => {
+    gate.release = resolve;
+  });
+  const { stages } = makeFakeStages({
+    hang: async (stage) => {
+      if (stage === "script") {
+        await blocked;
+      }
+    }
+  });
+  const { runner, cleanup } = makeRunner({ stages });
+  try {
+    const job = runner.create({ execMode: "auto", request: makeRequest() });
+    await waitUntil(() => runner.get(job.id)?.phase === "running", "running");
+    assert.equal(runner.rerun(job.id, "render"), false);
+    gate.release();
+    await waitUntil(() => runner.get(job.id)?.phase === "done", "done");
+  } finally {
+    cleanup();
+  }
+});
+
+test("阶段失败时清除重跑与终点信号，避免污染下一次运行", async () => {
+  const { stages } = makeFakeStages({ failAt: "assets" });
+  const { runner, cleanup } = makeRunner({ stages });
+  try {
+    const job = runner.create({ execMode: "auto", request: makeRequest() });
+    await waitUntil(() => runner.get(job.id)?.phase === "failed", "failed");
+    assert.equal(runner.get(job.id)?.force, undefined);
+    assert.equal(runner.get(job.id)?.endStage, undefined);
   } finally {
     cleanup();
   }

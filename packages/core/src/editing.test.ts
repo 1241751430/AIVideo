@@ -82,6 +82,32 @@ test("editing: reference shot regeneration falls back to the user image, not the
   assert.equal(manifest.shots[0]!.assetPath, artifacts.brief.inputImages[0]);
 });
 
+test("editing: reference shot keeps its bound user image across a reorder", async () => {
+  const { dir, artifacts } = await materializedProjectWithImage();
+  const reference = artifacts.storyboard.shots[0]!;
+  assert.equal(reference.assetSource, "reference_image");
+  assert.equal(reference.inputImageIndex, 0);
+  const ids = artifacts.storyboard.shots.map((shot) => shot.id);
+  assert.ok(ids.length >= 2, "fixture needs at least two shots to reorder");
+
+  // Move the reference shot off position 0: the binding is by id, not by slot.
+  reorderShots(dir, [...ids.slice(1), ids[0]!]);
+  const reordered = JSON.parse(readFileSync(join(dir, "storyboard.json"), "utf8")) as Storyboard;
+  const last = reordered.shots[reordered.shots.length - 1]!;
+  assert.equal(last.id, reference.id);
+  assert.equal(last.inputImageIndex, 0, "inputImageIndex travels with the shot, not the position");
+
+  // Regenerating it must still fall back to the user's own photo — a
+  // positional lookup would read inputImages[ids.length - 1], which is unset.
+  writeFileSync(shotVideoPath(dir, reference.id), "v");
+  const result = updateShot(dir, reference.id, { visualPrompt: "重排后再动起来" });
+  assert.equal(result.assetInvalidated, true);
+  const manifest = JSON.parse(readFileSync(join(dir, "render-manifest.json"), "utf8")) as RenderManifest;
+  const entry = manifest.shots.find((shot) => shot.shotId === reference.id)!;
+  assert.equal(entry.assetKind, "image");
+  assert.equal(entry.assetPath, artifacts.brief.inputImages[0]);
+});
+
 test("editing: caption-only change invalidates nothing but rewrites captions.srt", async () => {
   const { dir, artifacts } = await materializedProject();
   const shot = artifacts.storyboard.shots[0]!;

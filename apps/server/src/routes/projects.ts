@@ -350,7 +350,7 @@ export function buildJobRequest(deps: ServerDeps, body: Record<string, unknown>)
  * @author zhangbaohong  @date 2026-10-08  @see https://github.com/1241751430/AIVideo.git
  * 功能：创建时参考图落盘：解码 data-URL/裸 base64，按魔数识别 png/jpeg/webp、单张 ≤10MB、总数 ≤20，
  * 写入 project/<id>/input/<n>.<ext>；任何一张非法即抛错（调用方清理整个预生成目录）。
- * @returns 落盘后的绝对路径列表（顺序即提交顺序，对应 core 的位置所有权语义）
+ * @returns 落盘后的绝对路径列表（顺序即提交顺序；core 据此把第 n 张图按 id 绑定到第 n 个镜头，之后重排也不会换图）
  */
 function persistInputImages(projectsRoot: string, projectId: string, rawImages: unknown[]): string[] {
   if (rawImages.length > 20) {

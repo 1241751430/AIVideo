@@ -230,17 +230,25 @@ export class JobRunner {
   /**
    * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
    * 功能：对非活动任务重新入队，只执行 stage→endStage 这一段（镜头重试/重渲染的入口）；到达 endStage 即收尾，不再顺势跑完整条链。
+   * 缺省不强制：assets/audio 阶段的重试由「目标镜头产物已被删除」驱动，其余镜头仍按指纹复用，避免为一个镜头把整批付费素材重做；
+   * 只有调用方明确要求整段重做（如手动重新渲染）时才传 force。
    * @param jobId 任务 id
    * @param stage 起始阶段
    * @param endStage 终点阶段（缺省等于 stage，即「只重做这一段」）
+   * @param options.force 起始阶段不得走产物复用，整段强制重做
    * @returns 是否成功入队；running/queued 或未知任务拒绝
    */
-  rerun(jobId: string, stage: StageKind, endStage: StageKind = stage): boolean {
+  rerun(
+    jobId: string,
+    stage: StageKind,
+    endStage: StageKind = stage,
+    options: { force?: boolean } = {}
+  ): boolean {
     const job = this.jobs.get(jobId);
     if (!job || job.phase === "running" || job.phase === "queued") {
       return false;
     }
-    this.beginRun(job, stage, { endStage });
+    this.beginRun(job, stage, { ...(options.force ? { force: stage } : {}), endStage });
     return true;
   }
 

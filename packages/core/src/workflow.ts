@@ -2,7 +2,7 @@
  * @file workflow.ts
  * @author zhangbaohong
  * @date 2026-09-17
- * @description 视频生成核心流水线：请求校验、技能选择、脚本/分镜/字幕/渲染清单的生成与归一化、项目落盘、场景资产（图/视频）生成与断点续跑复用，以及项目清理等编排逻辑。
+ * @description 视频生成核心流水线：请求校验、技能选择、脚本/分镜/字幕/渲染清单的生成与归一化、项目落盘、场景资产（图/视频）生成与断点续跑复用（按输入指纹判定，显式 force 时全部重做），以及项目清理等编排逻辑。
  * @see https://github.com/1241751430/AIVideo.git
  */
 
@@ -25,6 +25,12 @@ import {
 import { autoSelectSkill, getSkillById } from "./skills.js";
 import { isWithinBase, nonEmptyFileExists, runConcurrent, writeJsonFile } from "./utils.js";
 import { shotImageRelative, shotImagePath, shotVideoRelative, shotVideoPath } from "./shotFiles.js";
+import {
+  assetsShotFingerprint,
+  compareStageFingerprint,
+  readStageFingerprints,
+  recordStageFingerprints
+} from "./fingerprints.js";
 
 const ASPECT_SIZES: Record<string, { width: number; height: number }> = {
   "9:16": { width: 1080, height: 1920 },
@@ -272,15 +278,23 @@ function reusableAssetExists(projectDir: string, filePath: string): boolean {
  *
  * No-ops when both the video and image providers are local/noop — those never
  * create real files, and the manifest must keep pointing at title cards.
+ *
+ * Reuse is decided by the shot's input fingerprint (prompt, asset source,
+ * aspect ratio, bound reference image) plus the file still being on disk — not
+ * by file presence alone, so a reworded prompt regenerates the asset while a
+ * resumed run that changed nothing still reuses it. `force` skips reuse
+ * entirely; projects without recorded fingerprints fall back to file presence.
  */
 export async function prepareGeneratedAssets(input: {
   projectDir: string;
   artifacts: AssetArtifacts;
   providers: ProviderSelection;
+  /** True when the caller explicitly asked for a redo: never reuse on-disk assets. */
+  force?: boolean;
   /** Optional progress sink (e.g. a CLI spinner); defaults to silent. */
   reportProgress?: (message: string) => void;
 }): Promise<AssetPrepResult> {
-  const { projectDir, artifacts, providers, reportProgress } = input;
+  const { projectDir, artifacts, providers, force, reportProgress } = input;
   const result: AssetPrepResult = {
     attempted: 0,
     succeeded: 0,
@@ -351,6 +365,42 @@ export async function prepareGeneratedAssets(input: {
   result.attempted = generatedShots.length;
   let settled = 0;
 
+  // Fingerprint of a shot's asset inputs: the same invalidation matrix as
+  // editing.ts (the visual prompt) widened with the aspect ratio and, for a
+  // reference shot, the user image it is bound to. The index goes through the
+  // same id-bound resolution as firstFrameFor so reordering shots cannot make
+  // an unrelated image look like a change.
+  function assetsFingerprintFor(shot: PendingShot): string {
+    const shotIndex = shotIndexById.get(shot.id);
+    return assetsShotFingerprint({
+      shot,
+      aspectRatio: artifacts.brief.aspectRatio,
+      ...(shot.assetSource === "reference_image" && shotIndex !== undefined
+        ? { referenceImageIndex: resolveInputImageIndex(shot, shotIndex) }
+        : {})
+    });
+  }
+
+  // Reuse gate: the recorded fingerprint must not have changed — a project
+  // with no record keeps the legacy presence check — and the caller must not
+  // have asked for an explicit redo. The file itself still has to exist, since
+  // editing deletes generated assets without touching the fingerprint file.
+  const recordedAssets = readStageFingerprints(projectDir)?.assets;
+  function assetInputsUnchanged(shot: PendingShot): boolean {
+    return (
+      !force &&
+      compareStageFingerprint(recordedAssets?.[shot.id], assetsFingerprintFor(shot)) !== "mismatch"
+    );
+  }
+
+  // Shots run concurrently, so each one must not rewrite stage-fingerprints.json
+  // on its own (the last writer would erase the others): accumulate and persist
+  // once the batch settles.
+  const fingerprints: Record<string, string> = {};
+  function rememberAssetInputs(shot: PendingShot): void {
+    fingerprints[shot.id] = assetsFingerprintFor(shot);
+  }
+
   async function generateVideoFor(shot: PendingShot, manifestShot: ManifestShot): Promise<boolean> {
     if (!videoProvider || !videoProvider.isRemote) {
       return false;
@@ -359,18 +409,21 @@ export async function prepareGeneratedAssets(input: {
     const outputPath = shotVideoPath(projectDir, shot.id);
     // Resume support: if an earlier run already produced this shot's video —
     // either at the conventional path or the provider-returned path still
-    // recorded in the manifest — reuse it instead of paying for a duplicate
-    // generation. Only files inside the project dir are ever trusted.
-    if (reusableAssetExists(projectDir, outputPath)) {
+    // recorded in the manifest — and the inputs behind it are unchanged, reuse
+    // it instead of paying for a duplicate generation. Only files inside the
+    // project dir are ever trusted.
+    if (assetInputsUnchanged(shot) && reusableAssetExists(projectDir, outputPath)) {
       manifestShot.assetKind = "video";
       manifestShot.assetPath = relativePath;
+      rememberAssetInputs(shot);
       result.reused += 1;
       result.succeeded += 1;
       return true;
     }
     if (manifestShot.assetKind === "video" && manifestShot.assetPath) {
       const recorded = resolve(projectDir, manifestShot.assetPath);
-      if (reusableAssetExists(projectDir, recorded)) {
+      if (assetInputsUnchanged(shot) && reusableAssetExists(projectDir, recorded)) {
+        rememberAssetInputs(shot);
         result.reused += 1;
         result.succeeded += 1;
         return true;
@@ -391,6 +444,7 @@ export async function prepareGeneratedAssets(input: {
       assertPathWithinProject(projectDir, finalPath, "video");
       manifestShot.assetKind = "video";
       manifestShot.assetPath = finalPath === outputPath ? relativePath : finalPath;
+      rememberAssetInputs(shot);
       result.succeeded += 1;
       result.videoSucceeded += 1;
       return true;
@@ -408,6 +462,9 @@ export async function prepareGeneratedAssets(input: {
         `Video generation failed for shot ${shot.id}, falling back to ${fallback}: ${(error as Error).message}`
       );
       if (keepsImage) {
+        // The kept image is a valid asset for these inputs; record it so the
+        // next run reuses the same way instead of re-attempting the video.
+        rememberAssetInputs(shot);
         result.succeeded += 1;
         result.reused += 1;
         return true;
@@ -423,17 +480,20 @@ export async function prepareGeneratedAssets(input: {
     const relativePath = shotImageRelative(shot.id);
     const outputPath = shotImagePath(projectDir, shot.id);
     // Same resume logic as the video branch: reuse a previously generated
-    // scene image when the file is already present inside the project dir.
-    if (reusableAssetExists(projectDir, outputPath)) {
+    // scene image when the inputs are unchanged and the file is already
+    // present inside the project dir.
+    if (assetInputsUnchanged(shot) && reusableAssetExists(projectDir, outputPath)) {
       manifestShot.assetKind = "image";
       manifestShot.assetPath = relativePath;
+      rememberAssetInputs(shot);
       result.reused += 1;
       result.succeeded += 1;
       return true;
     }
     if (manifestShot.assetKind === "image" && manifestShot.assetPath) {
       const recorded = resolve(projectDir, manifestShot.assetPath);
-      if (reusableAssetExists(projectDir, recorded)) {
+      if (assetInputsUnchanged(shot) && reusableAssetExists(projectDir, recorded)) {
+        rememberAssetInputs(shot);
         result.reused += 1;
         result.succeeded += 1;
         return true;
@@ -454,6 +514,7 @@ export async function prepareGeneratedAssets(input: {
       assertPathWithinProject(projectDir, finalPath, "image");
       manifestShot.assetKind = "image";
       manifestShot.assetPath = finalPath === outputPath ? relativePath : finalPath;
+      rememberAssetInputs(shot);
       result.succeeded += 1;
       result.imageSucceeded += 1;
       return true;
@@ -491,6 +552,9 @@ export async function prepareGeneratedAssets(input: {
 
   if (result.succeeded > 0) {
     writeJsonFile(join(projectDir, "render-manifest.json"), artifacts.renderManifest);
+  }
+  if (Object.keys(fingerprints).length > 0) {
+    recordStageFingerprints(projectDir, { assets: fingerprints });
   }
   return result;
 }

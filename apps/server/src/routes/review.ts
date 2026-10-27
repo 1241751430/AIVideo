@@ -216,7 +216,8 @@ export function reviewRoutes(deps: ServerDeps): Hono {
     if (!guard.ok) {
       return c.json({ error: guard.error }, guard.status);
     }
-    const queued = deps.runner.rerun(guard.job.id, "render");
+    // 用户点「重新渲染」即显式要求出片：带 force，否则「指纹一致且成片仍在」的跳过判据会把它当成续跑。
+    const queued = deps.runner.rerun(guard.job.id, "render", "render", { force: true });
     return queued ? c.json({ ok: true }) : c.json({ error: "Task is busy; retry later" }, 409);
   });
 

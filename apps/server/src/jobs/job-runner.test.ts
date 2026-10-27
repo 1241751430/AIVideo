@@ -217,18 +217,20 @@ test("redo-stage 只重做该阶段：到检查点即停，不顺势跑完后续
 });
 
 test("rerun 只跑目标阶段：到 endStage 即收尾并把成片标为过期", async () => {
-  const { stages, calls } = makeFakeStages();
+  const { stages, calls, signals } = makeFakeStages();
   const { runner, cleanup } = makeRunner({ stages });
   try {
     const job = runner.create({ execMode: "auto", request: makeRequest() });
     await waitUntil(() => runner.get(job.id)?.phase === "done", "initial done");
     assert.deepEqual(calls, ["script", "assets", "audio", "render"]);
     calls.length = 0;
+    signals.length = 0;
 
     // 镜头重试/批量重试的形态：只重排素材阶段，不替用户重渲整条链。
     assert.equal(runner.rerun(job.id, "assets"), true);
     await waitUntil(() => runner.get(job.id)?.phase === "done" && calls.length > 0, "assets rerun done");
     assert.deepEqual(calls, ["assets"], "只执行 assets，后续 audio/render 不跟随");
+    assert.deepEqual(signals, [{ stage: "assets", force: undefined, endStage: "assets" }], "默认不强制：靠被删产物驱动重做");
     assert.equal(runner.get(job.id)?.result?.videoStale, true, "素材更新后成片尚未重渲");
     assert.equal(runner.get(job.id)?.endStage, undefined, "终点信号已消费");
   } finally {
@@ -236,17 +238,47 @@ test("rerun 只跑目标阶段：到 endStage 即收尾并把成片标为过期"
   }
 });
 
-test("rerun 显式指定终点区间：stage→endStage 逐段执行", async () => {
-  const { stages, calls } = makeFakeStages();
+test("rerun 传 force：起始阶段不得复用产物，信号在阶段完成后消费", async () => {
+  const { stages, calls, signals } = makeFakeStages();
   const { runner, cleanup } = makeRunner({ stages });
   try {
     const job = runner.create({ execMode: "auto", request: makeRequest() });
     await waitUntil(() => runner.get(job.id)?.phase === "done", "initial done");
     calls.length = 0;
+    signals.length = 0;
+
+    // 「重新渲染」入口的形态：用户显式要求出片，跳过「指纹一致且成片仍在」的复用。
+    assert.equal(runner.rerun(job.id, "render", "render", { force: true }), true);
+    await waitUntil(() => runner.get(job.id)?.phase === "done" && calls.length > 0, "forced render done");
+    assert.deepEqual(calls, ["render"]);
+    assert.deepEqual(signals, [{ stage: "render", force: "render", endStage: "render" }]);
+    assert.equal(runner.get(job.id)?.force, undefined, "force 只对本次入队的起始阶段有效，阶段跑完即消费");
+  } finally {
+    cleanup();
+  }
+});
+
+test("rerun 显式指定终点区间：stage→endStage 逐段执行", async () => {
+  const { stages, calls, signals } = makeFakeStages();
+  const { runner, cleanup } = makeRunner({ stages });
+  try {
+    const job = runner.create({ execMode: "auto", request: makeRequest() });
+    await waitUntil(() => runner.get(job.id)?.phase === "done", "initial done");
+    calls.length = 0;
+    signals.length = 0;
 
     assert.equal(runner.rerun(job.id, "assets", "render"), true);
     await waitUntil(() => runner.get(job.id)?.phase === "done", "range rerun done");
     assert.deepEqual(calls, ["assets", "audio", "render"]);
+    assert.deepEqual(
+      signals,
+      [
+        { stage: "assets", force: undefined, endStage: "render" },
+        { stage: "audio", force: undefined, endStage: "render" },
+        { stage: "render", force: undefined, endStage: "render" }
+      ],
+      "区间内每段都看得到终点信号，起点不带 force"
+    );
     assert.equal(runner.get(job.id)?.result?.videoStale, false, "终点是 render，成片已更新");
   } finally {
     cleanup();
@@ -254,16 +286,18 @@ test("rerun 显式指定终点区间：stage→endStage 逐段执行", async () 
 });
 
 test("rerun render 只重渲成片：成片不算过期", async () => {
-  const { stages, calls } = makeFakeStages();
+  const { stages, calls, signals } = makeFakeStages();
   const { runner, cleanup } = makeRunner({ stages });
   try {
     const job = runner.create({ execMode: "auto", request: makeRequest() });
     await waitUntil(() => runner.get(job.id)?.phase === "done", "initial done");
     calls.length = 0;
+    signals.length = 0;
 
     assert.equal(runner.rerun(job.id, "render"), true);
     await waitUntil(() => runner.get(job.id)?.phase === "done", "render rerun done");
     assert.deepEqual(calls, ["render"]);
+    assert.deepEqual(signals, [{ stage: "render", force: undefined, endStage: "render" }]);
     assert.equal(runner.get(job.id)?.result?.videoStale, false);
   } finally {
     cleanup();

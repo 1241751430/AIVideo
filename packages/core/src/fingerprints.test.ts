@@ -249,6 +249,16 @@ test("fingerprints: render fingerprint tracks manifest inputs and asset file sta
   assert.notEqual(renderStageFingerprint({ projectDir: dir, manifest: withBgm }), stable);
   const withSize = manifest({ ...renderManifest, width: 720, height: 1280 });
   assert.notEqual(renderStageFingerprint({ projectDir: dir, manifest: withSize }), stable);
+
+  // 输出路径只决定写到哪，不决定成片内容：改它不该触发重渲。
+  const withOutput = manifest({ ...renderManifest, outputFile: "output/other.mp4", captionsFile: "captions/other.srt" });
+  assert.equal(renderStageFingerprint({ projectDir: dir, manifest: withOutput }), stable, "输出路径不参与指纹");
+  // assetKind 决定 make_clip 走哪条分支，必须参与指纹。
+  const withKind = manifest({
+    ...renderManifest,
+    shots: [{ ...renderManifest.shots[0]!, assetKind: "video" }]
+  });
+  assert.notEqual(renderStageFingerprint({ projectDir: dir, manifest: withKind }), stable);
 });
 
 test("fingerprints: readStageFingerprints reports unknown for missing, corrupt or version-mismatched files", () => {

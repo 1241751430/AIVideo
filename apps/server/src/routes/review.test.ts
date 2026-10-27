@@ -10,6 +10,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ProviderSelection } from "@aivideo/core";
+import { readRenderManifestFile } from "@aivideo/core";
 import { createDoneJob, hangScriptStages, makeTestApp, waitUntil } from "../testkit.js";
 
 /**
@@ -163,9 +164,7 @@ test("PUT shots/:shotId 失效矩阵：旁白删 wav、画面词删资产、字�
     assert.equal(assetBody.assetInvalidated, true);
     assert.deepEqual(assetBody.deleted, ["assets/shot-1.png"]);
     assert.equal(existsSync(join(dir, "assets", "shot-1.png")), false);
-    const manifest = JSON.parse(readFileSync(join(dir, "render-manifest.json"), "utf8")) as {
-      shots: Array<{ assetKind: string; assetPath?: string }>;
-    };
+    const manifest = readRenderManifestFile(dir)!;
     assert.equal(manifest.shots[0]?.assetKind, "generated-card");
     assert.equal(manifest.shots[0]?.assetPath, undefined);
 

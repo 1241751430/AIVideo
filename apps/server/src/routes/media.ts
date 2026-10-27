@@ -9,8 +9,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { extname, isAbsolute, join, resolve } from "node:path";
 import { Hono } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
-import { assertPathWithin, isWithinBase } from "@aivideo/core";
-import type { RenderManifest } from "@aivideo/core";
+import { assertPathWithin, isWithinBase, normalizeRenderManifest } from "@aivideo/core";
 import type { ServerDeps } from "../app.js";
 
 /** 允许通过 /file 读取的扩展名 → Content-Type。 */
@@ -58,8 +57,8 @@ export function mediaRoutes(deps: ServerDeps): Hono {
     }
     let outputFile: string | undefined;
     try {
-      const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as RenderManifest;
-      outputFile = manifest.outputFile;
+      const manifest = normalizeRenderManifest(JSON.parse(readFileSync(manifestPath, "utf8")));
+      outputFile = manifest?.outputFile;
     } catch {
       return c.json({ error: "render-manifest.json is not valid JSON" }, 500);
     }

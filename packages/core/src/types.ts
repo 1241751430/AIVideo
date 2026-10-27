@@ -111,6 +111,11 @@ export interface RenderShot {
   visualPrompt: string;
 }
 
+/**
+ * 平板视图：读盘（`readRenderManifestFile`）后进程内统一使用的形状，
+ * 由磁盘上的 `RenderManifestFile.input` + `RenderManifestFile.state` 拼成；
+ * 老项目（顶层直接是 shots 数组）也归一化成这个形状。
+ */
 export interface RenderManifest {
   aspectRatio: string;
   width: number;
@@ -120,6 +125,45 @@ export interface RenderManifest {
   outputFile: string;
   captionsFile: string;
   shots: RenderShot[];
+}
+
+/** 渲染入参：每镜真正决定成片内容的字段（改它们必须重渲）。 */
+export interface RenderShotInput {
+  shotId: string;
+  title: string;
+  durationSeconds: number;
+  overlayText: string;
+  caption: string;
+  visualPrompt: string;
+}
+
+/** 执行状态：素材/配音阶段原地写入的结果，按 shotId 绑定（重排镜头只动 input.shots，状态天然跟随）。 */
+export interface RenderShotState {
+  assetKind: RenderShot["assetKind"];
+  assetPath?: string;
+  audioPath?: string;
+}
+
+/**
+ * render-manifest.json 的磁盘结构（v1）：入参（input）与执行状态（state）分节，
+ * 重渲染时能一眼看出哪些字段是「用户/上游声明的输入」、哪些是「上一轮跑出来的结果」。
+ * 输出路径（outputFile/captionsFile）属于入参的一部分——它们决定写到哪里，但不决定成片内容。
+ */
+export interface RenderManifestFile {
+  version: number;
+  input: {
+    aspectRatio: string;
+    width: number;
+    height: number;
+    durationSeconds: number;
+    bgmStyle: string;
+    outputFile: string;
+    captionsFile: string;
+    shots: RenderShotInput[];
+  };
+  state: {
+    shots: Record<string, RenderShotState>;
+  };
 }
 
 export interface ProviderConfig {

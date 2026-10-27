@@ -5,7 +5,6 @@
  * @description 流水线四阶段对 @aivideo/core 的薄封装：脚本生成落盘、付费素材、旁白合成、ffmpeg 渲染；统一注入进度日志与取消信号，复用判据一律为「输入指纹未变且产物仍在磁盘」。
  * @see https://github.com/1241751430/AIVideo.git
  */
-import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {
   AppConfig,
@@ -20,6 +19,7 @@ import {
   materializeProject,
   nonEmptyFileExists,
   prepareGeneratedAssets,
+  readRenderManifestFile,
   readStageFingerprints,
   recordStageFingerprints,
   renderProject,
@@ -225,13 +225,9 @@ export const defaultStages: StageRunner = {
  * 不复用 loadAssetArtifacts：渲染后项目会被瘦身（brief/script/storyboard 被删），渲染阶段仍需能读到清单。
  */
 function readRenderManifest(projectDir: string): RenderManifest | null {
-  try {
-    const manifest = JSON.parse(readFileSync(join(projectDir, "render-manifest.json"), "utf8")) as RenderManifest;
-    if (!manifest || typeof manifest.outputFile !== "string" || !Array.isArray(manifest.shots)) {
-      return null;
-    }
-    return manifest;
-  } catch {
+  const manifest = readRenderManifestFile(projectDir);
+  if (!manifest || typeof manifest.outputFile !== "string" || !Array.isArray(manifest.shots)) {
     return null;
   }
+  return manifest;
 }

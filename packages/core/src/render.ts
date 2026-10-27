@@ -6,9 +6,9 @@
  * @see https://github.com/1241751430/AIVideo.git
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { resolve } from "node:path";
-import { RenderManifest } from "./types.js";
+import { readRenderManifestFile } from "./renderManifest.js";
 import { assertPathWithin, execFileAsync, ExecFileOptions } from "./utils.js";
 
 /**
@@ -58,7 +58,10 @@ export async function renderProject(input: RenderProjectInput): Promise<RenderPr
     workerArgs.push("--gpu");
   }
   const log = await execFileAsync("python3", workerArgs, { ...exec });
-  const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as RenderManifest;
+  const manifest = readRenderManifestFile(projectDir);
+  if (!manifest) {
+    throw new Error(`render-manifest.json missing or unreadable in ${projectDir} after render`);
+  }
   return { videoPath: resolve(projectDir, manifest.outputFile), log };
 }
 

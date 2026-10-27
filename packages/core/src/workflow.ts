@@ -24,6 +24,7 @@ import {
 } from "./types.js";
 import { autoSelectSkill, getSkillById } from "./skills.js";
 import { isWithinBase, nonEmptyFileExists, runConcurrent, writeJsonFile } from "./utils.js";
+import { readRenderManifestFile, writeRenderManifestFile } from "./renderManifest.js";
 import { shotImageRelative, shotImagePath, shotVideoRelative, shotVideoPath } from "./shotFiles.js";
 import {
   assetsShotFingerprint,
@@ -171,7 +172,7 @@ export function materializeProject(projectDir: string, artifacts: ProjectArtifac
   writeJsonFile(join(projectDir, "script.json"), artifacts.script);
   writeFileSync(join(projectDir, "script.md"), toScriptMarkdown(artifacts.script), "utf8");
   writeJsonFile(join(projectDir, "storyboard.json"), artifacts.storyboard);
-  writeJsonFile(join(projectDir, "render-manifest.json"), artifacts.renderManifest);
+  writeRenderManifestFile(projectDir, artifacts.renderManifest);
   writeFileSync(join(projectDir, "captions", "captions.srt"), toSrt(artifacts.captions), "utf8");
 }
 
@@ -198,14 +199,12 @@ export function loadAssetArtifacts(projectDir: string): AssetArtifacts | null {
   try {
     const brief = JSON.parse(readFileSync(join(projectDir, "brief.json"), "utf8")) as BriefDocument;
     const storyboard = JSON.parse(readFileSync(join(projectDir, "storyboard.json"), "utf8")) as Storyboard;
-    const renderManifest = JSON.parse(
-      readFileSync(join(projectDir, "render-manifest.json"), "utf8")
-    ) as RenderManifest;
+    const renderManifest = readRenderManifestFile(projectDir);
     if (
       !brief ||
       !Array.isArray(storyboard?.shots) ||
       storyboard.shots.length === 0 ||
-      !Array.isArray(renderManifest?.shots) ||
+      !renderManifest ||
       renderManifest.shots.length === 0
     ) {
       return null;
@@ -551,7 +550,7 @@ export async function prepareGeneratedAssets(input: {
   );
 
   if (result.succeeded > 0) {
-    writeJsonFile(join(projectDir, "render-manifest.json"), artifacts.renderManifest);
+    writeRenderManifestFile(projectDir, artifacts.renderManifest);
   }
   if (Object.keys(fingerprints).length > 0) {
     recordStageFingerprints(projectDir, { assets: fingerprints });

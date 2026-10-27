@@ -5,7 +5,7 @@
  * @description 检查点编辑与重试路由：脚本元信息 PUT、单镜字段 PUT（core 失效矩阵自动清理过期产物）、镜头拖拽排序 PUT /:id/shots/order、单镜素材/配音重试（删文件 + 重新入队对应阶段，复用续跑机制只重做该镜）、批量重试失败镜头（单次重排素材阶段）、计费预览与重新渲染入口。
  * @see https://github.com/1241751430/AIVideo.git
  */
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { Hono } from "hono";
 import type { RenderManifest, ScriptMetaPatch, ShotEditPatch } from "@aivideo/core";
@@ -13,6 +13,7 @@ import {
   deleteShotAudio,
   deleteShotGeneratedAssets,
   nonEmptyFileExists,
+  readRenderManifestFile,
   reorderShots,
   shotImageRelative,
   shotVideoRelative,
@@ -245,13 +246,9 @@ function guardEditable(deps: ServerDeps, jobId: string): Guarded {
 
 /**
  * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
- * 功能：读取项目 render-manifest.json；缺失或 shots 非法返回 null。
+ * 功能：读取项目 render-manifest.json 并归一化为扁平清单；缺失或 shots 非法返回 null。
  */
 function readManifest(projectDir: string): RenderManifest | null {
-  try {
-    const manifest = JSON.parse(readFileSync(join(projectDir, "render-manifest.json"), "utf8")) as RenderManifest;
-    return manifest && Array.isArray(manifest.shots) ? manifest : null;
-  } catch {
-    return null;
-  }
+  const manifest = readRenderManifestFile(projectDir);
+  return manifest && Array.isArray(manifest.shots) ? manifest : null;
 }

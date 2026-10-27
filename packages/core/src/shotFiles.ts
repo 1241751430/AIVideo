@@ -9,7 +9,8 @@
 import { existsSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { RenderManifest, RenderShot } from "./types.js";
-import { assertPathWithin, isWithinBase, writeJsonFile } from "./utils.js";
+import { writeRenderManifestFile } from "./renderManifest.js";
+import { assertPathWithin, isWithinBase } from "./utils.js";
 
 /**
  * Single source of truth for the conventional per-shot file layout inside a
@@ -149,7 +150,7 @@ export function deleteShotGeneratedAssets(
   }
   shot.assetKind = restore?.assetKind ?? "generated-card";
   shot.assetPath = restore?.assetPath;
-  writeJsonFile(join(projectDir, "render-manifest.json"), manifest);
+  writeRenderManifestFile(projectDir, manifest);
   return { deleted };
 }
 

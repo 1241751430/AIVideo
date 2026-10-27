@@ -196,8 +196,9 @@ export function audioShotFingerprint(input: {
 
 /**
  * @author zhangbaohong  @date 2026-10-27  @see https://github.com/1241751430/AIVideo.git
- * 功能：render 阶段指纹：清单里的全部渲染入参（尺寸/时长/BGM/输出与字幕路径 + 每镜标题、字幕、时长、画面素材与配音文件的 size/mtime）。
+ * 功能：render 阶段指纹：清单里的全部渲染入参（尺寸/时长/BGM + 每镜标题、字幕、时长、画面素材与配音文件的 size/mtime）。
  * 素材被重新生成或删除都会改变指纹，因此「素材更新后成片未重渲」可以被精确识别。
+ * 刻意不含 outputFile/captionsFile：它们只决定写到哪里，不决定成片内容，改路径不该触发重渲。
  */
 export function renderStageFingerprint(input: {
   projectDir: string;
@@ -211,8 +212,6 @@ export function renderStageFingerprint(input: {
     height: manifest.height,
     durationSeconds: manifest.durationSeconds,
     bgmStyle: manifest.bgmStyle,
-    outputFile: manifest.outputFile,
-    captionsFile: manifest.captionsFile,
     shots: manifest.shots.map((shot) => ({
       shotId: shot.shotId,
       title: shot.title,

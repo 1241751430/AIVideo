@@ -20,6 +20,7 @@ import {
   shotImagePath,
   shotVideoPath
 } from "./shotFiles.js";
+import { readRenderManifestFile } from "./renderManifest.js";
 import { RenderManifest } from "./types.js";
 
 /**
@@ -154,9 +155,9 @@ test("deleteShotGeneratedAssets removes files, skips external paths, and always 
   assert.equal(manifest.shots[0]!.assetPath, undefined);
   assert.equal(manifest.shots[1]!.assetPath, external, "other entries stay untouched");
   // Rewritten unconditionally, replacing the stale sentinel copy on disk.
-  const written = JSON.parse(readFileSync(manifestPath, "utf8")) as { shots: RenderManifest["shots"] };
+  const written = readRenderManifestFile(dir)!;
   assert.equal(written.shots[0]!.assetKind, "generated-card");
-  assert.ok(!("sentinel" in written));
+  assert.ok(!("sentinel" in (JSON.parse(readFileSync(manifestPath, "utf8")) as Record<string, unknown>)));
 
   // Nothing left to delete still rewrites and reports empty.
   const again = deleteShotGeneratedAssets(dir, manifest, "s1");

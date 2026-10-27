@@ -670,6 +670,44 @@ def make_clip(project_dir: Path, work_dir: Path, shot: dict, width: int, height:
     return clip_path
 
 
+def normalize_manifest(raw: object) -> dict:
+    """
+    功能：把 render-manifest.json 的两种磁盘格式归一化为渲染器使用的扁平清单——新格式（input/state 分节）
+    按 shotId 把 state.shots 合并回 input.shots；老格式（顶层直接是 shots 数组）原样返回，不补默认字段、不丢未知字段。
+    @author zhangbaohong  @date 2026-10-27  @see https://github.com/1241751430/AIVideo.git
+    """
+    if not isinstance(raw, dict):
+        raise RuntimeError("Manifest must be a JSON object")
+    section = raw.get("input")
+    if isinstance(section, dict) and isinstance(section.get("shots"), list):
+        state = raw.get("state")
+        states = state.get("shots") if isinstance(state, dict) else None
+        if not isinstance(states, dict):
+            states = {}
+        manifest = dict(section)
+        manifest["shots"] = [_merge_shot_input(entry, states) for entry in section["shots"]]
+        return manifest
+    return raw
+
+
+def _merge_shot_input(entry: object, states: dict) -> object:
+    """
+    功能：把一条 input.shots 条目与同 shotId 的执行状态合并成扁平镜头；状态缺失时按未生成的标题卡处理。
+    @author zhangbaohong  @date 2026-10-27  @see https://github.com/1241751430/AIVideo.git
+    """
+    if not isinstance(entry, dict):
+        return entry
+    shot = dict(entry)
+    shot_id = shot.get("shotId")
+    recorded = states.get(shot_id) if isinstance(shot_id, str) else None
+    state = recorded if isinstance(recorded, dict) else {}
+    shot["assetKind"] = state.get("assetKind") or "generated-card"
+    for key in ("assetPath", "audioPath"):
+        if key in state:
+            shot[key] = state[key]
+    return shot
+
+
 def validate_manifest(manifest: dict) -> None:
     """
     功能：校验并规范化渲染清单的宽高与分镜时长字段
@@ -841,7 +879,7 @@ def render(project_dir: Path, manifest_path: Path, gpu: bool = False) -> Path:
     ensure_binary("ffprobe")
 
     video_encoder = resolve_video_encoder(gpu)
-    manifest = json.loads(manifest_path.read_text())
+    manifest = normalize_manifest(json.loads(manifest_path.read_text()))
     validate_manifest(manifest)
     work_dir = project_dir / ".render_tmp"
     work_dir.mkdir(parents=True, exist_ok=True)

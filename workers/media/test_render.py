@@ -22,6 +22,7 @@ from render import (
     has_audio_stream,
     make_clip,
     normalize_positive_number,
+    normalize_manifest,
     prepare_manifest_media,
     resolve_media_path,
     resolve_project_path,
@@ -302,6 +303,79 @@ class TestManifestValidation(unittest.TestCase):
         manifest = {"width": 1080, "height": 1920, "shots": [{"durationSeconds": 1.23456}]}
         validate_manifest(manifest)
         self.assertEqual(manifest["shots"][0]["durationSeconds"], 1.235)
+
+
+class TestNormalizeManifest(unittest.TestCase):
+    def test_merges_state_into_input_shots(self):
+        """
+        功能：验证新格式（input/state 分节）按 shotId 把执行状态合并回每镜入参
+        @author zhangbaohong  @date 2026-10-27  @see https://github.com/1241751430/AIVideo.git
+        """
+        raw = {
+            "version": 1,
+            "input": {
+                "width": 1080,
+                "height": 1920,
+                "shots": [
+                    {"shotId": "s1", "durationSeconds": 3},
+                    {"shotId": "s2", "durationSeconds": 3},
+                ],
+            },
+            "state": {
+                "shots": {
+                    "s1": {"assetKind": "image", "assetPath": "assets/s1.png", "audioPath": "audio/s1.wav"},
+                    "s2": {"assetKind": "video", "assetPath": "assets/s2.mp4"},
+                }
+            },
+        }
+        manifest = normalize_manifest(raw)
+        self.assertEqual(manifest["width"], 1080)
+        first, second = manifest["shots"]
+        self.assertEqual(first["assetKind"], "image")
+        self.assertEqual(first["assetPath"], "assets/s1.png")
+        self.assertEqual(first["audioPath"], "audio/s1.wav")
+        self.assertNotIn("audioPath", second)
+        self.assertEqual(second["assetPath"], "assets/s2.mp4")
+        self.assertNotIn("version", manifest)
+
+    def test_state_order_follows_input_not_state(self):
+        """
+        功能：验证镜头顺序只看 input.shots，state 按 id 绑定（重排后状态仍跟随各自 shotId）
+        @author zhangbaohong  @date 2026-10-27  @see https://github.com/1241751430/AIVideo.git
+        """
+        raw = {
+            "input": {"width": 1080, "height": 1920, "shots": [{"shotId": "s2"}, {"shotId": "s1"}]},
+            "state": {"shots": {"s1": {"assetKind": "image", "assetPath": "a.png"}, "s2": {"assetKind": "video"}}},
+        }
+        manifest = normalize_manifest(raw)
+        self.assertEqual([shot["shotId"] for shot in manifest["shots"]], ["s2", "s1"])
+        self.assertEqual(manifest["shots"][1]["assetPath"], "a.png")
+
+    def test_missing_state_falls_back_to_generated_card(self):
+        """
+        功能：验证缺少状态条目的镜头按未生成的标题卡处理
+        @author zhangbaohong  @date 2026-10-27  @see https://github.com/1241751430/AIVideo.git
+        """
+        raw = {"input": {"width": 1080, "height": 1920, "shots": [{"shotId": "s1"}]}}
+        shot = normalize_manifest(raw)["shots"][0]
+        self.assertEqual(shot["assetKind"], "generated-card")
+        self.assertNotIn("assetPath", shot)
+
+    def test_legacy_flat_manifest_passes_through(self):
+        """
+        功能：验证老格式（顶层直接是 shots）原样返回，不补默认字段、不丢未知字段
+        @author zhangbaohong  @date 2026-10-27  @see https://github.com/1241751430/AIVideo.git
+        """
+        legacy = {"width": 1080, "height": 1920, "shots": [{"shotId": "s1"}], "extra": "keep"}
+        self.assertIs(normalize_manifest(legacy), legacy)
+
+    def test_rejects_non_object(self):
+        """
+        功能：验证非对象清单被拒绝
+        @author zhangbaohong  @date 2026-10-27  @see https://github.com/1241751430/AIVideo.git
+        """
+        with self.assertRaises(RuntimeError):
+            normalize_manifest([])
 
 
 class TestFallbacks(unittest.TestCase):

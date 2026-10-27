@@ -10,6 +10,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { BriefDocument, RenderManifest, ScriptPackage, Storyboard } from "./types.js";
 import { buildCaptions, resolveInputImageIndex, toScriptMarkdown, toSrt, MAX_DURATION_SECONDS, MIN_SHOT_DURATION_SECONDS } from "./workflow.js";
+import { readRenderManifestFile, writeRenderManifestFile } from "./renderManifest.js";
 import { deleteShotAudio, deleteShotGeneratedAssets, isValidShotId } from "./shotFiles.js";
 import { nonEmptyFileExists, writeJsonFile } from "./utils.js";
 
@@ -93,7 +94,7 @@ export function updateScriptMeta(projectDir: string, patch: ScriptMetaPatch): vo
   const manifest = loadManifest(projectDir);
   if (patch.bgmStyle !== undefined && manifest.bgmStyle !== script.bgmStyle) {
     manifest.bgmStyle = script.bgmStyle;
-    writeJsonFile(join(projectDir, "render-manifest.json"), manifest);
+    writeRenderManifestFile(projectDir, manifest);
   }
 }
 
@@ -191,7 +192,7 @@ export function updateShot(projectDir: string, shotId: string, patch: ShotEditPa
     const restore = restoreSpecForShot(projectDir, storyboard, shotIndex);
     deleted.push(...deleteShotGeneratedAssets(projectDir, manifest, shotId, restore).deleted);
   } else {
-    writeJsonFile(join(projectDir, "render-manifest.json"), manifest);
+    writeRenderManifestFile(projectDir, manifest);
   }
 
   writeJsonFile(join(projectDir, "storyboard.json"), storyboard);
@@ -242,7 +243,7 @@ export function reorderShots(projectDir: string, shotIds: string[]): ShotReorder
   manifest.shots = shotIds.map((id) => manifestById.get(id)!);
 
   writeJsonFile(join(projectDir, "storyboard.json"), storyboard);
-  writeJsonFile(join(projectDir, "render-manifest.json"), manifest);
+  writeRenderManifestFile(projectDir, manifest);
   mkdirSync(join(projectDir, "captions"), { recursive: true });
   writeFileSync(join(projectDir, "captions", "captions.srt"), toSrt(buildCaptions(storyboard)), "utf8");
 
@@ -322,10 +323,10 @@ function loadStoryboard(projectDir: string): Storyboard {
 
 /**
  * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
- * 功能：读取项目 render-manifest.json；缺失、shots 非数组或为空时抛错。
+ * 功能：读取项目 render-manifest.json 并归一化为扁平清单；缺失、无法解析或 shots 为空时抛错。
  */
 function loadManifest(projectDir: string): RenderManifest {
-  const manifest = readJsonOrNull<RenderManifest>(join(projectDir, "render-manifest.json"));
+  const manifest = readRenderManifestFile(projectDir);
   if (!manifest || !Array.isArray(manifest.shots) || manifest.shots.length === 0) {
     throw new Error(`render-manifest.json missing or invalid in ${projectDir}`);
   }

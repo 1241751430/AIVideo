@@ -12,8 +12,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { loadScriptPackage, reorderShots, updateScriptMeta, updateShot } from "./editing.js";
+import { readRenderManifestFile, writeRenderManifestFile } from "./renderManifest.js";
 import { shotAudioPath, shotImagePath, shotVideoPath } from "./shotFiles.js";
-import { RenderManifest, Storyboard } from "./types.js";
+import { Storyboard } from "./types.js";
 import { buildCaptions, generateArtifacts, materializeProject, toSrt } from "./workflow.js";
 import { getSkillById } from "./skills.js";
 
@@ -51,11 +52,10 @@ test("editing: visualPrompt change deletes assets and resets the manifest entry"
   const shot = artifacts.storyboard.shots[0]!;
   writeFileSync(shotVideoPath(dir, shot.id), "v");
   writeFileSync(shotImagePath(dir, shot.id), "i");
-  const manifestPath = join(dir, "render-manifest.json");
-  const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as RenderManifest;
+  const manifest = readRenderManifestFile(dir)!;
   manifest.shots[0]!.assetKind = "video";
   manifest.shots[0]!.assetPath = `assets/${shot.id}.mp4`;
-  writeFileSync(manifestPath, JSON.stringify(manifest));
+  writeRenderManifestFile(dir, manifest);
 
   const result = updateShot(dir, shot.id, { visualPrompt: "换一个画面提示词" });
   assert.equal(result.assetInvalidated, true);
@@ -63,7 +63,7 @@ test("editing: visualPrompt change deletes assets and resets the manifest entry"
   assert.ok(result.deleted.includes(shotImagePath(dir, shot.id)));
   assert.ok(!existsSync(shotVideoPath(dir, shot.id)));
 
-  const rewritten = JSON.parse(readFileSync(manifestPath, "utf8")) as RenderManifest;
+  const rewritten = readRenderManifestFile(dir)!;
   assert.equal(rewritten.shots[0]!.assetKind, "generated-card");
   assert.equal(rewritten.shots[0]!.assetPath, undefined);
   assert.equal(rewritten.shots[0]!.visualPrompt, "换一个画面提示词");
@@ -77,7 +77,7 @@ test("editing: reference shot regeneration falls back to the user image, not the
 
   const result = updateShot(dir, shot.id, { visualPrompt: "动起来" });
   assert.equal(result.assetInvalidated, true);
-  const manifest = JSON.parse(readFileSync(join(dir, "render-manifest.json"), "utf8")) as RenderManifest;
+  const manifest = readRenderManifestFile(dir)!;
   assert.equal(manifest.shots[0]!.assetKind, "image");
   assert.equal(manifest.shots[0]!.assetPath, artifacts.brief.inputImages[0]);
 });
@@ -102,7 +102,7 @@ test("editing: reference shot keeps its bound user image across a reorder", asyn
   writeFileSync(shotVideoPath(dir, reference.id), "v");
   const result = updateShot(dir, reference.id, { visualPrompt: "重排后再动起来" });
   assert.equal(result.assetInvalidated, true);
-  const manifest = JSON.parse(readFileSync(join(dir, "render-manifest.json"), "utf8")) as RenderManifest;
+  const manifest = readRenderManifestFile(dir)!;
   const entry = manifest.shots.find((shot) => shot.shotId === reference.id)!;
   assert.equal(entry.assetKind, "image");
   assert.equal(entry.assetPath, artifacts.brief.inputImages[0]);
@@ -120,7 +120,7 @@ test("editing: caption-only change invalidates nothing but rewrites captions.srt
   assert.deepEqual(result.deleted, []);
   assert.ok(existsSync(shotAudioPath(dir, shot.id)));
   assert.match(readFileSync(srt, "utf8"), /新字幕/);
-  const manifest = JSON.parse(readFileSync(join(dir, "render-manifest.json"), "utf8")) as RenderManifest;
+  const manifest = readRenderManifestFile(dir)!;
   assert.equal(manifest.shots[0]!.caption, "新字幕");
 });
 
@@ -135,12 +135,11 @@ test("editing: rejects unknown shots, bad ids, and illegal durations", async () 
 
 test("editing: script meta updates rewrite script.md and keep the output filename", async () => {
   const { dir, artifacts } = await materializedProject();
-  const manifestPath = join(dir, "render-manifest.json");
-  const before = (JSON.parse(readFileSync(manifestPath, "utf8")) as RenderManifest).outputFile;
+  const before = readRenderManifestFile(dir)!.outputFile;
 
   updateScriptMeta(dir, { title: "新标题方案", bgmStyle: "轻快电子" });
   assert.match(readFileSync(join(dir, "script.md"), "utf8"), /^# 新标题方案/m);
-  const after = JSON.parse(readFileSync(manifestPath, "utf8")) as RenderManifest;
+  const after = readRenderManifestFile(dir)!;
   assert.equal(after.outputFile, before, "outputFile must stay stable for old links");
   assert.equal(after.bgmStyle, "轻快电子");
 });
@@ -151,11 +150,10 @@ test("editing: reorderShots rewrites storyboard/manifest/script order and rebuil
   assert.ok(ids.length >= 2, "fixture needs at least two shots to reorder");
 
   // 给首镜挂一个资产路径，验证重排时 manifest 条目连同自身 assetPath 迁移
-  const manifestPath = join(dir, "render-manifest.json");
-  const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as RenderManifest;
+  const manifest = readRenderManifestFile(dir)!;
   manifest.shots[0]!.assetKind = "video";
   manifest.shots[0]!.assetPath = `assets/${ids[0]}.mp4`;
-  writeFileSync(manifestPath, JSON.stringify(manifest), "utf8");
+  writeRenderManifestFile(dir, manifest);
 
   const reversed = [...ids].reverse();
   const result = reorderShots(dir, reversed);
@@ -166,7 +164,7 @@ test("editing: reorderShots rewrites storyboard/manifest/script order and rebuil
     storyboard.shots.map((shot) => shot.id),
     reversed
   );
-  const rewritten = JSON.parse(readFileSync(manifestPath, "utf8")) as RenderManifest;
+  const rewritten = readRenderManifestFile(dir)!;
   assert.deepEqual(
     rewritten.shots.map((entry) => entry.shotId),
     reversed

@@ -16,6 +16,7 @@ import {
   isValidProjectId,
   parseDuration,
   parseStructuredBrief,
+  readRenderManifestFile,
   shotImageRelative,
   shotVideoRelative,
   validateGenerateRequest
@@ -157,10 +158,8 @@ export function projectRoutes(deps: ServerDeps): Hono {
       }
     };
     const storyboard = readJson("storyboard.json") as { shots?: Array<Record<string, unknown>> } | null;
-    const manifest = readJson("render-manifest.json") as {
-      shots?: Array<Record<string, unknown>>;
-      outputFile?: string;
-    } | null;
+    // 盘上可能是 input/state 分节的 v1，也可能还是老项目的扁平清单；统一归一化后原样回给前端。
+    const manifest = readRenderManifestFile(dir);
     const script = readJson("script.json");
     const brief = readJson("brief.json");
     const fileExists = (absolutePath: string): boolean => {
@@ -436,17 +435,11 @@ function readProjectTitle(projectId: string, deps: ServerDeps): string | null {
  * 功能：判断项目是否已有成片（render-manifest.json 的 outputFile 存在且非空）。
  */
 function hasRenderedVideo(projectId: string, deps: ServerDeps): boolean {
-  try {
-    const manifest = JSON.parse(
-      readFileSync(join(deps.projectsRoot, projectId, "render-manifest.json"), "utf8")
-    ) as { outputFile?: string };
-    if (!manifest.outputFile) {
-      return false;
-    }
-    return existsSync(resolve(deps.projectsRoot, projectId, manifest.outputFile));
-  } catch {
+  const manifest = readRenderManifestFile(join(deps.projectsRoot, projectId));
+  if (!manifest?.outputFile) {
     return false;
   }
+  return existsSync(resolve(deps.projectsRoot, projectId, manifest.outputFile));
 }
 
 /**

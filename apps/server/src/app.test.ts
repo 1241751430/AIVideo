@@ -355,3 +355,16 @@ test("serverConfigFromEnv 默认与覆盖", () => {
   assert.deepEqual(serverConfigFromEnv({ AIVIDEO_SERVER_PORT: "not-a-port" }), { host: "127.0.0.1", port: 8787 });
   assert.deepEqual(serverConfigFromEnv({ AIVIDEO_SERVER_PORT: "99999" }), { host: "127.0.0.1", port: 8787 });
 });
+
+test("serverConfigFromEnv 的保留期不填即关闭", () => {
+  // 默认不带 retentionDays 这个键：调用方一个 if 就能判断「清理功能没开」。
+  assert.equal("retentionDays" in serverConfigFromEnv({}), false);
+  assert.equal(serverConfigFromEnv({ AIVIDEO_RETENTION_DAYS: "7" }).retentionDays, 7);
+  for (const bad of ["", "0", "-3", "abc", "7.5"]) {
+    assert.equal(
+      "retentionDays" in serverConfigFromEnv({ AIVIDEO_RETENTION_DAYS: bad }),
+      false,
+      `非法保留期 ${JSON.stringify(bad)} 不开启清理`
+    );
+  }
+});

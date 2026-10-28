@@ -92,6 +92,7 @@
 说明：
 
 - 服务默认仅监听 `127.0.0.1` 且**无任何鉴权**，定位本机/自用，请勿直接暴露公网；可用 `AIVIDEO_SERVER_HOST` / `AIVIDEO_SERVER_PORT` 覆盖。
+- 过期项目自动清理**默认关闭**。设置 `AIVIDEO_RETENTION_DAYS=<天数>` 后，最后写入时间超过该天数的项目目录会被删除；排队中、执行中、停在检查点等人工的任务永不删除。服务启动时扫一次，之后每 6 小时扫一次。`./aivideo cleanup --keep-days <天数>` 可手动做同样的事。
 - Docker 运行（`docker compose up server`，镜像 `aivideo-agent:local`）时 `AIVIDEO_CONTAINER=1`，「打开文件夹」自动降级：界面展示宿主挂载路径（`./project/<id>`）供手动打开。
 - 未安装 `ffmpeg` 时，脚本/分镜/旁白等产物照常可用，仅渲染阶段报明确错误（可用「仅脚本」模式或改用 Docker）。
 - 开发模式热更新：`pnpm dev:server`（API）+ `pnpm dev:web`（Vite 界面 :5173，自动代理 `/api`）。

@@ -92,6 +92,7 @@ A local-first, no-login dark workbench built on the same pipeline the CLI uses:
 Notes:
 
 - The server binds `127.0.0.1` only and has **no authentication** — intended for local / self-hosted LAN use, do not expose it publicly. Override with `AIVIDEO_SERVER_HOST` / `AIVIDEO_SERVER_PORT`.
+- Automatic cleanup is **off by default**. Set `AIVIDEO_RETENTION_DAYS=<days>` to delete project directories whose last write is older than that; jobs that are queued, running, or waiting at a checkpoint are never removed. The server sweeps once at startup and every 6 hours. `./aivideo cleanup --keep-days <days>` does the same on demand.
 - In Docker (`docker compose up server`, image `aivideo-agent:local`), `AIVIDEO_CONTAINER=1` makes Open Folder degrade gracefully: the UI shows the host path (`./project/<id>` on the mounted volume) to open manually.
 - Without `ffmpeg`, script/storyboard/audio artifacts still work end-to-end; only the render stage fails with a clear error (use script mode or install ffmpeg / use Docker).
 - Dev mode with hot reload: `pnpm dev:server` (API) + `pnpm dev:web` (Vite UI on :5173, proxying `/api`).

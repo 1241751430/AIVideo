@@ -7,7 +7,7 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -314,6 +314,30 @@ test("cleanupExpiredProjects removes only expired directories", () => {
   const removed = cleanupExpiredProjects(root, 7);
   assert.equal(removed.length, 1);
   assert.match(removed[0] ?? "", /expired-project/);
+});
+
+test("cleanupExpiredProjects 的 skip 回调能否决删除", () => {
+  const root = mkdtempSync(join(tmpdir(), "aivideo-projects-skip-"));
+  const busy = join(root, "busy-project");
+  const idle = join(root, "idle-project");
+  mkdirSync(busy);
+  mkdirSync(idle);
+  const tenDaysAgo = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);
+  utimesSync(busy, tenDaysAgo, tenDaysAgo);
+  utimesSync(idle, tenDaysAgo, tenDaysAgo);
+
+  // 服务端只会把「任务引擎不持有」的项目交给清理；这里只需验证否决权本身生效。
+  const seen: string[] = [];
+  const removed = cleanupExpiredProjects(root, 7, {
+    skip: (_dir, projectId) => {
+      seen.push(projectId);
+      return projectId === "busy-project";
+    }
+  });
+  assert.deepEqual(seen.sort(), ["busy-project", "idle-project"]);
+  assert.deepEqual(removed.map((item) => item.split("/").pop()).sort(), ["idle-project"]);
+  assert.equal(existsSync(busy), true);
+  assert.equal(existsSync(idle), false);
 });
 
 /**

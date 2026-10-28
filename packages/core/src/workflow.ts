@@ -587,8 +587,14 @@ export function cleanupRenderWorkspace(projectDir: string): void {
 /**
  * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
  * 功能：扫描 projectsDir 下的子目录，递归删除 mtime 超过 maxAgeDays 天的项目并返回删除路径列表；maxAgeDays 非正数时抛错。
+ * @param options.skip 对每个过期目录的额外否决权：返回 true 时不删（服务端用它保护仍在跑/等人工的任务）。
+ *                    只按 mtime 判断的清理无法知道哪些项目正被任务引擎持有，所以把判断权留给调用方。
  */
-export function cleanupExpiredProjects(projectsDir: string, maxAgeDays: number): string[] {
+export function cleanupExpiredProjects(
+  projectsDir: string,
+  maxAgeDays: number,
+  options: { skip?: (projectDir: string, projectId: string) => boolean } = {}
+): string[] {
   if (!Number.isFinite(maxAgeDays) || maxAgeDays <= 0) {
     throw new Error(`maxAgeDays must be a positive number, got: ${maxAgeDays}`);
   }
@@ -607,6 +613,9 @@ export function cleanupExpiredProjects(projectsDir: string, maxAgeDays: number):
     const target = join(projectsDir, entry.name);
     const stats = statSync(target);
     if (now - stats.mtimeMs > maxAgeMs) {
+      if (options.skip?.(target, entry.name)) {
+        continue;
+      }
       rmSync(target, { recursive: true, force: true });
       removed.push(target);
     }

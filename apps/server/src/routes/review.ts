@@ -222,6 +222,17 @@ export function reviewRoutes(deps: ServerDeps): Hono {
     return queued ? c.json({ ok: true }) : c.json({ error: "Task is busy; retry later" }, 409);
   });
 
+  router.post("/:id/resume", (c) => {
+    const guard = guardEditable(deps, c.req.param("id"));
+    if (!guard.ok) {
+      return c.json({ error: guard.error }, guard.status);
+    }
+    // 失败/取消后从断点继续：已完成的阶段由输入指纹自动跳过，所以续跑不会重复付费；
+    // 不传终点，让它按任务自身的 execMode 走完（guided 会照常停在下一个检查点）。
+    const queued = deps.runner.resume(guard.job.id);
+    return queued ? c.json({ ok: true }) : c.json({ error: "Only failed or cancelled tasks can be resumed" }, 409);
+  });
+
   return router;
 }
 

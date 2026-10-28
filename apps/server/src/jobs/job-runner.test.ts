@@ -2,7 +2,7 @@
  * @file job-runner.test.ts
  * @author zhangbaohong
  * @date 2026-09-17
- * @description 任务引擎测试：注入假阶段执行器验证 auto 全链、guided 五检查点推进与计费闸插入、redo-stage、取消（排队/运行中）、boot 恢复与损坏隔离、阶段失败落 failed。
+ * @description 任务引擎测试：注入假阶段执行器验证 auto 全链、guided 五检查点推进与计费闸插入、redo-stage、取消（排队/运行中/等待中）、boot 恢复与损坏隔离、阶段失败落 failed 并记录断点、resume 从断点续跑。
  * @see https://github.com/1241751430/AIVideo.git
  */
 import { test } from "node:test";
@@ -354,6 +354,7 @@ test("取消运行中的任务：abort 信号送达阶段并落 cancelled", asyn
     await waitUntil(() => runner.get(job.id)?.phase === "running", "running");
     assert.equal(runner.cancel(job.id), true);
     await waitUntil(() => runner.get(job.id)?.phase === "cancelled", "cancelled");
+    assert.equal(runner.get(job.id)?.breakStage, "script", "运行中取消留下当前阶段作断点");
     assert.equal(runner.cancel(job.id), false, "终态不可再取消");
   } finally {
     cleanup();
@@ -381,6 +382,7 @@ test("取消排队中的任务并保留队首", async () => {
     assert.equal(runner.dto(second.id)?.queuePosition, 1);
 
     assert.equal(runner.cancel(second.id), true);
+    assert.equal(runner.get(second.id)?.breakStage, "script", "排队中取消按入队起点记断点");
     gate.release();
     await waitUntil(() => runner.get(first.id)?.phase === "done", "first done");
     assert.equal(runner.get(second.id)?.phase, "cancelled", "被取消任务不得继续执行");
@@ -477,6 +479,132 @@ test("阶段抛错落 failed 并记录错误", async () => {
     const job = runner.create({ execMode: "auto", request: makeRequest() });
     await waitUntil(() => runner.get(job.id)?.phase === "failed", "failed");
     assert.match(runner.get(job.id)?.error ?? "", /boom:assets/);
+  } finally {
+    cleanup();
+  }
+});
+
+test("阶段失败落 failed 并留下断点阶段（stage 已清空，断点由 breakStage 承载）", async () => {
+  const { stages } = makeFakeStages({ failAt: "assets" });
+  const { runner, cleanup } = makeRunner({ stages });
+  try {
+    const job = runner.create({ execMode: "auto", request: makeRequest() });
+    await waitUntil(() => runner.get(job.id)?.phase === "failed", "failed");
+    assert.equal(runner.get(job.id)?.stage, undefined);
+    assert.equal(runner.get(job.id)?.breakStage, "assets");
+    assert.equal(runner.dto(job.id)?.breakStage, "assets", "DTO 透出断点供 UI 定位续跑起点");
+  } finally {
+    cleanup();
+  }
+});
+
+test("resume 从断点续跑至 done：已完成阶段照常按指纹复用，起点之后继续", async () => {
+  const hooks: { hang?: (stage: StageKind, ctx: StageContext) => Promise<void>; failAt?: StageKind } = { failAt: "assets" };
+  const { stages, calls } = makeFakeStages(hooks);
+  const { runner, cleanup } = makeRunner({ stages });
+  try {
+    const job = runner.create({ execMode: "auto", request: makeRequest() });
+    await waitUntil(() => runner.get(job.id)?.phase === "failed", "failed");
+    assert.deepEqual(calls, ["script", "assets"]);
+
+    hooks.failAt = undefined;
+    assert.equal(runner.resume(job.id), true);
+    await waitUntil(() => runner.get(job.id)?.phase === "done", "resumed done");
+    assert.deepEqual(calls, ["script", "assets", "assets", "audio", "render"], "从断点 assets 接上，不回退到 script");
+    assert.equal(runner.get(job.id)?.breakStage, undefined, "续跑成功即清除断点");
+  } finally {
+    cleanup();
+  }
+});
+
+test("resume 保持 guided 语义：续跑到下一个检查点即停", async () => {
+  const hooks: { failAt?: StageKind } = { failAt: "assets" };
+  const { stages, calls } = makeFakeStages(hooks);
+  const { runner, cleanup } = makeRunner({ stages });
+  try {
+    const job = runner.create({ execMode: "guided", request: makeRequest() });
+    await waitUntil(() => runner.get(job.id)?.checkpoint === "script", "awaiting script");
+    assert.equal(runner.review(job.id, "approve"), true);
+    await waitUntil(() => runner.get(job.id)?.phase === "failed", "failed");
+    assert.equal(runner.get(job.id)?.breakStage, "assets");
+    hooks.failAt = undefined;
+    assert.equal(runner.resume(job.id), true);
+    await waitUntil(() => runner.get(job.id)?.checkpoint === "shots", "awaiting shots");
+    assert.deepEqual(calls, ["script", "assets", "assets"], "续跑不绕过检查点，停在 shots");
+    assert.equal(runner.get(job.id)?.phase, "awaiting");
+  } finally {
+    cleanup();
+  }
+});
+
+test("resume 只接受 failed/cancelled：unknown/done/running/queued 一律拒绝", async () => {
+  const { stages } = makeFakeStages();
+  const { runner, cleanup } = makeRunner({ stages });
+  try {
+    assert.equal(runner.resume("ghost"), false, "未知任务拒绝");
+    const job = runner.create({ execMode: "auto", request: makeRequest() });
+    await waitUntil(() => runner.get(job.id)?.phase === "done", "done");
+    assert.equal(runner.resume(job.id), false, "done 不是「中断」，重跑应走 rerun");
+  } finally {
+    cleanup();
+  }
+});
+
+test("resume 拒绝排队中与运行中的任务", async () => {
+  const gate = { release: () => {} };
+  const blocked = new Promise<void>((resolve) => {
+    gate.release = resolve;
+  });
+  const { stages } = makeFakeStages({
+    hang: async (stage) => {
+      if (stage === "script") {
+        await blocked;
+      }
+    }
+  });
+  const { runner, cleanup } = makeRunner({ stages });
+  try {
+    const first = runner.create({ execMode: "auto", request: makeRequest("一") });
+    const second = runner.create({ execMode: "auto", request: makeRequest("二") });
+    await waitUntil(() => runner.get(first.id)?.phase === "running", "first running");
+    assert.equal(runner.resume(first.id), false, "运行中拒绝");
+    assert.equal(runner.resume(second.id), false, "排队中拒绝");
+    gate.release();
+    await waitUntil(() => runner.get(first.id)?.phase === "done", "first done");
+  } finally {
+    cleanup();
+  }
+});
+
+test("取消等待中的任务：断点取通向该检查点的那一段", async () => {
+  const { stages } = makeFakeStages();
+  const { runner, cleanup } = makeRunner({ stages });
+  try {
+    const job = runner.create({ execMode: "guided", request: makeRequest() });
+    await waitUntil(() => runner.get(job.id)?.checkpoint === "script", "awaiting script");
+    assert.equal(runner.review(job.id, "approve"), true);
+    await waitUntil(() => runner.get(job.id)?.checkpoint === "shots", "awaiting shots");
+    assert.equal(runner.cancel(job.id), true);
+    assert.equal(runner.get(job.id)?.phase, "cancelled");
+    assert.equal(runner.get(job.id)?.breakStage, "assets", "shots 检查点由 assets 阶段到达");
+    assert.equal(runner.get(job.id)?.checkpoint, undefined);
+  } finally {
+    cleanup();
+  }
+});
+
+test("取消后 resume 从断点续跑：guided 重新停回原检查点", async () => {
+  const { stages, calls } = makeFakeStages();
+  const { runner, cleanup } = makeRunner({ stages });
+  try {
+    const job = runner.create({ execMode: "guided", request: makeRequest() });
+    await waitUntil(() => runner.get(job.id)?.checkpoint === "script", "awaiting script");
+    assert.equal(runner.review(job.id, "approve"), true);
+    await waitUntil(() => runner.get(job.id)?.checkpoint === "shots", "awaiting shots");
+    assert.equal(runner.cancel(job.id), true);
+    assert.equal(runner.resume(job.id), true);
+    await waitUntil(() => runner.get(job.id)?.checkpoint === "shots", "awaiting shots again");
+    assert.deepEqual(calls, ["script", "assets", "assets"], "从 assets 续跑，脚本阶段不重做");
   } finally {
     cleanup();
   }

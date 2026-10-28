@@ -2,7 +2,7 @@
  * @file review.test.ts
  * @author zhangbaohong
  * @date 2026-09-17
- * @description 检查点编辑与重试路由测试：并发闸门（running/queued 拒绝、cancelled 放行）、脚本元信息 PUT、单镜编辑失效矩阵（旁白删 wav、画面词删资产、字幕仅标失效）、单镜重试（删文件+重入对应阶段）、镜头拖拽排序 PUT order、批量重试 retry-batch（缺省失败镜头/显式指定/闸门）、计费预览与重新渲染。
+ * @description 检查点编辑与重试路由测试：并发闸门（running/queued 拒绝、cancelled 放行）、脚本元信息 PUT、单镜编辑失效矩阵（旁白删 wav、画面词删资产、字幕仅标失效）、单镜重试（删文件+重入对应阶段）、镜头拖拽排序 PUT order、批量重试 retry-batch（缺省失败镜头/显式指定/闸门）、计费预览与重新渲染、失败/取消后从断点继续（resume）。
  * @see https://github.com/1241751430/AIVideo.git
  */
 import { test } from "node:test";
@@ -11,7 +11,9 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { join } from "node:path";
 import type { ProviderSelection } from "@aivideo/core";
 import { readRenderManifestFile } from "@aivideo/core";
+import type { StageRunner } from "../jobs/stages.js";
 import { createDoneJob, hangScriptStages, makeTestApp, waitUntil } from "../testkit.js";
+import type { StageKind } from "../types.js";
 
 /**
  * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
@@ -62,6 +64,45 @@ function writeTwoShotFixtures(dir: string): void {
   mkdirSync(join(dir, "assets"), { recursive: true });
   writeFileSync(join(dir, "audio", "shot-1.wav"), "wav", "utf8");
   writeFileSync(join(dir, "assets", "shot-1.png"), "png", "utf8");
+}
+
+/**
+ * @author zhangbaohong  @date 2026-10-28  @see https://github.com/1241751430/AIVideo.git
+ * 功能：可复位失败阶段执行器：failAt 命中时抛错，置空后恢复正常（用于「先失败、再续跑」）。
+ */
+function makeFlakyStages(failAt: StageKind | undefined): {
+  stages: StageRunner;
+  calls: StageKind[];
+  control: { failAt?: StageKind };
+} {
+  const calls: StageKind[] = [];
+  const control: { failAt?: StageKind } = { failAt };
+  const run = (stage: StageKind) => async (): Promise<void> => {
+    calls.push(stage);
+    if (control.failAt === stage) {
+      throw new Error(`boom:${stage}`);
+    }
+  };
+  return {
+    stages: { runScript: run("script"), runAssets: run("assets"), runAudio: run("audio"), runRender: run("render") },
+    calls,
+    control
+  };
+}
+
+/**
+ * @author zhangbaohong  @date 2026-10-28  @see https://github.com/1241751430/AIVideo.git
+ * 功能：经 POST /api/projects 建单（测试 resume 需要「真实流转」产生的 failed/cancelled 态）。
+ */
+async function createJobId(ctx: ReturnType<typeof makeTestApp>, briefText: string): Promise<string> {
+  const res = await ctx.app.request("/api/projects", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ briefText })
+  });
+  assert.equal(res.status, 201);
+  const body = (await res.json()) as { job: { id: string } };
+  return body.job.id;
 }
 
 test("running 拒绝编辑（409），cancel 后闸门放行", async () => {
@@ -489,6 +530,95 @@ test("POST shots/retry-batch：running 拒绝 409", async () => {
     await hung.app.request(`/api/projects/${job.id}/cancel`, { method: "POST" });
     await waitUntil(() => hung.runner.get(job.id)?.phase === "cancelled", "cancelled");
   } finally {
+    hung.cleanup();
+  }
+});
+
+test("POST resume：failed 从断点续跑到 done，断点随之清除", async () => {
+  const { stages, calls, control } = makeFlakyStages("assets");
+  const ctx = makeTestApp({ stages });
+  try {
+    const jobId = await createJobId(ctx, "主题：断点续跑");
+    await waitUntil(() => ctx.runner.get(jobId)?.phase === "failed", "failed");
+    assert.equal(ctx.runner.get(jobId)?.breakStage, "assets");
+    assert.deepEqual(calls, ["script", "assets"]);
+
+    control.failAt = undefined;
+    const res = await ctx.app.request(`/api/projects/${jobId}/resume`, { method: "POST" });
+    assert.equal(res.status, 200);
+    assert.deepEqual((await res.json()) as { ok: boolean }, { ok: true });
+    await waitUntil(() => ctx.runner.get(jobId)?.phase === "done", "resumed done");
+
+    const job = ctx.runner.get(jobId);
+    assert.equal(job?.breakStage, undefined, "续跑完成即清除断点");
+    assert.equal(job?.result?.videoStale, false, "跑完全链，成片不算过期");
+    assert.deepEqual(calls, ["script", "assets", "assets", "audio", "render"], "已完成的脚本阶段不重做");
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test("POST resume：cancelled 任务同样可续，起于取消时所在阶段", async () => {
+  // 首次 script 挂起到 abort（造出「运行中被取消」），之后恢复正常，续跑才能走完。
+  let firstRun = true;
+  const calls: StageKind[] = [];
+  const stages: StageRunner = {
+    async runScript(ctx) {
+      calls.push("script");
+      if (!firstRun) {
+        return;
+      }
+      firstRun = false;
+      await new Promise<void>((_resolve, reject) => {
+        ctx.signal.addEventListener("abort", () => reject(new Error("aborted")));
+      });
+    },
+    async runAssets() {
+      calls.push("assets");
+    },
+    async runAudio() {
+      calls.push("audio");
+    },
+    async runRender() {
+      calls.push("render");
+    }
+  };
+  const ctx = makeTestApp({ stages });
+  try {
+    const jobId = await createJobId(ctx, "主题：取消后续跑");
+    await waitUntil(() => ctx.runner.get(jobId)?.phase === "running", "running");
+    assert.equal((await ctx.app.request(`/api/projects/${jobId}/cancel`, { method: "POST" })).status, 200);
+    await waitUntil(() => ctx.runner.get(jobId)?.phase === "cancelled", "cancelled");
+    assert.equal(ctx.runner.get(jobId)?.breakStage, "script");
+
+    const res = await ctx.app.request(`/api/projects/${jobId}/resume`, { method: "POST" });
+    assert.equal(res.status, 200);
+    await waitUntil(() => ctx.runner.get(jobId)?.phase === "done", "resumed done");
+    assert.deepEqual(calls, ["script", "script", "assets", "audio", "render"], "从断点 script 重跑并走完后续阶段");
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test("POST resume：未知 404、done 与 running 各 409", async () => {
+  const ctx = makeTestApp();
+  const hung = makeTestApp({ stages: hangScriptStages });
+  try {
+    assert.equal((await ctx.app.request("/api/projects/ghost-2/resume", { method: "POST" })).status, 404);
+    const doneId = await createDoneJob(ctx);
+    assert.equal((await ctx.app.request(`/api/projects/${doneId}/resume`, { method: "POST" })).status, 409);
+
+    const runningId = await createJobId(hung, "主题：占用续跑");
+    await waitUntil(() => hung.runner.get(runningId)?.phase === "running", "running");
+    const res = await hung.app.request(`/api/projects/${runningId}/resume`, { method: "POST" });
+    assert.equal(res.status, 409);
+    const body = (await res.json()) as { error: string };
+    assert.match(body.error, /编辑与重试需等待当前阶段结束/);
+
+    await hung.app.request(`/api/projects/${runningId}/cancel`, { method: "POST" });
+    await waitUntil(() => hung.runner.get(runningId)?.phase === "cancelled", "cancelled");
+  } finally {
+    ctx.cleanup();
     hung.cleanup();
   }
 });

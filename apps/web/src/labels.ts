@@ -58,20 +58,18 @@ export function checkpointToStage(checkpoint: CheckpointKind): StageKind {
 /**
  * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
  * 功能：计算 stepper 高亮位（0..4，4 表示全部完成）；queued/未知返回 -1。
+ * 失败/取消的断点由调用方并入 stage 传入（job.stage ?? job.breakStage），停在哪儿就高亮到哪儿。
  */
 export function stepperIndex(phase: JobPhase, stage?: StageKind, checkpoint?: CheckpointKind): number {
   if (phase === "done") {
     return 4;
   }
-  if (phase === "running" && stage) {
+  if ((phase === "running" || phase === "failed" || phase === "cancelled") && stage) {
     return STAGES.indexOf(stage);
   }
   if (phase === "awaiting" && checkpoint) {
     const doneStages: Record<CheckpointKind, number> = { script: 1, cost: 1, shots: 2, audio: 3, final: 4 };
     return doneStages[checkpoint];
-  }
-  if (phase === "failed" && stage) {
-    return STAGES.indexOf(stage);
   }
   return -1;
 }

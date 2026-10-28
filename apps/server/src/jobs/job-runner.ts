@@ -136,6 +136,7 @@ export class JobRunner {
   /**
    * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
    * 功能：取消任务：排队中直接移出队列；运行中置为 cancelled 并 abort 信号（渲染子进程被立即杀，provider 调用在阶段边界生效）；等待中直接落 cancelled。
+   * 无论从哪个状态取消，都留下断点阶段供「继续」使用：清空 stage 只表示「现在没在跑」，断点由 breakStage 单独承载。
    * @returns 是否发生状态变化
    */
   cancel(jobId: string): boolean {
@@ -144,13 +145,15 @@ export class JobRunner {
       return false;
     }
     this.queue = this.queue.filter((id) => id !== jobId);
+    const breakStage = breakStageOf(job);
     this.setStatus(job, {
       phase: "cancelled",
       stage: undefined,
       checkpoint: undefined,
       resumeStage: undefined,
       force: undefined,
-      endStage: undefined
+      endStage: undefined,
+      breakStage
     });
     if (this.active?.jobId === jobId) {
       this.active.controller.abort();
@@ -253,6 +256,22 @@ export class JobRunner {
   }
 
   /**
+   * @author zhangbaohong  @date 2026-10-28  @see https://github.com/1241751430/AIVideo.git
+   * 功能：从中断处继续：只有 failed/cancelled 需要它（awaiting 走 review，done 走 rerun）。
+   * 起点取 cancel/failed 留下的 breakStage，不设终点阶段——续跑就是「把这条链按原模式走完」，
+   * 后续 guided 检查点照常停靠。已完成的阶段靠输入指纹自动跳过，不会重复付费。
+   * @returns 是否成功入队；unknown / queued / running / awaiting / done 一律拒绝
+   */
+  resume(jobId: string): boolean {
+    const job = this.jobs.get(jobId);
+    if (!job || job.phase !== "failed" && job.phase !== "cancelled") {
+      return false;
+    }
+    this.beginRun(job, job.breakStage ?? job.resumeStage ?? "script");
+    return true;
+  }
+
+  /**
    * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
    * 功能：标记成片过期（人工编辑脚本/镜头后调用，提示需要重新渲染）。
    */
@@ -313,7 +332,9 @@ export class JobRunner {
     job.resumeStage = stage;
     job.force = options.force;
     job.endStage = options.endStage;
-    this.setStatus(job, { phase: "queued", checkpoint: undefined, stage: undefined });
+    // 重新入队即开启新一次运行：上一次停在哪儿不再是「当前」的断点。
+    job.breakStage = undefined;
+    this.setStatus(job, { phase: "queued", checkpoint: undefined, stage: undefined, breakStage: undefined });
     this.enqueue(job.id);
   }
 
@@ -358,10 +379,14 @@ export class JobRunner {
           await this.runStage(current, stage, controller.signal);
         } catch (error) {
           // Re-read the phase from the map (a fresh reference defeats the
-          // "running" narrowing): cancel() may have moved the job to
-          // "cancelled" while the stage was awaiting.
+          // "running" narrowing): the job may have left "running" while the
+          // stage was awaiting — cancel() moves it to "cancelled", and a
+          // resume()/rerun() landing in that same window moves it back to
+          // "queued" for the next drive. Only a job that is *still* running
+          // may be recorded as failed; otherwise the error is the abandoned
+          // run's abort, and overwriting the phase would drop the re-queued job.
           const phaseAfterError: JobPhase = this.jobs.get(jobId)?.phase ?? "cancelled";
-          if (phaseAfterError === "cancelled") {
+          if (phaseAfterError !== "running") {
             return;
           }
           const message = error instanceof Error ? error.message : String(error);
@@ -370,6 +395,7 @@ export class JobRunner {
             stage: undefined,
             force: undefined,
             endStage: undefined,
+            breakStage: stage,
             error: message
           });
           this.emit(current, "log", { message: `阶段 ${stage} 失败：${message}` });
@@ -487,7 +513,7 @@ export class JobRunner {
   private setStatus(
     job: Job,
     patch: Partial<
-      Pick<Job, "phase" | "stage" | "checkpoint" | "resumeStage" | "force" | "endStage" | "error" | "result">
+      Pick<Job, "phase" | "stage" | "checkpoint" | "resumeStage" | "force" | "endStage" | "breakStage" | "error" | "result">
     >
   ): void {
     Object.assign(job, patch, { updatedAt: new Date().toISOString() });
@@ -496,6 +522,7 @@ export class JobRunner {
       phase: job.phase,
       stage: job.stage,
       checkpoint: job.checkpoint,
+      breakStage: job.breakStage,
       error: job.error
     });
   }
@@ -522,4 +549,33 @@ export class JobRunner {
       hasProjectDir: existsSync(this.projectDirOf(job.projectId))
     };
   }
+}
+
+/**
+ * @author zhangbaohong  @date 2026-10-28  @see https://github.com/1241751430/AIVideo.git
+ * 功能：推算取消时的断点阶段——「继续」该从哪一段接上。
+ * 运行中取当前阶段；排队中取入队时声明的起点；等待中取通向该检查点的那一段：
+ * 续跑靠输入指纹跳过已完成的阶段，随后按原模式重新停回同一检查点（script 与 cost 都回到脚本闸，
+ * 即重新确认一次脚本——成片链路里没有从检查点直接跳过的旁路，宁可多点一次也不绕过计费闸）。
+ */
+function breakStageOf(job: Job): StageKind | undefined {
+  if (job.phase === "running") {
+    return job.stage;
+  }
+  if (job.phase === "awaiting") {
+    switch (job.checkpoint) {
+      case "script":
+      case "cost":
+        return "script";
+      case "shots":
+        return "assets";
+      case "audio":
+        return "audio";
+      case "final":
+        return "render";
+      default:
+        return undefined;
+    }
+  }
+  return job.resumeStage ?? "script";
 }

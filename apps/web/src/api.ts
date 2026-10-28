@@ -146,6 +146,8 @@ export const api = {
     }),
   costPreview: (id: string) => request<{ preview: CostPreview }>(`/api/projects/${encodeURIComponent(id)}/cost-preview`),
   rerender: (id: string) => request<{ ok: boolean }>(`/api/projects/${encodeURIComponent(id)}/rerender`, { method: "POST" }),
+  /** 失败/取消后从断点继续（后端 POST /:id/resume；已完成的阶段靠输入指纹自动跳过）。 */
+  resume: (id: string) => request<{ ok: boolean }>(`/api/projects/${encodeURIComponent(id)}/resume`, { method: "POST" }),
   openFolder: (id: string) =>
     request<OpenFolderResponse>(`/api/projects/${encodeURIComponent(id)}/open-folder`, { method: "POST" })
 };

@@ -64,6 +64,11 @@ export interface Job {
    * 镜头重试/重新渲染靠它把「重做目标阶段」和「跑完整条链」区分开；缺省表示跑到底。
    */
   endStage?: StageKind;
+  /**
+   * 失败/取消时的断点阶段：任务停在哪一段。仅在 failed/cancelled 态有值，供「继续」入口定位续跑起点；
+   * 重新入队（beginRun）即清除，因为它描述的是「当前这次没有再跑下去」，不是历史记录。
+   */
+  breakStage?: StageKind;
   /** done 之后又编辑了产物时为真，UI 提示重新渲染。 */
   result?: { videoStale?: boolean };
   /** phase=failed 的错误摘要。 */

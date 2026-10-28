@@ -68,7 +68,7 @@ function deriveProgress(job: JobDto, shots: ShotArtifactEntry[]): { percent: num
     audio: { percent: 70, note: (r) => `配音 ${Math.round(r * 100)}%` },
     render: { percent: 92, note: () => "合成渲染中" }
   };
-  const stage = job.stage ?? "script";
+  const stage = job.stage ?? job.breakStage ?? "script";
   const spec = stageBase[stage] ?? { percent: 5, note: () => "" };
   if (job.phase === "failed" || job.phase === "cancelled") {
     return { percent: spec.percent, note: job.phase === "failed" ? "已中断" : "已取消" };
@@ -91,11 +91,13 @@ function deriveProgress(job: JobDto, shots: ShotArtifactEntry[]): { percent: num
  * 功能：渲染五/四节点进度条与派生进度（guided 模式含计费闸）。
  */
 export default function Stepper({ job, shots }: Props) {
-  const current = stepperIndex(job.phase, job.stage, job.checkpoint);
+  // 失败/取消时 job.stage 已被清空，断点阶段由 breakStage 承载。
+  const current = stepperIndex(job.phase, job.stage ?? job.breakStage, job.checkpoint);
   const nodes: NodeSpec[] = [];
   STAGES.forEach((stage, index) => {
+    const interrupted = job.phase === "failed" || job.phase === "cancelled";
     const cls: NodeSpec["cls"] =
-      index < current ? "done" : index === current ? (job.phase === "failed" ? "error" : "current") : "";
+      index < current ? "done" : index === current ? (interrupted ? "error" : "current") : "";
     nodes.push({ key: stage, label: STAGE_LABELS[stage], cls });
     if (job.execMode === "guided" && index === 0) {
       const gateDone = current >= 2;

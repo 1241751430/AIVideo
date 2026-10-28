@@ -6,7 +6,7 @@
  * @see https://github.com/1241751430/AIVideo.git
  */
 import { useCallback, useEffect, useState } from "react";
-import { Ban, RefreshCw, Trash, WifiOff } from "lucide-react";
+import { Ban, Play, RefreshCw, Trash, TriangleAlert, WifiOff } from "lucide-react";
 import type { ArtifactsSnapshot } from "@aivideo/shared";
 import { api } from "../api";
 import { useJobStream } from "../hooks/useJobStream";
@@ -22,7 +22,7 @@ import ScriptEditor from "./ScriptEditor";
 import ShotWall from "./ShotWall";
 import Skeleton from "./Skeleton";
 import Stepper from "./Stepper";
-import { PHASE_LABELS } from "../labels";
+import { PHASE_LABELS, STAGE_LABELS } from "../labels";
 
 /** TaskView 组件入参。 */
 interface Props {
@@ -42,6 +42,7 @@ export default function TaskView({ jobId, onDeleted, onChanged }: Props) {
   const [artifactsKey, setArtifactsKey] = useState(0);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [resuming, setResuming] = useState(false);
 
   const reloadArtifacts = useCallback((): void => {
     api
@@ -88,6 +89,8 @@ export default function TaskView({ jobId, onDeleted, onChanged }: Props) {
 
   const busy = job.phase === "queued" || job.phase === "running";
   const canCancel = busy || job.phase === "awaiting";
+  // 失败/取消是终态：没有检查点条可点，只能靠「从断点继续」重新入队。
+  const canResume = job.phase === "failed" || job.phase === "cancelled";
   const script = (artifacts?.script ?? null) as Record<string, unknown> | null;
 
   const handleMutated = (): void => {
@@ -116,6 +119,18 @@ export default function TaskView({ jobId, onDeleted, onChanged }: Props) {
       })
       .catch((err: Error) => toast.error(`删除失败：${err.message}`))
       .finally(() => setDeleting(false));
+  };
+
+  const doResume = (): void => {
+    setResuming(true);
+    api
+      .resume(job.id)
+      .then(() => {
+        toast.success("已从断点继续");
+        handleMutated();
+      })
+      .catch((err: Error) => toast.error(`继续失败：${err.message}`))
+      .finally(() => setResuming(false));
   };
 
   return (
@@ -163,6 +178,17 @@ export default function TaskView({ jobId, onDeleted, onChanged }: Props) {
         </div>
         <InputRefs projectId={job.projectId} />
         {job.error && <div className="error-line">{job.error}</div>}
+        {canResume && (
+          <div className="stale-bar" role="status">
+            <TriangleAlert size={14} aria-hidden="true" />
+            任务在{STAGE_LABELS[job.breakStage ?? "script"]}阶段
+            {job.phase === "failed" ? "中断" : "被取消"}，已完成的阶段会按输入指纹跳过，继续不会重复付费。
+            <button className="primary" disabled={resuming} onClick={doResume}>
+              <Play size={13} aria-hidden="true" />
+              {resuming ? "入队中…" : `从${STAGE_LABELS[job.breakStage ?? "script"]}继续`}
+            </button>
+          </div>
+        )}
         <div style={{ marginTop: 10 }}>
           <Stepper job={job} shots={artifacts?.shots ?? []} />
         </div>

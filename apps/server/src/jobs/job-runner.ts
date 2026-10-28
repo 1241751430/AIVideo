@@ -11,7 +11,7 @@ import { createProjectId } from "@aivideo/core";
 import type { CheckpointKind, ExecMode, Job, JobDto, JobPhase, JobRequest, StageKind } from "../types.js";
 import { EventHub, JobEventLog } from "./events.js";
 import { projectDirOf as resolveProjectDir, scanProjects, writeJob } from "./job-store.js";
-import { defaultStages, hasRemoteProviders, type StageContext, type StageDeps, type StageRunner } from "./stages.js";
+import { defaultStages, type StageContext, type StageDeps, type StageRunner } from "./stages.js";
 
 /** JobRunner 的注入依赖（全部可测：routes 测试注入假 stages）。 */
 export interface JobRunnerDeps {
@@ -163,7 +163,7 @@ export class JobRunner {
 
   /**
    * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
-   * 功能：检查点决策：approve 按 checkpoint 推进（script 后按是否存在远端计费插入 cost；final 后 done）；redo-stage 重新入队指定阶段；cancel 终止任务。
+   * 功能：检查点决策：approve 按 checkpoint 推进（script→assets、shots→audio、audio→render、final→done）；redo-stage 重新入队指定阶段；cancel 终止任务。
    * @param jobId 任务 id
    * @param decision approve | redo-stage | cancel
    * @param stage redo-stage 时的目标阶段
@@ -194,14 +194,9 @@ export class JobRunner {
             stage: undefined,
             result: { videoStale: false }
           });
-        } else if (hasRemoteProviders(this.providersFor(job.request.providerProfile))) {
-          this.setStatus(job, { phase: "awaiting", checkpoint: "cost" });
         } else {
           this.beginRun(job, "assets");
         }
-        return true;
-      case "cost":
-        this.beginRun(job, "assets");
         return true;
       case "shots":
         this.beginRun(job, "audio");
@@ -233,7 +228,7 @@ export class JobRunner {
   /**
    * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
    * 功能：对非活动任务重新入队，只执行 stage→endStage 这一段（镜头重试/重渲染的入口）；到达 endStage 即收尾，不再顺势跑完整条链。
-   * 缺省不强制：assets/audio 阶段的重试由「目标镜头产物已被删除」驱动，其余镜头仍按指纹复用，避免为一个镜头把整批付费素材重做；
+   * 缺省不强制：assets/audio 阶段的重试由「目标镜头产物已被删除」驱动，其余镜头仍按指纹复用，避免为一个镜头把整批素材重做；
    * 只有调用方明确要求整段重做（如手动重新渲染）时才传 force。
    * @param jobId 任务 id
    * @param stage 起始阶段
@@ -259,7 +254,7 @@ export class JobRunner {
    * @author zhangbaohong  @date 2026-10-28  @see https://github.com/1241751430/AIVideo.git
    * 功能：从中断处继续：只有 failed/cancelled 需要它（awaiting 走 review，done 走 rerun）。
    * 起点取 cancel/failed 留下的 breakStage，不设终点阶段——续跑就是「把这条链按原模式走完」，
-   * 后续 guided 检查点照常停靠。已完成的阶段靠输入指纹自动跳过，不会重复付费。
+   * 后续 guided 检查点照常停靠。已完成的阶段靠输入指纹自动跳过，不会重复调用远端模型。
    * @returns 是否成功入队；unknown / queued / running / awaiting / done 一律拒绝
    */
   resume(jobId: string): boolean {
@@ -470,7 +465,7 @@ export class JobRunner {
 
   /**
    * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
-   * 功能：阶段完成后的转移：auto 依次 script→assets→audio→render→done（脚本后若存在远端提供者先停计费闸）；
+   * 功能：阶段完成后的转移：auto 依次 script→assets→audio→render→done；
    * guided 每阶段后进入对应检查点。
    */
   private nextAfterStage(job: Job, stage: StageKind): { kind: "stage"; stage: StageKind } | { kind: "await"; checkpoint: CheckpointKind } | { kind: "done" } {
@@ -484,11 +479,6 @@ export class JobRunner {
     if (job.execMode === "auto") {
       switch (stage) {
         case "script":
-          // 「全自动」不等于「不看账单就开跑」：脚本落盘后若有远端提供者，仍停在计费闸等一次明确确认，
-          // 之后才进入会产生费用的素材/旁白/渲染。没有远端提供者时保持一次跑完。
-          if (hasRemoteProviders(this.providersFor(job.request.providerProfile))) {
-            return { kind: "await", checkpoint: "cost" };
-          }
           return { kind: "stage", stage: "assets" };
         case "assets":
           return { kind: "stage", stage: "audio" };
@@ -561,8 +551,8 @@ export class JobRunner {
  * @author zhangbaohong  @date 2026-10-28  @see https://github.com/1241751430/AIVideo.git
  * 功能：推算取消时的断点阶段——「继续」该从哪一段接上。
  * 运行中取当前阶段；排队中取入队时声明的起点；等待中取通向该检查点的那一段：
- * 续跑靠输入指纹跳过已完成的阶段，随后按原模式重新停回同一检查点（script 与 cost 都回到脚本闸，
- * 即重新确认一次脚本——成片链路里没有从检查点直接跳过的旁路，宁可多点一次也不绕过计费闸）。
+ * 续跑靠输入指纹跳过已完成的阶段，随后按原模式重新停回同一检查点（script 回到脚本闸，
+ * 即重新确认一次脚本——成片链路里没有从检查点直接跳过的旁路，宁可多点一次也不跳过人工确认）。
  */
 function breakStageOf(job: Job): StageKind | undefined {
   if (job.phase === "running") {
@@ -571,7 +561,6 @@ function breakStageOf(job: Job): StageKind | undefined {
   if (job.phase === "awaiting") {
     switch (job.checkpoint) {
       case "script":
-      case "cost":
         return "script";
       case "shots":
         return "assets";

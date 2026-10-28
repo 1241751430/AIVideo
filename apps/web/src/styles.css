@@ -815,7 +815,7 @@ select {
   box-shadow: var(--sh-2);
 }
 
-/* ===== §phase-b 组件升级：chip / 图标按钮 / 空态 / 骨架 / 确认框 / 搜索筛选 / stepper v2 / 镜头卡 v2 / 日志工具条 / 创建 bento / 计费徽章卡 / 影院交付 ===== */
+/* ===== §phase-b 组件升级：chip / 图标按钮 / 空态 / 骨架 / 确认框 / 搜索筛选 / stepper v2 / 镜头卡 v2 / 日志工具条 / 创建 bento / 影院交付 ===== */
 
 /* 通用信息胶囊 */
 .chip {
@@ -1151,21 +1151,6 @@ button svg {
 .stepper .node.error .node-dot {
   border-color: rgba(248, 113, 113, 0.7);
   color: var(--c-failed);
-}
-
-.stepper .node.gate {
-  border-style: dotted;
-}
-
-.stepper .node.gate .node-dot {
-  width: 13px;
-  height: 13px;
-  border-radius: 4px;
-  transform: rotate(45deg);
-}
-
-.stepper .node.gate .node-dot svg {
-  transform: rotate(-45deg);
 }
 
 .stepper .link {
@@ -1638,61 +1623,6 @@ input[type="range"]:focus {
 
 .cp-ico {
   color: #e879f9;
-}
-
-/* 计费徽章卡 */
-.cost-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-  gap: 10px;
-  margin-top: var(--sp-3);
-}
-
-.cost-item {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 12px;
-  border-radius: var(--r-md);
-  border: 1px solid var(--line);
-  background: var(--bg-raised);
-  box-shadow: var(--sh-1);
-}
-
-.cost-item.remote {
-  border-color: rgba(251, 191, 36, 0.35);
-  background: linear-gradient(135deg, rgba(251, 191, 36, 0.05), var(--bg-raised));
-}
-
-.cost-ico {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 32px;
-  height: 32px;
-  border-radius: var(--r-sm);
-  border: 1px solid var(--line);
-  background: var(--grad-soft);
-  color: var(--c-brand-text);
-  flex: none;
-}
-
-.cost-body {
-  flex: 1;
-  min-width: 0;
-}
-
-.cost-cap {
-  font-size: 13px;
-  font-weight: 600;
-}
-
-.cost-id {
-  font-size: 11px;
-  font-family: var(--font-mono);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 /* 影院交付框与状态清单 */

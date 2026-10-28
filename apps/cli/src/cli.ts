@@ -514,6 +514,6 @@ Advanced generate flags:
 Interactive mode ("aivideo create", @clack TUI):
   方向键选择，Enter 确认，Ctrl+C 取消
   文本输入 /back 返回上一步，/cancel 取消向导
-  提交前会显示计费确认页（列出所选模型与远程计费项）
+  提交前会显示配置确认页（列出本次生成的主题、时长、平台与各类模型）
 `);
 }

@@ -61,7 +61,7 @@
 | `./aivideo cleanup --keep-days 7` | 清理过期项目 |
 | `./aivideo init` | 手动初始化配置（通常自动完成） |
 
-`create` 为终端 TUI 界面（@clack）：方向键选择、Enter 确认、Ctrl+C 取消；首个问题直接留空即进入高级逐项配置；文本步骤中可输入 `/back` 返回上一步、`/cancel` 取消向导。提交前会显示计费确认页（列出生效的模型及远程/本地计费属性）。在终端中直接运行不带输入的 `generate` 时，会弹出已有项目的续跑选择器。
+`create` 为终端 TUI 界面（@clack）：方向键选择、Enter 确认、Ctrl+C 取消；首个问题直接留空即进入高级逐项配置；文本步骤中可输入 `/back` 返回上一步、`/cancel` 取消向导。提交前会显示配置确认页（列出生效的模型及本地/远端属性）。在终端中直接运行不带输入的 `generate` 时，会弹出已有项目的续跑选择器。
 
 ## 镜头墙工作台（网页版）
 
@@ -72,7 +72,7 @@
 与 CLI 共用同一条流水线的本机优先、无需登录的暗色网页工作台：
 
 - **创建（bento 布局）** — brief 输入框 + 结构化键实时识别 chips、内置模板卡横滑画廊，执行模式（全自动 / 分步确认）与产物模式（成片 / 仅脚本）；可选视频比例 / 语言 / 平台；**参考图拖拽上传**（png / jpg / webp，最多 20 张、单张 ≤10 MB——前若干镜头会直接以参考图作为画面素材）
-- **流水线导航** — ①脚本 → ②计费 → ③素材 → ④旁白 → ⑤渲染，五节点 stepper + 派生进度条 + SSE 实时日志；分步确认模式在每个检查点暂停（脚本评审 / 计费确认 / 镜头墙审阅 / 旁白试听 / 成片验收）
+- **流水线导航** — ①脚本 → ②素材 → ③旁白 → ④渲染，四节点 stepper + 派生进度条 + SSE 实时日志；分步确认模式在每个检查点暂停（脚本评审 / 镜头墙审阅 / 旁白试听 / 成片验收）
 - **镜头墙** — 缩略图优先的镜头卡（时长/景别/转场/素材来源角标）、逐镜画面/视频预览与旁白试听、就地编辑抽屉（标题/旁白/画面词/字幕/时长）、单镜「重生成素材 / 重配音」、**拖把手排序**（同步重写分镜/manifest/字幕/脚本并标记成片过期）与**一键批量重试**全部失败镜头
 - **交付** — 影院式在线播放（HTTP Range）、下载、**打开文件夹**（按平台拉起 Finder/资源管理器/xdg-open）
 - **工作台手感** — 侧栏搜索 + 状态筛选（相对时间、运行呼吸点）、日志工具条（关键字过滤 / 跟底开关 / 一键复制 / 展开）、镜头灯箱、玻璃 toast 与确认弹窗、hash 深链（`#/job/<id>` 刷新可恢复）、服务健康灯 + provider 能力徽章、旧项目与损坏目录只读视图
@@ -110,7 +110,7 @@
 | `PUT /api/projects/:id/shots/order` | 镜头拖拽排序（`shotIds` 全量重排，同步分镜/manifest/字幕/脚本并标记成片过期） |
 | `POST /api/projects/:id/shots/:shotId/retry` | 单镜重试（`target: asset` 或 `audio`） |
 | `POST /api/projects/:id/shots/retry-batch` | 批量重试（显式 `shotIds`，缺省=所有无产物镜头，只重排一次素材阶段、到该阶段即收尾） |
-| `GET /api/projects/:id/cost-preview` · `POST /api/projects/:id/rerender` | 计费预览 · 重新排队渲染 |
+| `POST /api/projects/:id/rerender` | 重新排队渲染 |
 | `GET /api/projects/:id/file?path=` · `GET /api/projects/:id/video` · `GET /api/projects/:id/input-image?index=` | 沙箱化工件预览 / Range 流式播放 / 参考图预览 |
 | `POST /api/projects/:id/open-folder` | 拉起宿主文件管理器打开项目目录 |
 | `GET /api/healthz` · `GET /api/skills` · `GET /api/summary` | 存活检查 · 模板卡 · 生效 provider 与默认配置 |

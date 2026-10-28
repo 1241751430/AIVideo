@@ -80,7 +80,6 @@ function bootstrap(): void {
     projectsRoot,
     config,
     providers: defaultProfile,
-    providersFor,
     runner,
     publicDir
   });

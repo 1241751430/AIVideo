@@ -21,7 +21,6 @@ export const STAGE_LABELS: Record<StageKind, string> = {
 /** 检查点中文标签。 */
 export const CHECKPOINT_LABELS: Record<CheckpointKind, string> = {
   script: "脚本评审",
-  cost: "计费确认",
   shots: "镜头墙审阅",
   audio: "旁白试听",
   final: "成片验收"
@@ -39,12 +38,11 @@ export const PHASE_LABELS: Record<JobPhase, string> = {
 
 /**
  * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
- * 功能：把检查点映射到「重做该阶段」应回退的流水线阶段（cost 检查点重做脚本）。
+ * 功能：把检查点映射到「重做该阶段」应回退的流水线阶段。
  */
 export function checkpointToStage(checkpoint: CheckpointKind): StageKind {
   switch (checkpoint) {
     case "script":
-    case "cost":
       return "script";
     case "shots":
       return "assets";
@@ -68,7 +66,7 @@ export function stepperIndex(phase: JobPhase, stage?: StageKind, checkpoint?: Ch
     return STAGES.indexOf(stage);
   }
   if (phase === "awaiting" && checkpoint) {
-    const doneStages: Record<CheckpointKind, number> = { script: 1, cost: 1, shots: 2, audio: 3, final: 4 };
+    const doneStages: Record<CheckpointKind, number> = { script: 1, shots: 2, audio: 3, final: 4 };
     return doneStages[checkpoint];
   }
   return -1;

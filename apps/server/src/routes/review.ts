@@ -2,7 +2,7 @@
  * @file review.ts
  * @author zhangbaohong
  * @date 2026-09-17
- * @description 检查点编辑与重试路由：脚本元信息 PUT、单镜字段 PUT（core 失效矩阵自动清理过期产物）、镜头拖拽排序 PUT /:id/shots/order、单镜素材/配音重试（删文件 + 重新入队对应阶段，复用续跑机制只重做该镜）、批量重试失败镜头（单次重排素材阶段）、计费预览与重新渲染入口。
+ * @description 检查点编辑与重试路由：脚本元信息 PUT、单镜字段 PUT（core 失效矩阵自动清理过期产物）、镜头拖拽排序 PUT /:id/shots/order、单镜素材/配音重试（删文件 + 重新入队对应阶段，复用续跑机制只重做该镜）、批量重试失败镜头（单次重排素材阶段）、重新渲染入口与断点续跑入口。
  * @see https://github.com/1241751430/AIVideo.git
  */
 import { existsSync } from "node:fs";
@@ -20,7 +20,6 @@ import {
   updateScriptMeta,
   updateShot
 } from "@aivideo/core";
-import { buildCostPreview } from "../jobs/cost-preview.js";
 import type { ServerDeps } from "../app.js";
 import type { Job } from "../types.js";
 
@@ -29,7 +28,7 @@ type Guarded = { ok: true; job: Job; projectDir: string } | { ok: false; status:
 
 /**
  * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
- * 功能：构建编辑/重试/计费预览路由（挂载于 /api/projects）。
+ * 功能：构建编辑/重试/重渲/续跑路由（挂载于 /api/projects）。
  * @param deps 服务依赖
  * @returns Hono 子应用
  */
@@ -203,15 +202,6 @@ export function reviewRoutes(deps: ServerDeps): Hono {
     });
   });
 
-  router.get("/:id/cost-preview", (c) => {
-    const guard = guardEditable(deps, c.req.param("id"));
-    if (!guard.ok) {
-      return c.json({ error: guard.error }, guard.status);
-    }
-    const providers = deps.providersFor(guard.job.request.providerProfile);
-    return c.json({ preview: buildCostPreview(guard.projectDir, providers) });
-  });
-
   router.post("/:id/rerender", (c) => {
     const guard = guardEditable(deps, c.req.param("id"));
     if (!guard.ok) {
@@ -227,10 +217,10 @@ export function reviewRoutes(deps: ServerDeps): Hono {
     if (!guard.ok) {
       return c.json({ error: guard.error }, guard.status);
     }
-    // 失败/取消后从断点继续：已完成的阶段由输入指纹自动跳过，所以续跑不会重复付费；
+    // 失败/取消后从断点继续：已完成的阶段由输入指纹自动跳过，所以续跑不会重复调用远端模型；
     // 不传终点，让它按任务自身的 execMode 走完（guided 会照常停在下一个检查点）。
     const queued = deps.runner.resume(guard.job.id);
-    return queued ? c.json({ ok: true }) : c.json({ error: "Only failed or cancelled tasks can be resumed" }, 409);
+    return queued ? c.json({ ok: true }) : c.json({ error: "只有失败或已取消的任务可以续跑" }, 409);
   });
 
   return router;

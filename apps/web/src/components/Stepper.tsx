@@ -2,10 +2,10 @@
  * @file Stepper.tsx
  * @author zhangbaohong
  * @date 2026-09-17
- * @description 流水线进度 stepper：脚本→素材→旁白→渲染四节点，guided 模式在脚本后加计费检查点菱形闸；节点间渐变连接线按完成度填充，底部进度条与百分比由前端依据阶段与镜头产物完成度估算（SSE 无服务端进度字段，文案与 tooltip 均如实标注）。
+ * @description 流水线进度 stepper：脚本→素材→旁白→渲染四节点；节点间渐变连接线按完成度填充，底部进度条与百分比由前端依据阶段与镜头产物完成度估算（SSE 无服务端进度字段，文案与 tooltip 均如实标注）。
  * @see https://github.com/1241751430/AIVideo.git
  */
-import { Check, TriangleAlert, Zap } from "lucide-react";
+import { Check, TriangleAlert } from "lucide-react";
 import type { JobDto, ShotArtifactEntry } from "@aivideo/shared";
 import { STAGES, STAGE_LABELS, stepperIndex } from "../labels";
 
@@ -21,8 +21,6 @@ interface NodeSpec {
   key: string;
   label: string;
   cls: "done" | "current" | "error" | "";
-  /** 计费闸用菱形节点呈现。 */
-  gate?: boolean;
 }
 
 /**
@@ -52,7 +50,6 @@ function deriveProgress(job: JobDto, shots: ShotArtifactEntry[]): { percent: num
   if (job.phase === "awaiting" && job.checkpoint) {
     const byCheckpoint: Record<string, { percent: number; note: string }> = {
       script: { percent: 8, note: "等待脚本评审" },
-      cost: { percent: 10, note: "等待计费确认" },
       shots: { percent: 70, note: "等待镜头墙审阅" },
       audio: { percent: 90, note: "等待旁白试听" },
       final: { percent: 97, note: "等待成片验收" }
@@ -88,31 +85,17 @@ function deriveProgress(job: JobDto, shots: ShotArtifactEntry[]): { percent: num
 
 /**
  * @author zhangbaohong  @date 2026-10-08  @see https://github.com/1241751430/AIVideo.git
- * 功能：渲染五/四节点进度条与派生进度（guided 模式含计费闸）。
+ * 功能：渲染四节点进度条与派生进度。
  */
 export default function Stepper({ job, shots }: Props) {
   // 失败/取消时 job.stage 已被清空，断点阶段由 breakStage 承载。
   const current = stepperIndex(job.phase, job.stage ?? job.breakStage, job.checkpoint);
-  // 计费闸不是 guided 专有：auto 模式下存在远端提供者时同样在脚本后停一次，
-  // 所以只要任务真的停在了 cost 检查点，闸节点就必须出现，否则进度条会显示成「已越过脚本」。
-  const showGate = job.execMode === "guided" || job.checkpoint === "cost";
   const nodes: NodeSpec[] = [];
   STAGES.forEach((stage, index) => {
     const interrupted = job.phase === "failed" || job.phase === "cancelled";
     const cls: NodeSpec["cls"] =
       index < current ? "done" : index === current ? (interrupted ? "error" : "current") : "";
     nodes.push({ key: stage, label: STAGE_LABELS[stage], cls });
-    if (showGate && index === 0) {
-      // 闸的位置随模式而变：guided 在脚本评审之后才出现，auto 在脚本阶段一完成就拦。
-      // 所以「已过闸」的判据不同，否则 auto 跑过闸后闸节点会一直显示成未完成。
-      const gateDone = job.execMode === "guided" ? current >= 2 : current >= 1;
-      nodes.push({
-        key: "cost",
-        label: "计费",
-        gate: true,
-        cls: job.checkpoint === "cost" ? "current" : gateDone ? "done" : ""
-      });
-    }
   });
   const { percent, note } = deriveProgress(job, shots);
 
@@ -124,14 +107,12 @@ export default function Stepper({ job, shots }: Props) {
           return (
             <span key={node.key} style={{ display: "contents" }}>
               {index > 0 && <span className={`link${prevDone ? " filled" : ""}`} aria-hidden="true" />}
-              <span className={`node ${node.cls}${node.gate ? " gate" : ""}`}>
+              <span className={`node ${node.cls}`}>
                 <span className="node-dot">
                   {node.cls === "done" ? (
                     <Check size={10} aria-hidden="true" />
                   ) : node.cls === "error" ? (
                     <TriangleAlert size={10} aria-hidden="true" />
-                  ) : node.gate ? (
-                    <Zap size={10} aria-hidden="true" />
                   ) : null}
                 </span>
                 <span className="node-label">{node.label}</span>

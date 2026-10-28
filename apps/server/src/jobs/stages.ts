@@ -80,27 +80,13 @@ export function toGenerateRequest(job: Job): GenerateRequest {
 
 /**
  * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
- * 功能：是否存在任何远端（计费）提供者——guided 模式据此决定是否插入计费检查点。
- * @param providers 当前装配的提供者集合
- */
-export function hasRemoteProviders(providers: ProviderSelection): boolean {
-  return Boolean(
-    (providers.text && providers.text.isRemote) ||
-      (providers.image && providers.image.isRemote) ||
-      (providers.video && providers.video.isRemote) ||
-      (providers.speech && providers.speech.isRemote)
-  );
-}
-
-/**
- * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
  * 功能：真实流水线四阶段：script 阶段按输入指纹判断是否复用已落盘分镜（无指纹的老项目仍按产物是否存在）；
  * assets/audio 由 core 逐镜按指纹复用；render 在「指纹 match 且成片仍存在」时跳过，用 AbortSignal 杀子进程并把 ffmpeg 的 Clip 进度行转成日志。
  */
 export const defaultStages: StageRunner = {
   /**
    * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
-   * 功能：脚本阶段：选择 Skill、生成脚本与分镜并 materialize 落盘；输入指纹未变且产物仍在时跳过（重启续跑不重复付费），
+   * 功能：脚本阶段：选择 Skill、生成脚本与分镜并 materialize 落盘；输入指纹未变且产物仍在时跳过（重启续跑不重复调用远端模型），
    * 除非 job.force 显式要求重跑——「要不要重做」由调用方声明，产物存在只是必要条件。
    */
   async runScript(ctx) {

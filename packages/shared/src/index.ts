@@ -2,7 +2,7 @@
  * @file index.ts
  * @author zhangbaohong
  * @date 2026-09-17
- * @description 工作台前后端共享的线协议类型：任务状态机、事件记录、项目列表、工件快照、计费预览与系统摘要——apps/server 与 apps/web 以同一契约对话，任何一侧改形状都会在此处编译期暴露。
+ * @description 工作台前后端共享的线协议类型：任务状态机、事件记录、项目列表、工件快照与系统摘要——apps/server 与 apps/web 以同一契约对话，任何一侧改形状都会在此处编译期暴露。
  * @see https://github.com/1241751430/AIVideo.git
  */
 
@@ -15,8 +15,11 @@ export type ExecMode = "auto" | "guided";
 /** 流水线阶段（与 job.json 状态机的 running.stage 对应）。 */
 export type StageKind = "script" | "assets" | "audio" | "render";
 
-/** guided 模式的检查点：脚本评审、计费确认、镜头墙、旁白试听、成片验收。 */
-export type CheckpointKind = "script" | "cost" | "shots" | "audio" | "final";
+/** guided 模式的检查点：脚本评审、镜头墙、旁白试听、成片验收（与四个阶段一一对应）。 */
+export type CheckpointKind = "script" | "shots" | "audio" | "final";
+
+/** provider 能力维度：文案 / 图片 / 视频 / 旁白。系统摘要与能力徽章共用这一组键。 */
+export type Capability = "text" | "image" | "video" | "speech";
 
 /** 任务状态机的宏阶段。 */
 export type JobPhase = "queued" | "running" | "awaiting" | "done" | "failed" | "cancelled";
@@ -138,22 +141,6 @@ export interface ArtifactsSnapshot {
   previousVideoFile: string | null;
 }
 
-/** 单个能力的计费展示项。 */
-export interface CostPreviewItem {
-  capability: "text" | "image" | "video" | "speech";
-  id: string;
-  remote: boolean;
-}
-
-/** 计费预览结果（供 cost 检查点卡与开始前的确认展示）。 */
-export interface CostPreview {
-  items: CostPreviewItem[];
-  /** 是否存在任何远端计费能力（全本地时 UI 可省略计费卡）。 */
-  anyRemote: boolean;
-  /** 预计逐镜生成的镜头数（分镜已存在时给出）。 */
-  billableShots: number;
-}
-
 /** GET /api/skills 模板卡。 */
 export interface SkillCard {
   id: string;
@@ -179,7 +166,7 @@ export interface SummaryResponse {
   activeProfile: string;
   profiles: string[];
   defaults: DefaultsInfo;
-  providers: Record<CostPreviewItem["capability"], { id: string; remote: boolean } | null>;
+  providers: Record<Capability, { id: string; remote: boolean } | null>;
   render: { gpu: boolean };
 }
 

@@ -61,7 +61,7 @@ Verify: `ffmpeg -version && ffprobe -version`
 | `./aivideo cleanup --keep-days 7` | Remove expired projects |
 | `./aivideo init` | Manually initialize config (usually automatic) |
 
-`create` is a terminal TUI (@clack): arrow keys to choose, Enter to confirm, Ctrl+C to cancel. Leave the first question blank for advanced step-by-step mode; inside text steps type `/back` to revisit the previous question or `/cancel` to abort. A billing summary (selected models, remote vs. local) is shown before generation starts. Running plain `generate` with no input in a terminal offers to resume an existing project.
+`create` is a terminal TUI (@clack): arrow keys to choose, Enter to confirm, Ctrl+C to cancel. Leave the first question blank for advanced step-by-step mode; inside text steps type `/back` to revisit the previous question or `/cancel` to abort. A configuration summary (selected models, local vs. remote) is shown before generation starts. Running plain `generate` with no input in a terminal offers to resume an existing project.
 
 ## Shot-Wall Workbench (Web UI)
 
@@ -72,7 +72,7 @@ Verify: `ffmpeg -version && ffprobe -version`
 A local-first, no-login dark workbench built on the same pipeline the CLI uses:
 
 - **Create (bento)** — brief box with live structured-key chips, built-in skill card gallery, execution mode (auto / guided step-by-step checkpoints) and output mode (video / script-only); pick aspect ratio / language / platform; **drag-and-drop reference images** (png / jpg / webp, ≤20 files, ≤10 MB each — the first shots use them as scene assets)
-- **Pipeline stepper** — ①script → ②billing → ③assets → ④narration → ⑤render with a derived progress bar and live SSE logs; guided mode pauses at each checkpoint (script review / cost confirm / shot wall / narration preview / final accept)
+- **Pipeline stepper** — ①script → ②assets → ③narration → ④render with a derived progress bar and live SSE logs; guided mode pauses at each checkpoint (script review / shot wall / narration preview / final accept)
 - **Shot wall** — thumbnail-first cards with duration / shot-type / transition / asset badges, per-shot video/image preview and narration audition, inline editing drawer (title / narration / visual prompt / caption / duration), single-shot regeneration ("retry asset / retry audio"), **drag-handle reordering** (rewrites storyboard, manifest, captions and marks the video stale) and **one-click batch retry** of all failed shots
 - **Delivery** — cinema-style in-browser player (HTTP Range), download, and **Open Folder** which launches Finder/Explorer/xdg-open on the project directory
 - **Workbench ergonomics** — sidebar search + status filters with relative timestamps, log toolbar (keyword filter / follow-bottom toggle / copy-all / expand), shot lightbox, glass toasts and confirm dialogs, hash deep-links (`#/job/<id>`) that survive refresh, a live health light + provider badges, and read-only views for legacy / corrupt project dirs
@@ -110,7 +110,7 @@ Notes:
 | `PUT /api/projects/:id/shots/order` | Reorder shots (`shotIds` permutation; rewrites storyboard/manifest/captions/script, marks video stale) |
 | `POST /api/projects/:id/shots/:shotId/retry` | Single-shot retry: `target: asset` or `audio` |
 | `POST /api/projects/:id/shots/retry-batch` | Batch retry (explicit `shotIds` or default: every shot with no assets) — one re-queue of the assets stage, which finishes there and leaves the video marked stale |
-| `GET /api/projects/:id/cost-preview` · `POST /api/projects/:id/rerender` | Billing gate data · re-queue render |
+| `POST /api/projects/:id/rerender` | Re-queue render |
 | `GET /api/projects/:id/file?path=` · `GET /api/projects/:id/video` · `GET /api/projects/:id/input-image?index=` | Sandboxed artifact preview / Range video stream / uploaded reference image |
 | `POST /api/projects/:id/open-folder` | Open project dir in the host file manager |
 | `GET /api/healthz` · `GET /api/skills` · `GET /api/summary` | Liveness · skill cards · active providers/defaults |

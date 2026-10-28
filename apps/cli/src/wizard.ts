@@ -2,7 +2,7 @@
  * @file wizard.ts
  * @author zhangbaohong
  * @date 2026-09-17
- * @description 交互式 create 向导（@clack TUI）：快速/高级两条流程收集生成选项并做计费确认
+ * @description 交互式 create 向导（@clack TUI）：快速/高级两条流程收集生成选项并在提交前展示一次配置确认
  * @see https://github.com/1241751430/AIVideo.git
  */
 import * as p from "@clack/prompts";
@@ -61,7 +61,7 @@ export async function runCreateWizard(cwd: string, config: AppConfig): Promise<W
       return cancelWizard();
     }
 
-    if (!(await confirmBilling(config, options))) {
+    if (!(await confirmPlan(config, options))) {
       return cancelWizard();
     }
     p.outro("开始生成视频...");
@@ -304,16 +304,16 @@ async function collectImages(cwd: string): Promise<string[] | undefined> {
 }
 
 // ---------------------------------------------------------------------------
-// Billing confirmation page
+// Plan confirmation page
 // ---------------------------------------------------------------------------
 
 /**
  * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
- * 功能：渲染配置与计费确认页，仅当用户明确确认时返回 true
- * @param config 全局应用配置（用于装配提供者展示计费项）
+ * 功能：渲染本次生成的配置摘要页，仅当用户明确确认时返回 true
+ * @param config 全局应用配置（用于装配提供者展示）
  * @param options 向导收集到的生成选项
  */
-async function confirmBilling(config: AppConfig, options: WizardOptions): Promise<boolean> {
+async function confirmPlan(config: AppConfig, options: WizardOptions): Promise<boolean> {
   const providers = createProviderSelection(config);
   const lines: string[] = [];
   const push = (label: string, value: string | undefined) => {
@@ -340,13 +340,12 @@ async function confirmBilling(config: AppConfig, options: WizardOptions): Promis
   }
   const entries = providerEntries(providers);
   for (const [capability, provider, remote] of entries) {
-    lines.push(`${capability} 模型：${provider.id}${remote ? "（远程调用，按量计费）" : "（本地免费）"}`);
+    lines.push(`${capability} 模型：${provider.id}${remote ? "（远端）" : "（本地）"}`);
   }
 
-  p.note(lines.join("\n"), "即将生成视频（请确认配置与计费）");
-  const anyRemote = entries.some((entry) => entry[2]);
+  p.note(lines.join("\n"), "即将生成视频（请确认配置）");
   const confirmed = await p.confirm({
-    message: anyRemote ? "图像/视频生成会调用远程计费接口，确认开始？" : "确认开始生成？",
+    message: "确认开始生成？",
     initialValue: true,
     active: "开始生成",
     inactive: "取消"
@@ -359,7 +358,7 @@ async function confirmBilling(config: AppConfig, options: WizardOptions): Promis
 
 /**
  * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
- * 功能：把四类已选提供者整理为 [能力名, 提供者, 是否远程计费] 列表供确认页展示
+ * 功能：把四类已选提供者整理为 [能力名, 提供者, 是否远端] 列表供确认页展示
  */
 function providerEntries(
   providers: ProviderSelection

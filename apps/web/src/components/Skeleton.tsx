@@ -2,7 +2,7 @@
  * @file Skeleton.tsx
  * @author zhangbaohong
  * @date 2026-10-08
- * @description 骨架屏占位块：渐变微光的矩形条，供任务加载、计费预览拉取等异步空窗使用，取代裸「加载中…」文本。
+ * @description 骨架屏占位块：渐变微光的矩形条，供任务详情、技能列表等异步空窗使用，取代裸「加载中…」文本。
  * @see https://github.com/1241751430/AIVideo.git
  */
 

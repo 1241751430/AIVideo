@@ -2,7 +2,7 @@
  * @file workflow.test.ts
  * @author zhangbaohong
  * @date 2026-09-17
- * @description workflow/config/skills 的单元测试：技能自动选择、请求校验、产物生成与归一、SRT/Markdown 输出、过期项目清理，以及 prepareGeneratedAssets 的复用、越界防护、参考图混排等计费安全场景。
+ * @description workflow/config/skills 的单元测试：技能自动选择、请求校验、产物生成与归一、SRT/Markdown 输出、过期项目清理，以及 prepareGeneratedAssets 的复用、越界防护、参考图混排等远端资产安全场景。
  * @see https://github.com/1241751430/AIVideo.git
  */
 

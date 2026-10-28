@@ -90,7 +90,6 @@ export function makeTestApp(
     projectsRoot,
     config,
     providers: {},
-    providersFor: options.providersFor ?? (() => ({})),
     runner,
     publicDir: options.publicDir ?? resolve(here, join("..", "public"))
   });

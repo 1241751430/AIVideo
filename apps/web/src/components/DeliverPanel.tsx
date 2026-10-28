@@ -32,8 +32,8 @@ export default function DeliverPanel({
   const videoReady = artifacts?.videoReady ?? false;
   const videoStale = job.result?.videoStale === true;
 
-  // 重渲只跑 ffmpeg、不调用任何远端提供者，因此不走计费闸（见 useCostGate）；
-  // 但它是覆盖式操作：会重写现有成片，且耗时——仍要人确认一次。
+  // 重渲只跑 ffmpeg、不调用任何远端提供者，所以很快；
+  // 但它是覆盖式操作：会重写现有成片，仍要人确认一次。
   const rerender = (): void => {
     setConfirming(false);
     setBusy(true);
@@ -156,7 +156,7 @@ export default function DeliverPanel({
       <ConfirmDialog
         open={confirming}
         title="重新渲染成片"
-        message="将强制重跑渲染阶段并覆盖当前成片。素材与配音不会重新生成，不产生远端费用；当前成片会保留一份为 final.prev.mp4，覆盖后仍可在此下载。确认继续？"
+        message="将强制重跑渲染阶段并覆盖当前成片。素材与配音不会重新生成；当前成片会保留一份为 final.prev.mp4，覆盖后仍可在此下载。确认继续？"
         confirmLabel="重新渲染"
         danger={false}
         busy={busy}

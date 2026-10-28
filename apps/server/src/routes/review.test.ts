@@ -2,14 +2,13 @@
  * @file review.test.ts
  * @author zhangbaohong
  * @date 2026-09-17
- * @description 检查点编辑与重试路由测试：并发闸门（running/queued 拒绝、cancelled 放行）、脚本元信息 PUT、单镜编辑失效矩阵（旁白删 wav、画面词删资产、字幕仅标失效）、单镜重试（删文件+重入对应阶段）、镜头拖拽排序 PUT order、批量重试 retry-batch（缺省失败镜头/显式指定/闸门）、计费预览与重新渲染、失败/取消后从断点继续（resume）。
+ * @description 检查点编辑与重试路由测试：并发闸门（running/queued 拒绝、cancelled 放行）、脚本元信息 PUT、单镜编辑失效矩阵（旁白删 wav、画面词删资产、字幕仅标失效）、单镜重试（删文件+重入对应阶段）、镜头拖拽排序 PUT order、批量重试 retry-batch（缺省失败镜头/显式指定/闸门）、重新渲染、失败/取消后从断点继续（resume）。
  * @see https://github.com/1241751430/AIVideo.git
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { ProviderSelection } from "@aivideo/core";
 import { readRenderManifestFile } from "@aivideo/core";
 import type { StageRunner } from "../jobs/stages.js";
 import { createDoneJob, hangScriptStages, makeTestApp, waitUntil } from "../testkit.js";
@@ -271,53 +270,6 @@ test("POST shots/:shotId/retry 删文件并重入对应阶段", async () => {
       body: JSON.stringify({ target: "asset" })
     });
     assert.equal(noManifest.status, 404, "缺 manifest → 404");
-  } finally {
-    ctx.cleanup();
-  }
-});
-
-test("GET cost-preview 汇总远端能力与计费镜头数", async () => {
-  // 造已完成任务时不能带远端提供者（否则 auto 模式的计费闸会把它停在 cost），
-  // 而预览接口在请求时按 providersFor 现算，所以造完任务再切换即可。
-  let providers: ProviderSelection = {};
-  const providersFor = (): ProviderSelection => providers;
-  const ctx = makeTestApp({ providersFor });
-  try {
-    const jobId = await createDoneJob(ctx);
-    providers = {
-      image: { id: "local-image", isRemote: false },
-      video: { id: "ark-video", isRemote: true }
-    } as unknown as ProviderSelection;
-    const dir = join(ctx.projectsRoot, jobId);
-    putJson(dir, "storyboard.json", {
-      shots: [
-        { id: "shot-1", narration: "a", durationSeconds: 3 },
-        { id: "shot-2", narration: "b", durationSeconds: 4 }
-      ]
-    });
-    putJson(dir, "render-manifest.json", { shots: [{ shotId: "shot-1" }, { shotId: "shot-2" }] });
-    putJson(dir, "brief.json", { theme: "t" });
-
-    const res = await ctx.app.request(`/api/projects/${jobId}/cost-preview`);
-    assert.equal(res.status, 200);
-    const { preview } = (await res.json()) as {
-      preview: { items: Array<{ capability: string; remote: boolean }>; anyRemote: boolean; billableShots: number };
-    };
-    assert.deepEqual(
-      preview.items,
-      [
-        { capability: "image", id: "local-image", remote: false },
-        { capability: "video", id: "ark-video", remote: true }
-      ]
-    );
-    assert.equal(preview.anyRemote, true);
-    assert.equal(preview.billableShots, 2);
-
-    rmSync(join(dir, "storyboard.json"));
-    const empty = (await (await ctx.app.request(`/api/projects/${jobId}/cost-preview`)).json()) as {
-      preview: { billableShots: number };
-    };
-    assert.equal(empty.preview.billableShots, 0, "分镜缺失按 0 计");
   } finally {
     ctx.cleanup();
   }

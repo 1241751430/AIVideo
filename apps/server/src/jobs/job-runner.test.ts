@@ -2,7 +2,7 @@
  * @file job-runner.test.ts
  * @author zhangbaohong
  * @date 2026-09-17
- * @description 任务引擎测试：注入假阶段执行器验证 auto 全链、guided 五检查点推进与计费闸插入、redo-stage、取消（排队/运行中/等待中）、boot 恢复与损坏隔离、阶段失败落 failed 并记录断点、resume 从断点续跑。
+ * @description 任务引擎测试：注入假阶段执行器验证 auto 全链、guided 四检查点推进、redo-stage、取消（排队/运行中/等待中）、boot 恢复与损坏隔离、阶段失败落 failed 并记录断点、resume 从断点续跑。
  * @see https://github.com/1241751430/AIVideo.git
  */
 import { test } from "node:test";
@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AppConfig, ProviderSelection } from "@aivideo/core";
+import type { AppConfig } from "@aivideo/core";
 import type { JobRequest, StageKind } from "../types.js";
 import { JobRunner } from "./job-runner.js";
 import { writeJob } from "./job-store.js";
@@ -108,7 +108,7 @@ async function waitUntil(predicate: () => boolean, label: string, timeoutMs = 20
  * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
  * 功能：创建带临时项目根目录与假阶段的 runner。
  */
-function makeRunner(options: { stages: StageRunner; providersFor?: (profile?: string) => ProviderSelection }): {
+function makeRunner(options: { stages: StageRunner }): {
   runner: JobRunner;
   projectsRoot: string;
   cleanup: () => void;
@@ -119,7 +119,6 @@ function makeRunner(options: { stages: StageRunner; providersFor?: (profile?: st
     projectsRoot,
     config: makeConfig(),
     providers: {},
-    providersFor: options.providersFor,
     stages: options.stages
   });
   return { runner, projectsRoot, cleanup: () => rmSync(projectsRoot, { recursive: true, force: true }) };
@@ -140,7 +139,7 @@ test("auto 模式直跑四阶段至 done 并落盘", async () => {
   }
 });
 
-test("guided 模式逐检查点推进（本地提供者不插入计费闸）", async () => {
+test("guided 模式逐检查点推进：脚本 → 镜头墙 → 旁白 → 成片", async () => {
   const { stages, calls } = makeFakeStages();
   const { runner, cleanup } = makeRunner({ stages });
   try {
@@ -157,80 +156,6 @@ test("guided 模式逐检查点推进（本地提供者不插入计费闸）", a
     assert.deepEqual(calls, ["script", "assets", "audio", "render"]);
     assert.equal(runner.review(job.id, "approve"), true);
     assert.equal(runner.get(job.id)?.phase, "done");
-  } finally {
-    cleanup();
-  }
-});
-
-test("guided 在存在远端提供者时插入 cost 检查点", async () => {
-  const { stages } = makeFakeStages();
-  const remote: ProviderSelection = { video: { id: "remote-video", isRemote: true } as ProviderSelection["video"] };
-  const { runner, cleanup } = makeRunner({ stages, providersFor: () => remote });
-  try {
-    const job = runner.create({ execMode: "guided", request: makeRequest() });
-    await waitUntil(() => runner.get(job.id)?.checkpoint === "script", "awaiting script");
-    assert.equal(runner.review(job.id, "approve"), true);
-    assert.equal(runner.get(job.id)?.phase, "awaiting");
-    assert.equal(runner.get(job.id)?.checkpoint, "cost");
-    assert.equal(runner.review(job.id, "approve"), true);
-    await waitUntil(() => runner.get(job.id)?.checkpoint === "shots", "awaiting shots");
-    assert.equal(runner.get(job.id)?.phase, "awaiting");
-  } finally {
-    cleanup();
-  }
-});
-
-test("auto 模式在存在远端提供者时也停在 cost 闸：确认前不得进入付费阶段", async () => {
-  const { stages, calls } = makeFakeStages();
-  const remote: ProviderSelection = { video: { id: "remote-video", isRemote: true } as ProviderSelection["video"] };
-  const { runner, cleanup } = makeRunner({ stages, providersFor: () => remote });
-  try {
-    const job = runner.create({ execMode: "auto", request: makeRequest() });
-    await waitUntil(() => runner.get(job.id)?.phase === "awaiting", "awaiting cost");
-    assert.equal(runner.get(job.id)?.checkpoint, "cost");
-    assert.deepEqual(calls, ["script"], "脚本落盘即停，素材/旁白/渲染都还没开始");
-    assert.equal(runner.get(job.id)?.stage, undefined);
-
-    assert.equal(runner.review(job.id, "approve"), true);
-    await waitUntil(() => runner.get(job.id)?.phase === "done", "done after approve");
-    assert.deepEqual(calls, ["script", "assets", "audio", "render"], "确认后一次跑完，不再插别的闸");
-    assert.equal(runner.get(job.id)?.result?.videoStale, false);
-  } finally {
-    cleanup();
-  }
-});
-
-test("auto 模式在纯本地提供者下不插 cost 闸，一次跑完", async () => {
-  const { stages, calls } = makeFakeStages();
-  const local: ProviderSelection = {
-    image: { id: "local-image", isRemote: false } as ProviderSelection["image"],
-    video: { id: "local-video", isRemote: false } as ProviderSelection["video"]
-  };
-  const { runner, cleanup } = makeRunner({ stages, providersFor: () => local });
-  try {
-    const job = runner.create({ execMode: "auto", request: makeRequest() });
-    await waitUntil(() => runner.get(job.id)?.phase === "done", "done");
-    assert.deepEqual(calls, ["script", "assets", "audio", "render"]);
-    assert.equal(runner.get(job.id)?.checkpoint, undefined);
-  } finally {
-    cleanup();
-  }
-});
-
-test("auto 在 cost 闸取消后可续跑：断点回到 script，重启后重新停在同一道闸", async () => {
-  const { stages, calls } = makeFakeStages();
-  const remote: ProviderSelection = { video: { id: "remote-video", isRemote: true } as ProviderSelection["video"] };
-  const { runner, cleanup } = makeRunner({ stages, providersFor: () => remote });
-  try {
-    const job = runner.create({ execMode: "auto", request: makeRequest() });
-    await waitUntil(() => runner.get(job.id)?.checkpoint === "cost", "awaiting cost");
-    assert.equal(runner.cancel(job.id), true);
-    assert.equal(runner.get(job.id)?.breakStage, "script", "cost 闸由脚本阶段到达");
-
-    assert.equal(runner.resume(job.id), true);
-    await waitUntil(() => runner.get(job.id)?.checkpoint === "cost", "awaiting cost again");
-    assert.deepEqual(calls, ["script", "script"], "续跑重走脚本阶段（靠指纹复用），不跳过计费确认");
-    assert.equal(runner.get(job.id)?.phase, "awaiting");
   } finally {
     cleanup();
   }
@@ -513,8 +438,7 @@ test("script 产物模式：auto 在脚本阶段后直接 done，不进入渲染
 
 test("script 产物模式：guided 在 script 检查点 approve 后即 done", async () => {
   const { stages, calls } = makeFakeStages();
-  const remote: ProviderSelection = { video: { id: "remote-video", isRemote: true } as ProviderSelection["video"] };
-  const { runner, cleanup } = makeRunner({ stages, providersFor: () => remote });
+  const { runner, cleanup } = makeRunner({ stages });
   try {
     const request = makeRequest("只要脚本");
     request.generationMode = "script";

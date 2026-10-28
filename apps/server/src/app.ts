@@ -24,8 +24,6 @@ export interface ServerDeps {
   projectsRoot: string;
   config: AppConfig;
   providers: ProviderSelection;
-  /** 按 provider profile 装配提供者（计费预览与素材阶段共用口径）。 */
-  providersFor: (profile?: string) => ProviderSelection;
   runner: JobRunner;
   /** public/ 静态目录绝对路径。 */
   publicDir: string;

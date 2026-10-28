@@ -2,7 +2,7 @@
  * @file system.ts
  * @author zhangbaohong
  * @date 2026-09-17
- * @description 系统信息路由：/api/healthz 健康检查、/api/skills 内置模板列表、/api/summary 当前 profile 与提供者的远端/本地计费属性。
+ * @description 系统信息路由：/api/healthz 健康检查、/api/skills 内置模板列表、/api/summary 当前 profile、默认配置与四类提供者的本地/远端属性。
  * @see https://github.com/1241751430/AIVideo.git
  */
 import { Hono } from "hono";

@@ -446,7 +446,7 @@ export default function CreateCard({ summary, skills, onCreated }: Props) {
             当前 provider：文本 {summary.providers.text?.id ?? "本地"} ｜ 图像 {summary.providers.image?.id ?? "无"} ｜
             视频 {summary.providers.video?.id ?? "无"} ｜ 配音 {summary.providers.speech?.id ?? "无"}
             {(summary.providers.image?.remote || summary.providers.video?.remote || summary.providers.speech?.remote) &&
-              "（含远端计费能力）"}
+              "（含远端提供者）"}
             {!summary.render.gpu && "（渲染未启用 GPU）"}
           </div>
         )}

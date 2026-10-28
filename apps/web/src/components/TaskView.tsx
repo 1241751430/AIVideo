@@ -2,7 +2,7 @@
  * @file TaskView.tsx
  * @author zhangbaohong
  * @date 2026-09-17
- * @description 任务详情视图：bento 任务头（状态徽标 + 参数 chips + 参考图条 + 派生进度 stepper）、SSE 断线提示条、图标化操作组（刷新/取消/删除走确认框与 toast）；组合检查点操作条、计费卡、脚本编辑器、镜头墙、交付面板与运行日志，订阅 SSE 并在阶段/检查点变化后刷新工件快照。
+ * @description 任务详情视图：bento 任务头（状态徽标 + 参数 chips + 参考图条 + 派生进度 stepper）、SSE 断线提示条、图标化操作组（刷新/取消/删除走确认框与 toast）；组合检查点操作条、脚本编辑器、镜头墙、交付面板与运行日志，订阅 SSE 并在阶段/检查点变化后刷新工件快照。
  * @see https://github.com/1241751430/AIVideo.git
  */
 import { useCallback, useEffect, useState } from "react";
@@ -14,7 +14,6 @@ import { useToast } from "../hooks/useToasts";
 import CheckpointBar from "./CheckpointBar";
 import Chip from "./Chip";
 import ConfirmDialog from "./ConfirmDialog";
-import CostCard from "./CostCard";
 import DeliverPanel from "./DeliverPanel";
 import InputRefs from "./InputRefs";
 import LogPanel from "./LogPanel";
@@ -182,7 +181,7 @@ export default function TaskView({ jobId, onDeleted, onChanged }: Props) {
           <div className="stale-bar" role="status">
             <TriangleAlert size={14} aria-hidden="true" />
             任务在{STAGE_LABELS[job.breakStage ?? "script"]}阶段
-            {job.phase === "failed" ? "中断" : "被取消"}，已完成的阶段会按输入指纹跳过，继续不会重复付费。
+            {job.phase === "failed" ? "中断" : "被取消"}，已完成的阶段会按输入指纹跳过，继续不会重复调用远端模型。
             <button className="primary" disabled={resuming} onClick={doResume}>
               <Play size={13} aria-hidden="true" />
               {resuming ? "入队中…" : `从${STAGE_LABELS[job.breakStage ?? "script"]}继续`}
@@ -205,7 +204,6 @@ export default function TaskView({ jobId, onDeleted, onChanged }: Props) {
       />
 
       <CheckpointBar job={job} onChanged={handleMutated} />
-      {job.phase === "awaiting" && job.checkpoint === "cost" && <CostCard jobId={job.id} />}
 
       {script != null && (
         <ScriptEditor

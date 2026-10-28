@@ -672,7 +672,7 @@ async function buildScriptPackage(
   if (textProvider) {
     try {
       const raw = await textProvider.generateText({
-        systemPrompt: buildScriptSystemPrompt(skill),
+        systemPrompt: buildScriptSystemPrompt(skill, brief.platform),
         userPrompt: buildScriptUserPrompt(brief)
       });
       const parsed = safeParseJson<ScriptPackage>(raw);
@@ -689,15 +689,19 @@ async function buildScriptPackage(
 
 /**
  * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
- * 功能：拼装脚本生成的系统提示词：注入技能的语气/文案规则/镜头规则，并声明必须返回的 JSON 字段结构。
+ * 功能：拼装脚本生成的系统提示词：注入技能的语气/文案规则/镜头规则与该技能为当前平台准备的平台规则，并声明必须返回的 JSON 字段结构。
+ * @param skill 选中的技能
+ * @param platform 发布平台；该技能没有为它写规则时不注入平台段，提示词与加入平台前完全一致
  */
-function buildScriptSystemPrompt(skill: SkillDefinition): string {
+function buildScriptSystemPrompt(skill: SkillDefinition, platform: string): string {
+  const platformRules = skill.platformRules[platform] ?? [];
   return [
     "你是一名短视频编导。",
     `当前 skill: ${skill.id} / ${skill.name}`,
     `文案风格：${skill.tone}`,
     `文案规则：${skill.copyRules.join("；")}`,
     `镜头规则：${skill.shotRules.join("；")}`,
+    ...(platformRules.length > 0 ? [`发布平台：${platform}`, `平台规则：${platformRules.join("；")}`] : []),
     "返回 JSON，字段必须包含：title, summary, openingHook, voiceover, scenes, bgmStyle, cta, hashtags。",
     "scenes 是数组；每个元素必须包含 id, heading, narration, visualPrompt, shotType, durationSeconds, caption。"
   ].join("\n");
@@ -727,6 +731,7 @@ function buildScriptUserPrompt(brief: BriefDocument): string {
 /**
  * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
  * 功能：离线规则生成脚本包：按时长选择镜头数并均分时长，套用技能的 hooks/ctas/文案与镜头规则逐镜拼出旁白、字幕与提示词。
+ * 平台规则并入文案规则轮转：平台差异不再只体现为一个 hashtag，而是真的改变旁白写法；该技能没为当前平台写规则时行为与加入前一致。
  */
 function buildLocalScriptPackage(brief: BriefDocument, skill: SkillDefinition): ScriptPackage {
   const shotCount = computeShotCount(brief.durationSeconds);
@@ -735,13 +740,14 @@ function buildLocalScriptPackage(brief: BriefDocument, skill: SkillDefinition): 
   const openingHook = pickByIndex(skill.hooks, 0);
   const cta = pickByIndex(skill.ctas, 0);
   const focus = brief.content ?? brief.theme ?? "核心卖点";
+  const copyRules = [...skill.copyRules, ...(skill.platformRules[brief.platform] ?? [])];
 
   const scenes = durations.map((durationSeconds, index) => {
     const step = index + 1;
     const heading = buildSceneHeading(step, shotCount);
     const narration = [
       step === 1 ? openingHook : `第 ${step} 个重点直接展开`,
-      `${focus} 的关键点是 ${pickByIndex(skill.copyRules, index)}`,
+      `${focus} 的关键点是 ${pickByIndex(copyRules, index)}`,
       `画面呈现建议：${pickByIndex(skill.shotRules, index)}。`
     ].join("，");
     const caption = index === shotCount - 1 ? cta : `重点 ${step}`;

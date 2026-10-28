@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { loadConfig, resolveProfileId, validateConfig } from "./config.js";
-import { autoSelectSkill } from "./skills.js";
+import { autoSelectSkill, getSkillById } from "./skills.js";
 import { GenerateRequest, ProviderSelection, VideoModelProvider } from "./types.js";
 import { cleanupExpiredProjects, createProjectId, generateArtifacts, loadAssetArtifacts, materializeProject, prepareGeneratedAssets, toScriptMarkdown, toSrt, validateGenerateRequest } from "./workflow.js";
 
@@ -120,6 +120,68 @@ test("generateArtifacts normalizes remote script durations to requested total", 
   assert.equal(artifacts.storyboard.shots[0]?.title, "镜头 1");
   assert.equal(artifacts.script.title.length > 0, true);
   assert.equal(artifacts.storyboard.shots.length, 2);
+});
+
+test("generateArtifacts 把技能的平台规则送进脚本提示词", async () => {
+  const seen: string[] = [];
+  const providers: ProviderSelection = {
+    text: {
+      id: "mock-text",
+      capability: "text",
+      isRemote: false,
+      async test() {
+        return { providerId: "mock-text", capability: "text", ok: true, message: "ok", liveChecked: false };
+      },
+      async generateText(request) {
+        seen.push(request.systemPrompt);
+        return JSON.stringify({
+          title: "t",
+          summary: "s",
+          openingHook: "h",
+          voiceover: "v",
+          scenes: [{ id: "scene-1", heading: "h", narration: "n", visualPrompt: "v", shotType: "medium", durationSeconds: 30, caption: "c" }],
+          bgmStyle: "b",
+          cta: "c",
+          hashtags: []
+        });
+      }
+    }
+  };
+  const skill = getSkillById("knowledge")!;
+  // 该技能为 bilibili 写了规则、没为 tiktok 写：命中的平台要注入，未命中的要退回不带平台段的原提示词。
+  await generateArtifacts({
+    request: { theme: "知识分享", skill: "knowledge", mode: "script", aspectRatio: "9:16", durationSeconds: 30, platform: "bilibili" },
+    providers,
+    skill
+  });
+  await generateArtifacts({
+    request: { theme: "知识分享", skill: "knowledge", mode: "script", aspectRatio: "9:16", durationSeconds: 30, platform: "tiktok" },
+    providers,
+    skill
+  });
+  assert.match(seen[0] ?? "", /发布平台：bilibili/);
+  assert.match(seen[0] ?? "", /平台规则：可以更完整；逻辑递进更强/);
+  assert.doesNotMatch(seen[1] ?? "", /平台规则：/);
+});
+
+test("本地脚本让平台规则真的改变旁白", async () => {
+  const base: GenerateRequest = {
+    theme: "夏季防晒喷雾",
+    skill: "ecommerce",
+    mode: "script",
+    aspectRatio: "9:16",
+    durationSeconds: 30
+  };
+  // 直接取技能，不走关键词自动选择——这里要验的是平台差异，不是选技。
+  const skill = getSkillById("ecommerce")!;
+  const douyin = await generateArtifacts({ request: { ...base, platform: "douyin" }, providers: {}, skill });
+  const kuaishou = await generateArtifacts({ request: { ...base, platform: "kuaishou" }, providers: {}, skill });
+  const narrations = (artifacts: { script: { scenes: Array<{ narration: string }> } }): string =>
+    artifacts.script.scenes.map((scene) => scene.narration).join("\n");
+  // 两个平台都在这套技能里有规则，旁白必须能看出区别——否则 platform 依旧只是个标签。
+  assert.notEqual(narrations(douyin), narrations(kuaishou));
+  assert.match(narrations(kuaishou), /接地气|福利表达更直接/);
+  assert.match(narrations(douyin), /突出转化|弱化长解释/);
 });
 
 test("cleanupExpiredProjects rejects non-positive maxAgeDays", () => {

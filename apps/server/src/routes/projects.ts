@@ -193,7 +193,11 @@ export function projectRoutes(deps: ServerDeps): Hono {
       storyboard,
       manifest,
       shots,
-      videoReady: manifest?.outputFile ? exists(resolve(dir, manifest.outputFile)) : false
+      videoReady: manifest?.outputFile ? exists(resolve(dir, manifest.outputFile)) : false,
+      // 这两份是「可交付但只在磁盘上」的产物：交付面板要给出下载入口，就得先知道盘上有没有。
+      // 走同一套 fileExists 口径（存在且非空），避免把 0 字节的残留文件当成可下载。
+      scriptMdReady: exists("script.md"),
+      captionsReady: exists(manifest?.captionsFile ?? "captions/captions.srt")
     });
   });
 

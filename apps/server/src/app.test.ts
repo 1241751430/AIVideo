@@ -139,9 +139,13 @@ test("GET /:id/artifacts 汇总工件与成片就绪", async () => {
     );
     const body = (await (await ctx.app.request(`/api/projects/${jobId}/artifacts`)).json()) as {
       videoReady: boolean;
+      scriptMdReady: boolean;
+      captionsReady: boolean;
       shots: Array<{ files: Record<string, string | null> }>;
     };
     assert.equal(body.videoReady, true);
+    assert.equal(body.scriptMdReady, false, "没有 script.md 时不给下载入口");
+    assert.equal(body.captionsReady, false, "没有 captions.srt 时不给下载入口");
     assert.deepEqual(body.shots[0]?.files, {
       video: null,
       image: "assets/shot-01.png",
@@ -150,6 +154,17 @@ test("GET /:id/artifacts 汇总工件与成片就绪", async () => {
     });
     assert.equal(body.shots[1]?.files.manifestAsset, "input/1.png", "项目内绝对 assetPath 归一化为相对路径");
     assert.equal(body.shots[2]?.files.manifestAsset, null, "越界绝对 assetPath 拒绝外泄");
+
+    // 字幕/脚本是「交付物但没有下载口」的那两份：落盘后要能被快照看见。
+    writeFileSync(join(dir, "script.md"), "# 脚本", "utf8");
+    mkdirSync(join(dir, "captions"), { recursive: true });
+    writeFileSync(join(dir, "captions", "captions.srt"), "1\n00:00:00,000 --> 00:00:01,000\nhi\n", "utf8");
+    const withExtras = (await (await ctx.app.request(`/api/projects/${jobId}/artifacts`)).json()) as {
+      scriptMdReady: boolean;
+      captionsReady: boolean;
+    };
+    assert.equal(withExtras.scriptMdReady, true);
+    assert.equal(withExtras.captionsReady, true);
   } finally {
     ctx.cleanup();
   }

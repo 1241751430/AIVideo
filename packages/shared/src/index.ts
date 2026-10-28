@@ -122,9 +122,13 @@ export interface ArtifactsSnapshot {
   brief: unknown;
   script: unknown;
   storyboard: { shots?: Array<Record<string, unknown>> } | null;
-  manifest: { shots?: Array<Record<string, unknown>>; outputFile?: string } | null;
+  manifest: { shots?: Array<Record<string, unknown>>; outputFile?: string; captionsFile?: string } | null;
   shots: ShotArtifactEntry[];
   videoReady: boolean;
+  /** 项目根下的 script.md 是否在盘（交付面板据此决定是否给出下载入口）。 */
+  scriptMdReady: boolean;
+  /** captions/captions.srt 是否在盘。 */
+  captionsReady: boolean;
 }
 
 /** 单个能力的计费展示项。 */

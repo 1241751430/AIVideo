@@ -2,13 +2,13 @@
  * @file DeliverPanel.tsx
  * @author zhangbaohong
  * @date 2026-09-17
- * @description 交付面板：影院式暗场框内在线播放成片（Range 流式）与下载；产物被编辑置 videoStale 时展示琥珀警示条与「重新渲染」CTA（覆盖式重写成片，先经确认框）；脚本模式给出产物清单（脚本/分镜/镜头计数）；「打开文件夹」调宿主文件管理器，容器降级时展示宿主路径；操作反馈走 toast。
+ * @description 交付面板：影院式暗场框内在线播放成片（Range 流式）与下载；产物被编辑置 videoStale 时展示琥珀警示条与「重新渲染」CTA（覆盖式重写成片，先经确认框）；字幕（captions.srt）与脚本（script.md）在盘时给出独立下载口——它们此前只能去项目目录里找；脚本模式给出产物清单（脚本/分镜/镜头计数）；「打开文件夹」调宿主文件管理器，容器降级时展示宿主路径；操作反馈走 toast。
  * @see https://github.com/1241751430/AIVideo.git
  */
 import { useState } from "react";
-import { CircleCheck, CirclePlay, Download, FolderOpen, RotateCcw, TriangleAlert } from "lucide-react";
+import { CircleCheck, CirclePlay, Download, FileText, FolderOpen, RotateCcw, Subtitles, TriangleAlert } from "lucide-react";
 import type { ArtifactsSnapshot, JobDto } from "@aivideo/shared";
-import { api, videoUrl } from "../api";
+import { api, fileUrl, videoUrl } from "../api";
 import { useToast } from "../hooks/useToasts";
 import ConfirmDialog from "./ConfirmDialog";
 
@@ -64,6 +64,17 @@ export default function DeliverPanel({
   const readyShots = (artifacts?.shots ?? []).filter(
     (entry) => entry.files.video || entry.files.image || entry.files.manifestAsset
   ).length;
+  // 字幕/脚本一直在磁盘上，但此前只有成片一个下载口——文案工作者拿不到自己的东西。
+  // 路径以服务端给的为准（字幕文件名来自 manifest），md 固定落在项目根。
+  const captionsPath = artifacts?.manifest?.captionsFile ?? "captions/captions.srt";
+  const deliverables: Array<{ key: string; label: string; icon: typeof Download; href: string; file: string }> = [
+    ...(artifacts?.captionsReady
+      ? [{ key: "srt", label: "下载字幕", icon: Subtitles, href: fileUrl(job.id, captionsPath), file: "captions.srt" }]
+      : []),
+    ...(artifacts?.scriptMdReady
+      ? [{ key: "md", label: "下载脚本", icon: FileText, href: fileUrl(job.id, "script.md"), file: "script.md" }]
+      : [])
+  ];
 
   return (
     <section className="card deliver">
@@ -114,6 +125,17 @@ export default function DeliverPanel({
             <CircleCheck size={14} aria-hidden="true" /> 镜头画面 {readyShots}/{artifacts?.shots.length ?? 0} 已生成
           </div>
           <div className="deliver-row muted">渲染完成后，成片会出现在这里（播放 / 下载）。</div>
+        </div>
+      )}
+      {deliverables.length > 0 && (
+        <div className="actions">
+          {deliverables.map((item) => (
+            <a key={item.key} href={item.href} download={`${job.request.theme || job.id}-${item.file}`}>
+              <button>
+                <item.icon size={14} aria-hidden="true" /> {item.label}
+              </button>
+            </a>
+          ))}
         </div>
       )}
       <div className="actions" style={{ marginTop: 8, alignItems: "center" }}>

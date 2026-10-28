@@ -2,10 +2,10 @@
  * @file CreateCard.tsx
  * @author zhangbaohong
  * @date 2026-09-17
- * @description 创建视图：brief 主输入（渐变聚焦描边）+ 实时键值解析预览 chips；参考图拖拽/点击上传（base64 提交，服务端落盘 input/）；执行/产物模式胶囊、时长滑块与预设、比例/平台/语言选择器（后端 buildJobRequest 均已支持）、Provider 配置选择、风格模板横滑画廊（含适用场景与语气）、⌘Enter 快捷提交。
+ * @description 创建视图：brief 主输入（渐变聚焦描边）+ 实时键值解析预览 chips；参考图拖拽/点击选择后逐张分片上传（先建会话、每张一次 PUT 二进制流、创建任务只带 uploadId，单请求体积与张数无关）；执行/产物模式胶囊、时长滑块与预设、比例/平台/语言选择器（后端 buildJobRequest 均已支持）、Provider 配置选择、风格模板横滑画廊（含适用场景与语气）、⌘Enter 快捷提交。
  * @see https://github.com/1241751430/AIVideo.git
  */
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ImagePlus, Sparkles, X } from "lucide-react";
 import type { SkillCard, SummaryResponse } from "@aivideo/shared";
 import { api } from "../api";
@@ -122,24 +122,16 @@ function parseBriefPreview(text: string): Array<{ key: string; value: string }> 
   return out.slice(0, 8);
 }
 
-/** 参考图待选项：dataURL 同时用于缩略预览与提交载荷。 */
+/** 参考图待选项：保留原始 File 用于分片上传，缩略预览走 object URL（不进内存里的 base64 大字符串）。 */
 interface RefPick {
   name: string;
-  dataUrl: string;
+  file: File;
+  previewUrl: string;
 }
 
-/**
- * @author zhangbaohong  @date 2026-10-08  @see https://github.com/1241751430/AIVideo.git
- * 功能：把 File 读为 dataURL（Promise），读取失败 reject。
- */
-function readAsDataUrl(file: File): Promise<string> {
-  return new Promise((resolvePromise, rejectPromise) => {
-    const reader = new FileReader();
-    reader.onload = () => resolvePromise(String(reader.result ?? ""));
-    reader.onerror = () => rejectPromise(reader.error ?? new Error("读取文件失败"));
-    reader.readAsDataURL(file);
-  });
-}
+/** 与服务端 MAX_INPUT_IMAGES / MAX_INPUT_IMAGE_BYTES 对齐，用于选择阶段的快速预校验。 */
+const MAX_REFS = 20;
+const MAX_REF_BYTES = 10 * 1024 * 1024;
 
 /**
  * @author zhangbaohong  @date 2026-10-08  @see https://github.com/1241751430/AIVideo.git
@@ -159,18 +151,43 @@ export default function CreateCard({ summary, skills, onCreated }: Props) {
   const [refPicks, setRefPicks] = useState<RefPick[]>([]);
   const [dragOver, setDragOver] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [uploadNote, setUploadNote] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  // object URL 必须显式回收：卸载时把当时还在列表里的预览一并释放，否则已删/已提交的图会一直占着内存。
+  const picksRef = useRef<RefPick[]>([]);
+  useEffect(() => {
+    picksRef.current = refPicks;
+  }, [refPicks]);
+  useEffect(
+    () => () => {
+      for (const pick of picksRef.current) {
+        URL.revokeObjectURL(pick.previewUrl);
+      }
+    },
+    []
+  );
 
   const defaultDuration = summary?.defaults.durationSeconds ?? 30;
   const shownDuration = duration ?? defaultDuration;
 
   const parsed = useMemo(() => parseBriefPreview(brief), [brief]);
 
-  const addRefFiles = async (files: File[]): Promise<void> => {
+  const removeRef = (index: number): void => {
+    setRefPicks((prev) => {
+      const pick = prev[index];
+      if (pick) {
+        URL.revokeObjectURL(pick.previewUrl);
+      }
+      return prev.filter((_, i) => i !== index);
+    });
+  };
+
+  const addRefFiles = (files: File[]): void => {
     const okTypes = ["image/png", "image/jpeg", "image/webp"];
-    const remaining = 20 - refPicks.length;
+    const remaining = MAX_REFS - refPicks.length;
     if (remaining <= 0) {
-      toast.error("参考图最多 20 张");
+      toast.error(`参考图最多 ${MAX_REFS} 张`);
       return;
     }
     const accepted: RefPick[] = [];
@@ -179,15 +196,11 @@ export default function CreateCard({ summary, skills, onCreated }: Props) {
         toast.error(`「${file.name}」不是支持的图片格式（png/jpeg/webp）`);
         continue;
       }
-      if (file.size > 10 * 1024 * 1024) {
-        toast.error(`「${file.name}」超过 10MB 上限`);
+      if (file.size > MAX_REF_BYTES) {
+        toast.error(`「${file.name}」超过 ${MAX_REF_BYTES / (1024 * 1024)}MB 上限`);
         continue;
       }
-      try {
-        accepted.push({ name: file.name, dataUrl: await readAsDataUrl(file) });
-      } catch {
-        toast.error(`「${file.name}」读取失败`);
-      }
+      accepted.push({ name: file.name, file, previewUrl: URL.createObjectURL(file) });
     }
     if (files.length > remaining) {
       toast.error(`超出数量上限，仅接收前 ${remaining} 张`);
@@ -197,15 +210,33 @@ export default function CreateCard({ summary, skills, onCreated }: Props) {
     }
   };
 
-  const submit = (): void => {
+  /**
+   * @author zhangbaohong  @date 2026-10-28  @see https://github.com/1241751430/AIVideo.git
+   * 功能：提交创建：有参考图时先开上传会话并逐张 PUT（一次一张，单请求体积与张数无关），再把 uploadId 交给创建接口；
+   * 任一步失败都销毁会话并解除 busy，避免留下半截临时文件或按钮卡死。
+   */
+  const submit = async (): Promise<void> => {
     if (!brief.trim()) {
       setError("请先输入一段创作描述");
       return;
     }
+    if (busy) {
+      return;
+    }
     setBusy(true);
     setError(null);
-    api
-      .createProject({
+    let uploadId: string | undefined;
+    try {
+      if (refPicks.length > 0) {
+        const session = await api.createUploadSession();
+        uploadId = session.uploadId;
+        for (const [index, pick] of refPicks.entries()) {
+          setUploadNote(`上传参考图 ${index + 1}/${refPicks.length}`);
+          await api.uploadImage(uploadId, index, pick.file);
+        }
+        setUploadNote("创建任务…");
+      }
+      const res = await api.createProject({
         briefText: brief.trim(),
         mode: execMode,
         generationMode,
@@ -215,16 +246,20 @@ export default function CreateCard({ summary, skills, onCreated }: Props) {
         aspectRatio: aspect || undefined,
         language: language || undefined,
         platform: platform || undefined,
-        images: refPicks.length > 0 ? refPicks.map((pick) => pick.dataUrl) : undefined
-      })
-      .then((res) => {
-        toast.success("任务已创建，开始执行");
-        onCreated(res.job.id);
-      })
-      .catch((err: Error) => {
-        setError(err.message);
-        setBusy(false);
+        uploadId
       });
+      toast.success("任务已创建，开始执行");
+      onCreated(res.job.id);
+    } catch (err) {
+      if (uploadId) {
+        // 尽力清理；失败也不该盖住真正的错误原因。
+        await api.deleteUploadSession(uploadId).catch(() => undefined);
+      }
+      setError(err instanceof Error ? err.message : String(err));
+      setBusy(false);
+    } finally {
+      setUploadNote(null);
+    }
   };
 
   return (
@@ -241,7 +276,7 @@ export default function CreateCard({ summary, skills, onCreated }: Props) {
           onChange={(e) => setBrief(e.target.value)}
           onKeyDown={(e) => {
             if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
-              submit();
+              void submit();
             }
           }}
           aria-label="创作描述"
@@ -263,7 +298,7 @@ export default function CreateCard({ summary, skills, onCreated }: Props) {
           onDrop={(e) => {
             e.preventDefault();
             setDragOver(false);
-            void addRefFiles(Array.from(e.dataTransfer.files));
+            addRefFiles(Array.from(e.dataTransfer.files));
           }}
         >
           <label className="ref-drop-label">
@@ -273,7 +308,7 @@ export default function CreateCard({ summary, skills, onCreated }: Props) {
               multiple
               onChange={(e) => {
                 if (e.target.files) {
-                  void addRefFiles(Array.from(e.target.files));
+                  addRefFiles(Array.from(e.target.files));
                 }
                 e.target.value = "";
               }}
@@ -284,13 +319,13 @@ export default function CreateCard({ summary, skills, onCreated }: Props) {
           {refPicks.length > 0 && (
             <div className="ref-picks">
               {refPicks.map((pick, index) => (
-                <span className="ref-pick" key={`${pick.name}-${index}`}>
-                  <img src={pick.dataUrl} alt={pick.name} />
+                <span className="ref-pick" key={`${pick.name}-${pick.previewUrl}`}>
+                  <img src={pick.previewUrl} alt={pick.name} />
                   <button
                     type="button"
                     className="icon-btn ref-remove"
                     aria-label={`移除 ${pick.name}`}
-                    onClick={() => setRefPicks((prev) => prev.filter((_, i) => i !== index))}
+                    onClick={() => removeRef(index)}
                   >
                     <X size={11} />
                   </button>
@@ -452,8 +487,8 @@ export default function CreateCard({ summary, skills, onCreated }: Props) {
         )}
         {error && <div className="error-line">{error}</div>}
         <div>
-          <button className="primary" disabled={busy} onClick={submit}>
-            {busy ? "创建中…" : execMode === "guided" ? "开始（分步确认）" : "生成（全自动）"}
+          <button className="primary" disabled={busy} onClick={() => void submit()}>
+            {uploadNote ?? (busy ? "创建中…" : execMode === "guided" ? "开始（分步确认）" : "生成（全自动）")}
           </button>
         </div>
       </div>

@@ -16,6 +16,7 @@ import { mediaRoutes } from "./routes/media.js";
 import { projectRoutes } from "./routes/projects.js";
 import { reviewRoutes } from "./routes/review.js";
 import { systemRoutes } from "./routes/system.js";
+import { uploadRoutes } from "./routes/uploads.js";
 
 /** buildApp 的注入依赖。 */
 export interface ServerDeps {
@@ -49,6 +50,8 @@ export function buildApp(deps: ServerDeps): Hono {
   const app = new Hono();
 
   const api = new Hono();
+  // 分片上传挂在 /api/uploads：与 /api/projects 的 :id 通配彻底隔离，不会出现「uploads 被当成项目 id」的路由吞噬。
+  api.route("/uploads", uploadRoutes(deps));
   api.route("/projects", mediaRoutes(deps));
   api.route("/projects", reviewRoutes(deps));
   api.route("/projects", folderRoutes(deps));

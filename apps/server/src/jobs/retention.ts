@@ -9,6 +9,7 @@ import { basename } from "node:path";
 import { cleanupExpiredProjects } from "@aivideo/core";
 import type { JobPhase } from "../types.js";
 import type { JobRunner } from "./job-runner.js";
+import { UPLOADS_DIR_NAME } from "./upload-store.js";
 
 /** 两次清理之间的间隔：本项目单机自用，一天扫四次的粒度已经足够，不必引入定时任务依赖。 */
 export const RETENTION_SWEEP_INTERVAL_MS = 6 * 60 * 60 * 1000;
@@ -36,6 +37,7 @@ export function isHeldByEngine(runner: JobRunner, projectId: string): boolean {
  * @author zhangbaohong  @date 2026-10-28  @see https://github.com/1241751430/AIVideo.git
  * 功能：按保留天数清理过期项目目录，返回被删除的绝对路径；被引擎持有的项目跳过，已删除的项目从内存台账移除，
  * 否则列表接口还会继续展示一个磁盘上已不存在的任务。
+ * `.uploads` 一并跳过：它是分片上传的暂存区而不是项目，自有过期清扫（24h TTL），按项目天数整删会连带清掉正在传的会话。
  * @param runner 任务引擎（skip 否决权与删除后 forget 都要经过它）
  * @param projectsRoot 项目根目录
  * @param retentionDays 保留天数（正整数；调用方负责只在开启时调用）
@@ -43,7 +45,7 @@ export function isHeldByEngine(runner: JobRunner, projectId: string): boolean {
  */
 export function sweepExpiredProjects(runner: JobRunner, projectsRoot: string, retentionDays: number): string[] {
   const removed = cleanupExpiredProjects(projectsRoot, retentionDays, {
-    skip: (_dir, projectId) => isHeldByEngine(runner, projectId)
+    skip: (_dir, projectId) => projectId === UPLOADS_DIR_NAME || isHeldByEngine(runner, projectId)
   });
   for (const dir of removed) {
     runner.forget(basename(dir));

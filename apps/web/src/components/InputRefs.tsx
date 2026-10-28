@@ -2,15 +2,19 @@
  * @file InputRefs.tsx
  * @author zhangbaohong
  * @date 2026-10-08
- * @description 任务头参考图条：GET /:id/input-image?index= 按 brief.inputImages 顺序出图、越界即 404，故用隐藏 Image 从 0 逐个探测（上限 8）收集缩略图；一张都没有时整行不渲染，点击可新窗口查看原图。
+ * @description 任务头参考图条：GET /:id/input-image?index= 按 brief.inputImages 顺序出图、越界即 404，故用隐藏 Image 从 0 逐个探测（上限与服务端创建时的 20 张一致，否则传满 20 张也只能看到前 8 张）收集缩略图；一张都没有时整行不渲染，点击可新窗口查看原图。
  * @see https://github.com/1241751430/AIVideo.git
  */
 import { useEffect, useState } from "react";
 import { Image as ImageIcon } from "lucide-react";
 import { inputImageUrl } from "../api";
 
-/** 探测上限（防越界请求无限延伸）。 */
-const MAX_PROBE = 8;
+/**
+ * 探测上限（防越界请求无限延伸）。
+ * 必须与创建时的参考图上限对齐（服务端 apps/server/src/jobs/upload-store.ts 的上传序号上限 MAX_INPUT_IMAGES = 20），
+ * 否则用户在创建页传了 12 张，任务头只显示得出 8 张，看起来像丢图。
+ */
+const MAX_PROBE = 20;
 
 /** InputRefs 组件入参。 */
 interface Props {

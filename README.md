@@ -71,7 +71,7 @@ Verify: `ffmpeg -version && ffprobe -version`
 
 A local-first, no-login dark workbench built on the same pipeline the CLI uses:
 
-- **Create (bento)** — brief box with live structured-key chips, built-in skill card gallery, execution mode (auto / guided step-by-step checkpoints) and output mode (video / script-only); pick aspect ratio / language / platform; **drag-and-drop reference images** (png / jpg / webp, ≤20 files, ≤10 MB each — the first shots use them as scene assets)
+- **Create (bento)** — brief box with live structured-key chips, built-in skill card gallery, execution mode (auto / guided step-by-step checkpoints) and output mode (video / script-only); pick aspect ratio / language / platform; **drag-and-drop reference images** (png / jpg / webp, ≤20 files, ≤10 MB each — uploaded one request per image, so request size stays flat as you add files; the first shots use them as scene assets)
 - **Pipeline stepper** — ①script → ②assets → ③narration → ④render with a derived progress bar and live SSE logs; guided mode pauses at each checkpoint (script review / shot wall / narration preview / final accept)
 - **Shot wall** — thumbnail-first cards with duration / shot-type / transition / asset badges, per-shot video/image preview and narration audition, inline editing drawer (title / narration / visual prompt / caption / duration), single-shot regeneration ("retry asset / retry audio"), **drag-handle reordering** (rewrites storyboard, manifest, captions and marks the video stale) and **one-click batch retry** of all failed shots
 - **Delivery** — cinema-style in-browser player (HTTP Range), download, and **Open Folder** which launches Finder/Explorer/xdg-open on the project directory
@@ -101,7 +101,10 @@ Notes:
 
 | Endpoint | Purpose |
 |----------|---------|
-| `POST /api/projects` | Create job (`briefText`, `images` as base64 data-URLs, `mode`, `generationMode`, `skill`, `durationSeconds`, `aspectRatio`, `language`, `platform`, `providerProfile`) |
+| `POST /api/projects` | Create job (`briefText`, `uploadId` — see the three upload rows below — `mode`, `generationMode`, `skill`, `durationSeconds`, `aspectRatio`, `language`, `platform`, `providerProfile`) |
+| `POST /api/uploads` | Open a reference-image upload session; returns `uploadId` / `maxImages` (20) / `maxBytes` (10 MB) |
+| `PUT /api/uploads/:uploadId/:index` | Upload reference image `index` (0-based, must be contiguous); the body is the raw image bytes, ≤10 MB per request |
+| `GET` / `DELETE /api/uploads/:uploadId` | Inspect received images / discard the session (idle sessions are swept after 24 h) |
 | `GET /api/projects` / `GET /api/projects/:id` | List / inspect jobs + legacy project dirs |
 | `DELETE /api/projects/:id` / `POST /api/projects/:id/cancel` | Remove / cancel |
 | `GET /api/projects/:id/events` | SSE stream (status + logs, `Last-Event-ID` replay) |

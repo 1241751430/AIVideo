@@ -33,10 +33,16 @@ export class ApiError extends Error {
  * 功能：发起 JSON 请求；非 2xx 时解析 {error} 文案抛 ApiError。
  */
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(path, {
-    headers: init?.body ? { "Content-Type": "application/json" } : undefined,
-    ...init
-  });
+  return send<T>(path, { ...init, headers: init?.body ? { "Content-Type": "application/json" } : undefined });
+}
+
+/**
+ * @author zhangbaohong  @date 2026-10-28  @see https://github.com/1241751430/AIVideo.git
+ * 功能：发请求并统一处理非 2xx：优先取响应体里的 {error} 文案，解析失败退回状态码文案。
+ * 与 request 分开是因为二进制上传不能带 application/json 头（要带图片自己的 MIME）。
+ */
+async function send<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(path, init);
   if (!res.ok) {
     let message = `${res.status} ${res.statusText}`;
     try {
@@ -92,8 +98,15 @@ export interface CreateProjectBody {
   aspectRatio?: string;
   language?: string;
   platform?: string;
-  /** 参考图 base64 列表（data: URL 或裸 base64），服务端落盘为 inputImages。 */
-  images?: string[];
+  /** 分片上传会话 id（POST /api/uploads 建会话、逐张 PUT 后的返回值）；服务端按序搬进 inputImages。 */
+  uploadId?: string;
+}
+
+/** POST /api/uploads 响应：会话 id 与单张/数量上限（前端据此做预校验，避免白传）。 */
+export interface UploadSessionResponse {
+  uploadId: string;
+  maxImages: number;
+  maxBytes: number;
 }
 
 /** GET /api/healthz 响应：存活标记 + 配置告警列表。 */
@@ -111,6 +124,21 @@ export const api = {
   getProject: (id: string) => request<{ project: JobDto }>(`/api/projects/${encodeURIComponent(id)}`),
   createProject: (body: CreateProjectBody) =>
     request<{ job: JobDto }>("/api/projects", { method: "POST", body: JSON.stringify(body) }),
+  /** 新建参考图上传会话（服务端落 projectsRoot/.uploads/<uploadId>，24 小时无动静自动清理）。 */
+  createUploadSession: () => request<UploadSessionResponse>("/api/uploads", { method: "POST" }),
+  /** 上传单张参考图：请求体就是图片二进制本身，一次一张，单请求体积与张数无关。 */
+  uploadImage: (uploadId: string, index: number, file: Blob) =>
+    send<{ image: { index: number; ext: string; bytes: number } }>(
+      `/api/uploads/${encodeURIComponent(uploadId)}/${index}`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": file.type || "application/octet-stream" },
+        body: file
+      }
+    ),
+  /** 放弃上传会话（清掉已传的临时图）；失败不抛，仅用于卸载/取消时的尽力清理。 */
+  deleteUploadSession: (uploadId: string) =>
+    send<{ ok: boolean }>(`/api/uploads/${encodeURIComponent(uploadId)}`, { method: "DELETE" }),
   deleteProject: (id: string) => request<{ ok: boolean }>(`/api/projects/${encodeURIComponent(id)}`, { method: "DELETE" }),
   cancel: (id: string) => request<{ ok: boolean }>(`/api/projects/${encodeURIComponent(id)}/cancel`, { method: "POST" }),
   review: (id: string, body: ReviewDecision) =>

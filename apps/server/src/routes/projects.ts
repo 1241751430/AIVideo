@@ -2,7 +2,7 @@
  * @file projects.ts
  * @author zhangbaohong
  * @date 2026-09-17
- * @description 项目/任务路由：创建（brief 解析 + 校验 + 参考图 base64 落盘 input/）、列表（任务 + 无任务旧目录 + 损坏隔离）、详情、删除、取消、检查点决策、工件快照与 SSE 事件流。
+ * @description 项目/任务路由：创建（brief 解析 + 校验 + 把分片上传会话里的参考图按序搬进 input/）、列表（任务 + 无任务旧目录 + 损坏隔离）、详情、删除、取消、检查点决策、工件快照与 SSE 事件流。
  * @see https://github.com/1241751430/AIVideo.git
  */
 import { existsSync, readFileSync, rmSync, statSync } from "node:fs";
@@ -21,7 +21,8 @@ import type { ExecMode, JobRequest, ProjectListItem } from "../types.js";
 import { JobEventLog, sseFrame } from "../jobs/events.js";
 import { removeProject, scanProjects } from "../jobs/job-store.js";
 import { isStageKind } from "../jobs/transitions.js";
-import { buildJobRequest, persistInputImages } from "./create-request.js";
+import { buildJobRequest, uploadIdOf } from "./create-request.js";
+import { consumeUploadSession, removeUploadSession } from "../jobs/upload-store.js";
 import type { ServerDeps } from "../app.js";
 
 export type { ProjectListItem } from "../types.js";
@@ -43,19 +44,24 @@ export function projectRoutes(deps: ServerDeps): Hono {
     let request: JobRequest;
     let execMode: ExecMode;
     let projectId: string | undefined;
+    let uploadId: string | undefined;
     try {
       const parsed = buildJobRequest(deps.config, body);
       request = parsed.request;
       execMode = parsed.execMode;
-      const rawImages = Array.isArray(body.images) ? body.images : [];
-      if (rawImages.length > 0) {
-        // 先预生成 projectId 并把参考图落盘到 input/，再建任务；createProjectId 含时间戳+uuid，无撞名竞态。
+      uploadId = uploadIdOf(body);
+      if (uploadId) {
+        // 先预生成 projectId 再把会话里的参考图搬进 input/，最后才建任务；createProjectId 含时间戳+uuid，无撞名竞态。
         projectId = createProjectId(request.theme ?? request.content ?? "project");
-        request.inputImagePaths = persistInputImages(deps.projectsRoot, projectId, rawImages);
+        request.inputImagePaths = consumeUploadSession(deps.projectsRoot, projectId, uploadId);
       }
     } catch (error) {
       if (projectId) {
         rmSync(join(deps.projectsRoot, projectId), { recursive: true, force: true });
+      }
+      // 会话异常（缺张/已过期）时一并销毁：半消费的会话再重试只会继续报缺张，不如让客户端整批重传。
+      if (uploadId) {
+        removeUploadSession(deps.projectsRoot, uploadId);
       }
       return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
     }

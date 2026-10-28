@@ -71,7 +71,7 @@
 
 与 CLI 共用同一条流水线的本机优先、无需登录的暗色网页工作台：
 
-- **创建（bento 布局）** — brief 输入框 + 结构化键实时识别 chips、内置模板卡横滑画廊，执行模式（全自动 / 分步确认）与产物模式（成片 / 仅脚本）；可选视频比例 / 语言 / 平台；**参考图拖拽上传**（png / jpg / webp，最多 20 张、单张 ≤10 MB——前若干镜头会直接以参考图作为画面素材）
+- **创建（bento 布局）** — brief 输入框 + 结构化键实时识别 chips、内置模板卡横滑画廊，执行模式（全自动 / 分步确认）与产物模式（成片 / 仅脚本）；可选视频比例 / 语言 / 平台；**参考图拖拽上传**（png / jpg / webp，最多 20 张、单张 ≤10 MB——逐张分片上传，单请求体积不随张数增长；前若干镜头会直接以参考图作为画面素材）
 - **流水线导航** — ①脚本 → ②素材 → ③旁白 → ④渲染，四节点 stepper + 派生进度条 + SSE 实时日志；分步确认模式在每个检查点暂停（脚本评审 / 镜头墙审阅 / 旁白试听 / 成片验收）
 - **镜头墙** — 缩略图优先的镜头卡（时长/景别/转场/素材来源角标）、逐镜画面/视频预览与旁白试听、就地编辑抽屉（标题/旁白/画面词/字幕/时长）、单镜「重生成素材 / 重配音」、**拖把手排序**（同步重写分镜/manifest/字幕/脚本并标记成片过期）与**一键批量重试**全部失败镜头
 - **交付** — 影院式在线播放（HTTP Range）、下载、**打开文件夹**（按平台拉起 Finder/资源管理器/xdg-open）
@@ -101,7 +101,10 @@
 
 | 接口 | 用途 |
 |------|------|
-| `POST /api/projects` | 创建任务（`briefText`、`images`（base64 data URL 参考图）、`mode`、`generationMode`、`skill`、`durationSeconds`、`aspectRatio`、`language`、`platform`、`providerProfile`） |
+| `POST /api/projects` | 创建任务（`briefText`、`uploadId`（参考图分片上传会话，见下三行）、`mode`、`generationMode`、`skill`、`durationSeconds`、`aspectRatio`、`language`、`platform`、`providerProfile`） |
+| `POST /api/uploads` | 新建参考图上传会话，返回 `uploadId` / `maxImages`（20）/ `maxBytes`（10 MB） |
+| `PUT /api/uploads/:uploadId/:index` | 上传第 `index` 张参考图（0 起、须连续），请求体就是图片二进制，单请求 ≤10 MB |
+| `GET` / `DELETE /api/uploads/:uploadId` | 查看已收图片 / 放弃会话（会话 24 小时无动静自动清理） |
 | `GET /api/projects` / `GET /api/projects/:id` | 任务与旧项目目录列表 / 详情 |
 | `DELETE /api/projects/:id` / `POST /api/projects/:id/cancel` | 删除 / 取消 |
 | `GET /api/projects/:id/events` | SSE 事件流（状态+日志，支持 `Last-Event-ID` 重放） |

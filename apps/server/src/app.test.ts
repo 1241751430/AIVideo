@@ -2,7 +2,7 @@
  * @file app.test.ts
  * @author zhangbaohong
  * @date 2026-09-17
- * @description 应用装配与路由测试：不起端口直接 app.request——创建校验（含参考图 base64 落盘与嗅探拒绝）、列表合并、详情、删除、取消、review 决策、工件快照、SSE 重放帧、媒体路径安全与 Range、静态页面缓存策略与系统端点。
+ * @description 应用装配与路由测试：不起端口直接 app.request——创建校验（含参考图分片上传：建会话/逐张 PUT/按序搬进 input/、旧 base64 明确拒绝、缺张与越界与坏魔数与超限拒绝）、列表合并、详情、删除、取消、review 决策、工件快照、SSE 重放帧、媒体路径安全与 Range、静态页面缓存策略与系统端点。
  * @see https://github.com/1241751430/AIVideo.git
  */
 import { test } from "node:test";
@@ -287,39 +287,133 @@ test("静态工作台页面与系统端点", async () => {
   }
 });
 
-const PNG_B64 = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00]).toString("base64");
-const JPG_B64 = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00]).toString("base64");
+const PNG_BYTES = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00]);
+const JPG_BYTES = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00]);
 
-test("POST 创建带参考图：base64 落盘 input/，非法输入整体拒绝并清理", async () => {
+/**
+ * @author zhangbaohong  @date 2026-10-28  @see https://github.com/1241751430/AIVideo.git
+ * 功能：开一个上传会话并返回 uploadId（同时断言会话响应里的张数/单张上限）。
+ */
+async function openUploadSession(ctx: ReturnType<typeof makeTestApp>): Promise<string> {
+  const res = await ctx.app.request("/api/uploads", { method: "POST" });
+  assert.equal(res.status, 201);
+  const body = (await res.json()) as { uploadId: string; maxImages: number; maxBytes: number };
+  assert.equal(body.maxImages, 20);
+  assert.equal(body.maxBytes, 10 * 1024 * 1024);
+  return body.uploadId;
+}
+
+/**
+ * @author zhangbaohong  @date 2026-10-28  @see https://github.com/1241751430/AIVideo.git
+ * 功能：向会话的某个序号 PUT 一张图，返回原始响应供调用方断言状态码。
+ */
+async function putImage(
+  ctx: ReturnType<typeof makeTestApp>,
+  uploadId: string,
+  index: number,
+  bytes: Uint8Array
+): Promise<Response> {
+  return ctx.app.request(`/api/uploads/${uploadId}/${index}`, { method: "PUT", body: bytes });
+}
+
+test("分片上传：建会话 → 逐张 PUT → 创建时按序搬进 input/ 并销毁会话", async () => {
   const ctx = makeTestApp();
   try {
+    const uploadId = await openUploadSession(ctx);
+    assert.equal((await putImage(ctx, uploadId, 0, PNG_BYTES)).status, 200);
+    assert.equal((await putImage(ctx, uploadId, 1, JPG_BYTES)).status, 200);
+
+    const session = (await (await ctx.app.request(`/api/uploads/${uploadId}`)).json()) as {
+      images: Array<{ index: number; ext: string; bytes: number }>;
+    };
+    assert.deepEqual(
+      session.images.map((image) => [image.index, image.ext]),
+      [
+        [0, "png"],
+        [1, "jpg"]
+      ]
+    );
+
     const res = await ctx.app.request("/api/projects", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ briefText: "主题：带图", images: [`data:image/png;base64,${PNG_B64}`, JPG_B64] })
+      body: JSON.stringify({ briefText: "主题：带图", uploadId })
     });
     assert.equal(res.status, 201);
     const { job } = (await res.json()) as { job: { id: string; request: JobRequest } };
     assert.equal(job.request.inputImagePaths?.length, 2);
     assert.ok(existsSync(join(ctx.projectsRoot, job.id, "input", "1.png")));
     assert.ok(existsSync(join(ctx.projectsRoot, job.id, "input", "2.jpg")));
+    // 搬完即销毁：同一会话不能被复用去建第二个任务（避免两任务共享同一批输入目录语义）
+    assert.equal((await ctx.app.request(`/api/uploads/${uploadId}`)).status, 404);
+  } finally {
+    ctx.cleanup();
+  }
+});
 
-    const tooMany = await ctx.app.request("/api/projects", {
+test("分片上传：旧的内联 images 被明确拒绝，坏魔数/越界序号/缺张/未知会话各自报错", async () => {
+  const ctx = makeTestApp();
+  try {
+    const legacy = await ctx.app.request("/api/projects", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ briefText: "主题：超限", images: Array(21).fill(PNG_B64) })
+      body: JSON.stringify({ briefText: "主题：旧路径", images: [PNG_BYTES.toString("base64")] })
     });
-    assert.equal(tooMany.status, 400, "超过 20 张拒绝");
+    assert.equal(legacy.status, 400);
+    assert.match(((await legacy.json()) as { error: string }).error, /分片上传/);
 
-    const badMagic = await ctx.app.request("/api/projects", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ briefText: "主题：坏图", images: [PNG_B64, Buffer.from("not-an-image").toString("base64")] })
-    });
-    assert.equal(badMagic.status, 400, "魔数不符拒绝");
+    const uploadId = await openUploadSession(ctx);
+    const badMagic = await putImage(ctx, uploadId, 0, Buffer.from("not-an-image"));
+    assert.equal(badMagic.status, 400);
     assert.match(((await badMagic.json()) as { error: string }).error, /不是受支持的图片/);
-    // 第二张失败后，预生成目录整体清理：projectsRoot 只剩上面成功的任务目录
-    assert.equal(readdirSync(ctx.projectsRoot).length, 1);
+    const outOfRange = await putImage(ctx, uploadId, 20, PNG_BYTES);
+    assert.equal(outOfRange.status, 400);
+
+    // 0、2 有图而 1 缺失：序号不连续就不搬，否则镜头绑定会错位
+    assert.equal((await putImage(ctx, uploadId, 0, PNG_BYTES)).status, 200);
+    assert.equal((await putImage(ctx, uploadId, 2, PNG_BYTES)).status, 200);
+    const missing = await ctx.app.request("/api/projects", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ briefText: "主题：缺张", uploadId })
+    });
+    assert.equal(missing.status, 400);
+    assert.match(((await missing.json()) as { error: string }).error, /第 2 张缺失/);
+    // 失败时会话一并销毁：半截会话重试只会继续缺张，不如让客户端整批重传
+    assert.equal((await ctx.app.request(`/api/uploads/${uploadId}`)).status, 404);
+
+    // 未知/畸形会话 id：一律 404，不泄露目录结构
+    assert.equal((await putImage(ctx, "00000000-0000-4000-8000-000000000000", 0, PNG_BYTES)).status, 404);
+    assert.equal((await putImage(ctx, "../../etc", 0, PNG_BYTES)).status, 404);
+    const unknown = await ctx.app.request("/api/projects", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ briefText: "主题：无会话", uploadId: "00000000-0000-4000-8000-000000000000" })
+    });
+    assert.equal(unknown.status, 400);
+    assert.match(((await unknown.json()) as { error: string }).error, /不存在或已过期/);
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test("分片上传：单张超过 10MB 拒绝且不落盘，.uploads 不出现在项目列表", async () => {
+  const ctx = makeTestApp();
+  try {
+    const uploadId = await openUploadSession(ctx);
+    // 真发一个 10MB+1 的体：Content-Length 预检与边读边限流两条路都走一遍
+    const oversized = Buffer.alloc(10 * 1024 * 1024 + 1);
+    PNG_BYTES.copy(oversized, 0);
+    const res = await putImage(ctx, uploadId, 0, oversized);
+    assert.equal(res.status, 413);
+    assert.equal(readdirSync(join(ctx.projectsRoot, ".uploads", uploadId)).length, 0, "超限文件不残留");
+
+    const list = (await (await ctx.app.request("/api/projects")).json()) as { projects: unknown[] };
+    assert.equal(list.projects.length, 0, ".uploads 首字符非字母数字，扫描时被跳过");
+
+    const del = await ctx.app.request(`/api/uploads/${uploadId}`, { method: "DELETE" });
+    assert.equal(del.status, 200);
+    assert.equal((await ctx.app.request(`/api/uploads/${uploadId}/0`, { method: "PUT", body: PNG_BYTES })).status, 404);
   } finally {
     ctx.cleanup();
   }

@@ -12,6 +12,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { JobRunner } from "./job-runner.js";
 import { isHeldByEngine, sweepExpiredProjects } from "./retention.js";
+import { createUploadSession, uploadsRoot } from "./upload-store.js";
 import { makeConfig, makeRequest, noopStages, waitUntil } from "../testkit.js";
 
 /**
@@ -76,6 +77,24 @@ test("清理掉的任务同时从内存台账移除", async () => {
     assert.deepEqual(removed, [runner.projectDirOf(job.id)]);
     assert.equal(existsSync(runner.projectDirOf(job.id)), false, "目录已删除");
     assert.equal(runner.get(job.id), undefined, "列表不应再出现一个磁盘上不存在的任务");
+  } finally {
+    cleanup();
+  }
+});
+
+test("分片上传的暂存区不参与项目清理", async () => {
+  const { runner, projectsRoot, cleanup } = makeRunner();
+  try {
+    // .uploads 首字符是点、不是合法项目 id，但 cleanupExpiredProjects 只看 mtime 不看目录名形状：
+    // 不显式排除的话，项目清理会把整个暂存区连同正在传的会话一起删掉。
+    const uploadId = createUploadSession(projectsRoot);
+    const old = tenDaysAgo();
+    utimesSync(uploadsRoot(projectsRoot), old, old);
+    utimesSync(join(uploadsRoot(projectsRoot), uploadId), old, old);
+
+    const removed = sweepExpiredProjects(runner, projectsRoot, 7);
+    assert.deepEqual(removed, [], "暂存区不是项目，不应被项目清理删除");
+    assert.equal(existsSync(join(uploadsRoot(projectsRoot), uploadId)), true, "会话目录仍在");
   } finally {
     cleanup();
   }

@@ -8,6 +8,8 @@
 import { useState } from "react";
 import { RotateCcw } from "lucide-react";
 import { api } from "../api";
+import { describeCapabilities } from "../cost";
+import { useCostGate } from "../hooks/useCostGate";
 import { useToast } from "../hooks/useToasts";
 
 /** RetryQueue 组件入参。 */
@@ -26,10 +28,10 @@ interface Props {
 export default function RetryQueue({ jobId, failedShotIds, busy, onChanged }: Props) {
   const toast = useToast();
   const [running, setRunning] = useState(false);
-  if (failedShotIds.length === 0) {
-    return null;
-  }
-  const run = (): void => {
+  // 计费闸：批量重试会重新调用图/视频提供者，有远端能力时先让人看一眼账单。
+  const costGate = useCostGate(jobId);
+
+  const submit = (): void => {
     setRunning(true);
     api
       .retryBatch(jobId, failedShotIds)
@@ -40,15 +42,34 @@ export default function RetryQueue({ jobId, failedShotIds, busy, onChanged }: Pr
       .catch((err: Error) => toast.error(`重试失败：${err.message}`))
       .finally(() => setRunning(false));
   };
+
+  const run = (): void => {
+    costGate.ask({
+      capabilities: ["image", "video"],
+      title: "重试失败镜头",
+      message: (remote, preview) =>
+        `本次将为 ${failedShotIds.length} 个镜头补齐画面，调用远端能力：${describeCapabilities(remote)}。` +
+        (preview.billableShots > 0 ? `项目共 ${preview.billableShots} 镜，已有画面的镜头会按输入指纹跳过。` : "") +
+        "确认继续？",
+      run: submit
+    });
+  };
+
+  if (failedShotIds.length === 0) {
+    return null;
+  }
   return (
-    <button
-      className="retry-all"
-      disabled={busy || running}
-      title="素材阶段会自动跳过已有画面的镜头、重做全部缺失者"
-      onClick={run}
-    >
-      <RotateCcw size={14} aria-hidden="true" />
-      {running ? "排队中…" : `重试失败镜头 (${failedShotIds.length})`}
-    </button>
+    <>
+      <button
+        className="retry-all"
+        disabled={busy || running}
+        title="素材阶段会自动跳过已有画面的镜头、重做全部缺失者"
+        onClick={run}
+      >
+        <RotateCcw size={14} aria-hidden="true" />
+        {running ? "排队中…" : `重试失败镜头 (${failedShotIds.length})`}
+      </button>
+      {costGate.dialog}
+    </>
   );
 }

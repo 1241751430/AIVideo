@@ -9,6 +9,8 @@ import { useEffect, useMemo, useState } from "react";
 import { Clock, GripVertical, Image as ImageIcon, Maximize2, Mic, Pencil, Video } from "lucide-react";
 import type { ShotArtifactEntry } from "@aivideo/shared";
 import { api, fileUrl } from "../api";
+import { describeCapabilities } from "../cost";
+import { useCostGate } from "../hooks/useCostGate";
 import { useToast } from "../hooks/useToasts";
 import Chip from "./Chip";
 import EmptyState from "./EmptyState";
@@ -268,6 +270,8 @@ function ShotCard({
   const [form, setForm] = useState<ShotForm>(() => formOf(entry));
   const [saving, setSaving] = useState(false);
   const [open, setOpen] = useState(false);
+  // 单镜重试同样会调用远端提供者：重生成素材只算图/视频，重配音只算语音，避免把无关能力算进账单。
+  const costGate = useCostGate(jobId);
   const dirty = (): boolean =>
     form.title !== formOf(entry).title ||
     form.narration !== formOf(entry).narration ||
@@ -311,6 +315,17 @@ function ShotCard({
   };
 
   const retry = (target: "asset" | "audio"): void => {
+    costGate.ask({
+      capabilities: target === "asset" ? ["image", "video"] : ["speech"],
+      title: target === "asset" ? "重生成本镜素材" : "重配音",
+      message: (remote) =>
+        `本次只为镜头 ${shotId} 重新生成${target === "asset" ? "画面" : "配音"}，调用远端能力：${describeCapabilities(remote)}。` +
+        "确认继续？",
+      run: () => submitRetry(target)
+    });
+  };
+
+  const submitRetry = (target: "asset" | "audio"): void => {
     api
       .retryShot(jobId, shotId, target)
       .then((res) => {
@@ -457,6 +472,7 @@ function ShotCard({
           </div>
         </div>
       )}
+      {costGate.dialog}
     </article>
   );
 }

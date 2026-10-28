@@ -470,7 +470,8 @@ export class JobRunner {
 
   /**
    * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
-   * 功能：阶段完成后的转移：auto 依次 script→assets→audio→render→done；guided 每阶段后进入对应检查点。
+   * 功能：阶段完成后的转移：auto 依次 script→assets→audio→render→done（脚本后若存在远端提供者先停计费闸）；
+   * guided 每阶段后进入对应检查点。
    */
   private nextAfterStage(job: Job, stage: StageKind): { kind: "stage"; stage: StageKind } | { kind: "await"; checkpoint: CheckpointKind } | { kind: "done" } {
     // "script" 产物模式只要脚本与分镜：脚本阶段后直接收尾，不进入素材/旁白/渲染。
@@ -483,6 +484,11 @@ export class JobRunner {
     if (job.execMode === "auto") {
       switch (stage) {
         case "script":
+          // 「全自动」不等于「不看账单就开跑」：脚本落盘后若有远端提供者，仍停在计费闸等一次明确确认，
+          // 之后才进入会产生费用的素材/旁白/渲染。没有远端提供者时保持一次跑完。
+          if (hasRemoteProviders(this.providersFor(job.request.providerProfile))) {
+            return { kind: "await", checkpoint: "cost" };
+          }
           return { kind: "stage", stage: "assets" };
         case "assets":
           return { kind: "stage", stage: "audio" };

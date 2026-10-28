@@ -2,7 +2,7 @@
  * @file DeliverPanel.tsx
  * @author zhangbaohong
  * @date 2026-09-17
- * @description 交付面板：影院式暗场框内在线播放成片（Range 流式）与下载；产物被编辑置 videoStale 时展示琥珀警示条与「重新渲染」CTA；脚本模式给出产物清单（脚本/分镜/镜头计数）；「打开文件夹」调宿主文件管理器，容器降级时展示宿主路径；操作反馈走 toast。
+ * @description 交付面板：影院式暗场框内在线播放成片（Range 流式）与下载；产物被编辑置 videoStale 时展示琥珀警示条与「重新渲染」CTA（覆盖式重写成片，先经确认框）；脚本模式给出产物清单（脚本/分镜/镜头计数）；「打开文件夹」调宿主文件管理器，容器降级时展示宿主路径；操作反馈走 toast。
  * @see https://github.com/1241751430/AIVideo.git
  */
 import { useState } from "react";
@@ -10,6 +10,7 @@ import { CircleCheck, CirclePlay, Download, FolderOpen, RotateCcw, TriangleAlert
 import type { ArtifactsSnapshot, JobDto } from "@aivideo/shared";
 import { api, videoUrl } from "../api";
 import { useToast } from "../hooks/useToasts";
+import ConfirmDialog from "./ConfirmDialog";
 
 /**
  * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
@@ -26,11 +27,15 @@ export default function DeliverPanel({
 }) {
   const toast = useToast();
   const [busy, setBusy] = useState(false);
+  const [confirming, setConfirming] = useState(false);
   const [folderHint, setFolderHint] = useState<string | null>(null);
   const videoReady = artifacts?.videoReady ?? false;
   const videoStale = job.result?.videoStale === true;
 
+  // 重渲只跑 ffmpeg、不调用任何远端提供者，因此不走计费闸（见 useCostGate）；
+  // 但它是覆盖式操作：会重写现有成片，且耗时——仍要人确认一次。
   const rerender = (): void => {
+    setConfirming(false);
     setBusy(true);
     api
       .rerender(job.id)
@@ -71,7 +76,7 @@ export default function DeliverPanel({
         <div className="stale-bar" role="status">
           <TriangleAlert size={14} aria-hidden="true" />
           编辑已改动画面/旁白/字幕，当前在线播放的仍是旧版成片。
-          <button className="primary" disabled={busy} onClick={rerender}>
+          <button className="primary" disabled={busy} onClick={() => setConfirming(true)}>
             <RotateCcw size={13} aria-hidden="true" />
             {busy ? "排队中…" : "重新渲染"}
           </button>
@@ -120,6 +125,16 @@ export default function DeliverPanel({
         </button>
       </div>
       {folderHint && <div className="error-line" style={{ fontSize: 12 }}>{folderHint}</div>}
+      <ConfirmDialog
+        open={confirming}
+        title="重新渲染成片"
+        message="将强制重跑渲染阶段并覆盖当前成片（project 目录下的 final.mp4）。素材与配音不会重新生成，不产生远端费用。确认继续？"
+        confirmLabel="重新渲染"
+        danger={false}
+        busy={busy}
+        onConfirm={rerender}
+        onCancel={() => setConfirming(false)}
+      />
     </section>
   );
 }

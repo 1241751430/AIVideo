@@ -277,14 +277,17 @@ test("POST shots/:shotId/retry 删文件并重入对应阶段", async () => {
 });
 
 test("GET cost-preview 汇总远端能力与计费镜头数", async () => {
-  const providersFor = (): ProviderSelection =>
-    ({
-      image: { id: "local-image", isRemote: false },
-      video: { id: "ark-video", isRemote: true }
-    }) as unknown as ProviderSelection;
+  // 造已完成任务时不能带远端提供者（否则 auto 模式的计费闸会把它停在 cost），
+  // 而预览接口在请求时按 providersFor 现算，所以造完任务再切换即可。
+  let providers: ProviderSelection = {};
+  const providersFor = (): ProviderSelection => providers;
   const ctx = makeTestApp({ providersFor });
   try {
     const jobId = await createDoneJob(ctx);
+    providers = {
+      image: { id: "local-image", isRemote: false },
+      video: { id: "ark-video", isRemote: true }
+    } as unknown as ProviderSelection;
     const dir = join(ctx.projectsRoot, jobId);
     putJson(dir, "storyboard.json", {
       shots: [

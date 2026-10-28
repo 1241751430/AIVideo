@@ -180,6 +180,62 @@ test("guided 在存在远端提供者时插入 cost 检查点", async () => {
   }
 });
 
+test("auto 模式在存在远端提供者时也停在 cost 闸：确认前不得进入付费阶段", async () => {
+  const { stages, calls } = makeFakeStages();
+  const remote: ProviderSelection = { video: { id: "remote-video", isRemote: true } as ProviderSelection["video"] };
+  const { runner, cleanup } = makeRunner({ stages, providersFor: () => remote });
+  try {
+    const job = runner.create({ execMode: "auto", request: makeRequest() });
+    await waitUntil(() => runner.get(job.id)?.phase === "awaiting", "awaiting cost");
+    assert.equal(runner.get(job.id)?.checkpoint, "cost");
+    assert.deepEqual(calls, ["script"], "脚本落盘即停，素材/旁白/渲染都还没开始");
+    assert.equal(runner.get(job.id)?.stage, undefined);
+
+    assert.equal(runner.review(job.id, "approve"), true);
+    await waitUntil(() => runner.get(job.id)?.phase === "done", "done after approve");
+    assert.deepEqual(calls, ["script", "assets", "audio", "render"], "确认后一次跑完，不再插别的闸");
+    assert.equal(runner.get(job.id)?.result?.videoStale, false);
+  } finally {
+    cleanup();
+  }
+});
+
+test("auto 模式在纯本地提供者下不插 cost 闸，一次跑完", async () => {
+  const { stages, calls } = makeFakeStages();
+  const local: ProviderSelection = {
+    image: { id: "local-image", isRemote: false } as ProviderSelection["image"],
+    video: { id: "local-video", isRemote: false } as ProviderSelection["video"]
+  };
+  const { runner, cleanup } = makeRunner({ stages, providersFor: () => local });
+  try {
+    const job = runner.create({ execMode: "auto", request: makeRequest() });
+    await waitUntil(() => runner.get(job.id)?.phase === "done", "done");
+    assert.deepEqual(calls, ["script", "assets", "audio", "render"]);
+    assert.equal(runner.get(job.id)?.checkpoint, undefined);
+  } finally {
+    cleanup();
+  }
+});
+
+test("auto 在 cost 闸取消后可续跑：断点回到 script，重启后重新停在同一道闸", async () => {
+  const { stages, calls } = makeFakeStages();
+  const remote: ProviderSelection = { video: { id: "remote-video", isRemote: true } as ProviderSelection["video"] };
+  const { runner, cleanup } = makeRunner({ stages, providersFor: () => remote });
+  try {
+    const job = runner.create({ execMode: "auto", request: makeRequest() });
+    await waitUntil(() => runner.get(job.id)?.checkpoint === "cost", "awaiting cost");
+    assert.equal(runner.cancel(job.id), true);
+    assert.equal(runner.get(job.id)?.breakStage, "script", "cost 闸由脚本阶段到达");
+
+    assert.equal(runner.resume(job.id), true);
+    await waitUntil(() => runner.get(job.id)?.checkpoint === "cost", "awaiting cost again");
+    assert.deepEqual(calls, ["script", "script"], "续跑重走脚本阶段（靠指纹复用），不跳过计费确认");
+    assert.equal(runner.get(job.id)?.phase, "awaiting");
+  } finally {
+    cleanup();
+  }
+});
+
 test("redo-stage 重新入队执行指定阶段并携带显式重跑信号", async () => {
   const { stages, calls, signals } = makeFakeStages();
   const { runner, cleanup } = makeRunner({ stages });

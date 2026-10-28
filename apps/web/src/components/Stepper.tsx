@@ -93,19 +93,24 @@ function deriveProgress(job: JobDto, shots: ShotArtifactEntry[]): { percent: num
 export default function Stepper({ job, shots }: Props) {
   // 失败/取消时 job.stage 已被清空，断点阶段由 breakStage 承载。
   const current = stepperIndex(job.phase, job.stage ?? job.breakStage, job.checkpoint);
+  // 计费闸不是 guided 专有：auto 模式下存在远端提供者时同样在脚本后停一次，
+  // 所以只要任务真的停在了 cost 检查点，闸节点就必须出现，否则进度条会显示成「已越过脚本」。
+  const showGate = job.execMode === "guided" || job.checkpoint === "cost";
   const nodes: NodeSpec[] = [];
   STAGES.forEach((stage, index) => {
     const interrupted = job.phase === "failed" || job.phase === "cancelled";
     const cls: NodeSpec["cls"] =
       index < current ? "done" : index === current ? (interrupted ? "error" : "current") : "";
     nodes.push({ key: stage, label: STAGE_LABELS[stage], cls });
-    if (job.execMode === "guided" && index === 0) {
-      const gateDone = current >= 2;
+    if (showGate && index === 0) {
+      // 闸的位置随模式而变：guided 在脚本评审之后才出现，auto 在脚本阶段一完成就拦。
+      // 所以「已过闸」的判据不同，否则 auto 跑过闸后闸节点会一直显示成未完成。
+      const gateDone = job.execMode === "guided" ? current >= 2 : current >= 1;
       nodes.push({
         key: "cost",
         label: "计费",
         gate: true,
-        cls: gateDone ? "done" : job.checkpoint === "cost" ? "current" : ""
+        cls: job.checkpoint === "cost" ? "current" : gateDone ? "done" : ""
       });
     }
   });

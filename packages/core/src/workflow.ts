@@ -41,7 +41,8 @@ const ASPECT_SIZES: Record<string, { width: number; height: number }> = {
 };
 export const SUPPORTED_ASPECT_RATIOS: readonly string[] = Object.keys(ASPECT_SIZES);
 export const MAX_DURATION_SECONDS = 600;
-const MAX_INPUT_IMAGES = 20;
+/** 参考图数量上限：服务端落盘时的校验与这里的生成前校验共用同一个数字。 */
+export const MAX_INPUT_IMAGES = 20;
 const MAX_SCENES = 24;
 export const MIN_SHOT_DURATION_SECONDS = 1;
 

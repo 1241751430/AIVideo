@@ -38,7 +38,11 @@ export interface JobRequest {
   language?: string;
   platform?: string;
   providerProfile?: string;
-  /** 创建时上传的参考图落盘绝对路径（project/<id>/input/<n>.<ext>），经 toGenerateRequest 透传为 brief.inputImages。 */
+  /**
+   * 创建时上传的参考图落盘绝对路径（project/<id>/input/<n>.<ext>）。
+   * 字段名在链路上换了三次，但始终是同一个有序列表（下标即镜头绑定关系，重排不换图）：
+   * 线协议 inputImagePaths → GenerateRequest.images（服务端 toGenerateRequest）→ brief.inputImages（落盘 brief.json）。
+   */
   inputImagePaths?: string[];
 }
 

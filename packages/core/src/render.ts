@@ -25,8 +25,17 @@ export interface RenderProjectInput {
   /** Absolute path of `workers/media/render.py`. */
   workerScript: string;
   useGpu?: boolean;
-  /** Forwarded to the child runner (heartbeat/line streaming/abort knobs). */
-  exec?: Pick<ExecFileOptions, "statusMessage" | "heartbeatMs" | "onHeartbeat" | "onStdoutLine" | "signal">;
+  /**
+   * Forwarded to the child runner (heartbeat/line streaming/abort knobs).
+   * `killProcessGroup` is opt-in: it starts the worker detached so an abort can
+   * signal python *and* the ffmpeg it spawned. Callers that rely on the
+   * terminal's Ctrl+C (the CLI) leave it off — a detached child would no
+   * longer receive the terminal's SIGINT and would outlive the CLI.
+   */
+  exec?: Pick<
+    ExecFileOptions,
+    "statusMessage" | "heartbeatMs" | "onHeartbeat" | "onStdoutLine" | "signal" | "killProcessGroup"
+  >;
 }
 
 export interface RenderProjectResult {

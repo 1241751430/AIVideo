@@ -28,9 +28,22 @@ export function sseFrame(event: EventRecord): string {
 /**
  * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
  * 功能：任务事件的持久日志：追加 events.jsonl（超 1000 行截断保留最近 1000 行）、按 after(id) 重放。
+ * 追加路径带实例级缓存：任务跑起来后每个日志/状态事件都会追加一次，而事件里日志是高频的，
+ * 原先每次都把整个文件读出来再逐行 JSON.parse，只为了拿到末条 id。缓存住「上次写完后文件长什么样」
+ * （size + mtime + 末条 id + 最后 1000 行原文），文件没被外部改动时追加就只剩一次写入。
+ * 外部改写（手改日志、别的进程写）会让 size/mtime 对不上，缓存自动失效并回落到全量读，
+ * 因此「id 取末条 +1、末行损坏时用行数兜底」的语义不变。
  */
 export class JobEventLog {
   private readonly filePath: string;
+  private cache: {
+    size: number;
+    mtimeMs: number;
+    lineCount: number;
+    lastId: number | null;
+    /** 文件末尾至多 MAX_EVENT_LINES 行原文，截断重写时直接从这里拼，不必再读盘。 */
+    tail: string[];
+  } | null = null;
 
   /**
    * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
@@ -48,15 +61,20 @@ export class JobEventLog {
    * @param data 事件负载
    */
   append(type: EventRecord["type"], data: Record<string, unknown>): EventRecord {
-    const lines = this.readLines();
-    const last = lines.length > 0 ? this.parseLine(lines[lines.length - 1] ?? "") : null;
-    const id = last ? last.id + 1 : lines.length + 1;
+    const state = this.snapshot();
+    const id = state.lastId !== null ? state.lastId + 1 : state.lineCount + 1;
     const record: EventRecord = { id, at: new Date().toISOString(), type, data };
-    appendFileSync(this.filePath, `${JSON.stringify(record)}\n`, "utf8");
-    if (lines.length + 1 > MAX_EVENT_LINES) {
-      const kept = lines.slice(-(MAX_EVENT_LINES - 1));
-      writeFileSync(this.filePath, `${kept.concat(JSON.stringify(record)).join("\n")}\n`, "utf8");
+    const line = JSON.stringify(record);
+    appendFileSync(this.filePath, `${line}\n`, "utf8");
+    let lineCount = state.lineCount + 1;
+    let tail = state.tail.concat(line);
+    if (lineCount > MAX_EVENT_LINES) {
+      // 超出上限：按原文重写最近 MAX_EVENT_LINES 行（含刚追加的这条）。
+      tail = state.tail.slice(-(MAX_EVENT_LINES - 1)).concat(line);
+      writeFileSync(this.filePath, `${tail.join("\n")}\n`, "utf8");
+      lineCount = MAX_EVENT_LINES;
     }
+    this.remember(lineCount, id, tail);
     return record;
   }
 
@@ -69,6 +87,46 @@ export class JobEventLog {
     return this.readLines()
       .map((line) => this.parseLine(line))
       .filter((event): event is EventRecord => Boolean(event && event.id > afterId));
+  }
+
+  /**
+   * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+   * 功能：取文件当前状态（行数、末条 id、末尾原文）：size/mtime 与缓存一致时直接复用，否则重读一次并刷新缓存。
+   */
+  private snapshot(): { lineCount: number; lastId: number | null; tail: string[] } {
+    let stat;
+    try {
+      stat = statSync(this.filePath);
+    } catch {
+      this.cache = null;
+      return { lineCount: 0, lastId: null, tail: [] };
+    }
+    if (this.cache && this.cache.size === stat.size && this.cache.mtimeMs === stat.mtimeMs) {
+      return this.cache;
+    }
+    const lines = this.readLines();
+    const last = lines.length > 0 ? this.parseLine(lines[lines.length - 1] ?? "") : null;
+    this.cache = {
+      size: stat.size,
+      mtimeMs: stat.mtimeMs,
+      lineCount: lines.length,
+      lastId: last ? last.id : null,
+      tail: lines.slice(-MAX_EVENT_LINES)
+    };
+    return this.cache;
+  }
+
+  /**
+   * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+   * 功能：写入成功后记录文件状态，供下一次追加判断缓存是否仍然有效。
+   */
+  private remember(lineCount: number, lastId: number, tail: string[]): void {
+    try {
+      const stat = statSync(this.filePath);
+      this.cache = { size: stat.size, mtimeMs: stat.mtimeMs, lineCount, lastId, tail };
+    } catch {
+      this.cache = null;
+    }
   }
 
   /**

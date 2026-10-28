@@ -14,7 +14,10 @@ import test from "node:test";
 import { normalizeRenderManifest, readRenderManifestFile, writeRenderManifestFile } from "./renderManifest.js";
 import { RenderManifest } from "./types.js";
 
-/** 测试辅助：临时项目目录。 */
+/**
+ * @author zhangbaohong  @date 2026-10-27  @see https://github.com/1241751430/AIVideo.git
+ * 功能：测试辅助：临时项目目录。
+ */
 function tempProject(): string {
   return mkdtempSync(join(tmpdir(), "aivideo-manifest-"));
 }

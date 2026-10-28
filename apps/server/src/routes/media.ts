@@ -2,12 +2,14 @@
  * @file media.ts
  * @author zhangbaohong
  * @date 2026-09-17
- * @description 媒体文件路由：项目内文件白名单读取（扩展名 + 相对路径 + isWithinBase 三重校验）、HTTP Range/206 分段、成片与用户参考图快捷端点。
+ * @description 媒体文件路由：项目内文件白名单读取（扩展名 + 相对路径 + isWithinBase 三重校验）、流式 HTTP Range/206 分段与 ETag 协商、成片与用户参考图快捷端点。
  * @see https://github.com/1241751430/AIVideo.git
  */
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import { extname, isAbsolute, join, resolve } from "node:path";
+import { Readable } from "node:stream";
 import { Hono } from "hono";
+import type { Context } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { assertPathWithin, isWithinBase, normalizeRenderManifest } from "@aivideo/core";
 import type { ServerDeps } from "../app.js";
@@ -95,7 +97,14 @@ export function mediaRoutes(deps: ServerDeps): Hono {
     if (!imagePath || !isAllowedMediaPath(imagePath)) {
       return c.json({ error: "No such input image" }, 404);
     }
-    return serveFile(c, resolve(imagePath));
+    // brief.json 由程序写入，但参考图路径是经 JSON 落盘再读回的间接输入：
+    // 一旦有人手改 brief.json 塞进项目外的绝对路径，这里不能把它当合法路径照读，
+    // 与 /file 的越界口径保持一致（403 而不是静默放行）。
+    const target = resolve(imagePath);
+    if (!isWithinBase(projectDir, target)) {
+      return c.json({ error: "path escapes the project directory" }, 403);
+    }
+    return serveFile(c, target);
   });
 
   return router;
@@ -105,8 +114,8 @@ export function mediaRoutes(deps: ServerDeps): Hono {
  * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
  * 功能：按 :id 定位项目目录，任务不存在返回 null。
  */
-function requireProjectDir(deps: ServerDeps, c: any): string | null {
-  const id = c.req.param("id");
+function requireProjectDir(deps: ServerDeps, c: Context): string | null {
+  const id = c.req.param("id") ?? "";
   return deps.runner.get(id) ? deps.runner.projectDirOf(id) : null;
 }
 
@@ -152,9 +161,12 @@ function isAllowedMediaPath(filePath: string): boolean {
 
 /**
  * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
- * 功能：读文件并响应，支持单段 bytes Range（206 + Content-Range），其余 200 全量。
+ * 功能：流式响应文件：支持单段 bytes Range（206 + Content-Range），其余 200 全量；
+ * 用 createReadStream 分块下发，成片动辄上百 MB，整文件 readFileSync 会在每次拖动进度条时把整段视频读进内存。
+ * 同时给出弱 ETag（size + mtime，不读内容算 hash）与 no-cache：成片会被重渲覆盖，必须每次协商，
+ * 内容没变时 304 让浏览器不再重新下载分段。
  */
-function serveFile(c: any, filePath: string): Response {
+function serveFile(c: Context, filePath: string): Response {
   let stat;
   try {
     stat = statSync(filePath);
@@ -166,6 +178,19 @@ function serveFile(c: any, filePath: string): Response {
   }
   const type = MEDIA_TYPES[extname(filePath).toLowerCase()] ?? "application/octet-stream";
   const total = stat.size;
+  // 弱 ETag：同一份文件内容变化必伴随 size 或 mtime 变化，够用于「重渲后必须取新版」的语义。
+  const etag = `W/"${total.toString(16)}-${Math.floor(stat.mtimeMs).toString(16)}"`;
+  const baseHeaders: Record<string, string> = {
+    "Content-Type": type,
+    "Accept-Ranges": "bytes",
+    ETag: etag,
+    "Cache-Control": "no-cache"
+  };
+  const ifNoneMatch = c.req.header("if-none-match");
+  if (ifNoneMatch && ifNoneMatch.split(",").some((candidate) => candidate.trim() === etag)) {
+    return new Response(null, { status: 304, headers: baseHeaders });
+  }
+
   const rangeHeader = c.req.header("range");
   const match = rangeHeader ? /^bytes=(\d*)-(\d*)$/.exec(rangeHeader.trim()) : null;
   if (match && (match[1] || match[2])) {
@@ -184,24 +209,19 @@ function serveFile(c: any, filePath: string): Response {
       });
     }
     end = Math.min(end, total - 1);
-    const buffer = readFileSync(filePath);
-    return new Response(buffer.subarray(start, end + 1), {
+    const body = Readable.toWeb(createReadStream(filePath, { start, end })) as ReadableStream<Uint8Array>;
+    return new Response(body, {
       status: 206,
       headers: {
-        "Content-Type": type,
+        ...baseHeaders,
         "Content-Length": String(end - start + 1),
-        "Content-Range": `bytes ${start}-${end}/${total}`,
-        "Accept-Ranges": "bytes"
+        "Content-Range": `bytes ${start}-${end}/${total}`
       }
     });
   }
-  const buffer = readFileSync(filePath);
-  return new Response(buffer, {
+  const body = Readable.toWeb(createReadStream(filePath)) as ReadableStream<Uint8Array>;
+  return new Response(body, {
     status: 200,
-    headers: {
-      "Content-Type": type,
-      "Content-Length": String(total),
-      "Accept-Ranges": "bytes"
-    }
+    headers: { ...baseHeaders, "Content-Length": String(total) }
   });
 }

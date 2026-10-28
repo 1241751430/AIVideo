@@ -9,6 +9,7 @@ import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
 import { serve } from "@hono/node-server";
+import type { ServerType } from "@hono/node-server";
 import { loadConfig, loadDotEnv, validateConfig } from "@aivideo/core";
 import { createProviderSelection } from "@aivideo/providers";
 import { buildApp } from "./app.js";
@@ -83,13 +84,55 @@ function bootstrap(): void {
     runner,
     publicDir
   });
-  serve({ fetch: app.fetch, hostname: host, port }, () => {
+  const server = serve({ fetch: app.fetch, hostname: host, port }, () => {
     console.log(`镜头墙工作台已启动：http://${host === "0.0.0.0" ? "127.0.0.1" : host}:${port}`);
     console.log(`项目目录：${projectsRoot}`);
     if (retentionDays) {
       console.log(`过期项目清理：已开启，保留 ${retentionDays} 天（每 ${RETENTION_SWEEP_INTERVAL_MS / 3600000} 小时扫描一次）`);
     }
   });
+  installShutdownHandlers(server, runner);
+}
+
+/** 关服最多等多久：任务中止 + 子进程收尸 + 连接排空，超过就硬退。 */
+const SHUTDOWN_TIMEOUT_MS = 15000;
+
+/**
+ * @author zhangbaohong  @date 2026-10-28  @see https://github.com/1241751430/AIVideo.git
+ * 功能：注册 SIGINT/SIGTERM 优雅关闭：进程收到信号 → 中止运行中任务并把断点落盘 → 排空连接 → 退出。
+ * 不接管信号时，Ctrl+C 或 `docker stop` 会让服务端当场消失，正在跑的 python/ffmpeg 变成孤儿继续写项目目录，
+ * 而 job.json 还停在 running——下次启动只能靠 boot() 从阶段起点重跑。
+ * 第二次信号直接硬退：用户按两下 Ctrl+C 的意思很明确，不该再拦。
+ */
+function installShutdownHandlers(server: ServerType, runner: JobRunner): void {
+  let closing = false;
+  const shutdown = (signal: NodeJS.Signals): void => {
+    if (closing) {
+      console.log(`\n[shutdown] 再次收到 ${signal}，立即退出`);
+      process.exit(1);
+    }
+    closing = true;
+    console.log(`\n[shutdown] 收到 ${signal}，正在停止：取消运行中的任务并落盘断点…`);
+    const deadline = setTimeout(() => {
+      console.warn(`[shutdown] ${SHUTDOWN_TIMEOUT_MS}ms 内未排空，强制退出`);
+      process.exit(1);
+    }, SHUTDOWN_TIMEOUT_MS);
+    deadline.unref();
+    void runner.shutdown(SHUTDOWN_TIMEOUT_MS).then(() => {
+      // SSE 是长连接，close() 要等它们主动断开；这里不另起协调逻辑，直接连上一起清掉。
+      // 只有 http.Server 有这个方法（ServerType 还包含 http2 变体），运行时判断比类型断言可靠。
+      if ("closeAllConnections" in server && typeof server.closeAllConnections === "function") {
+        server.closeAllConnections();
+      }
+      server.close(() => {
+        clearTimeout(deadline);
+        console.log("[shutdown] 已安全退出，下次启动可从中断阶段继续");
+        process.exit(0);
+      });
+    });
+  };
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
 }
 
 bootstrap();

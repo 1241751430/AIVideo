@@ -14,7 +14,10 @@ import { JobRunner } from "./job-runner.js";
 import { isHeldByEngine, sweepExpiredProjects } from "./retention.js";
 import { makeConfig, makeRequest, noopStages, waitUntil } from "../testkit.js";
 
-/** 十天前：超过任何测试里使用的保留天数。 */
+/**
+ * @author zhangbaohong  @date 2026-10-28  @see https://github.com/1241751430/AIVideo.git
+ * 功能：十天前的时间点——超过任何测试里使用的保留天数。
+ */
 function tenDaysAgo(): Date {
   return new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);
 }

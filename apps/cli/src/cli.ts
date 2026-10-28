@@ -99,6 +99,12 @@ export async function main(argv = process.argv.slice(2), cwd = process.cwd()): P
     case "render:":
       await runRender(cwd, parsed.options);
       return;
+    case "serve:":
+      // serve 是个常驻进程，由仓库根的 ./aivideo 启动脚本接管：它按 AIVIDEO_MODE 直接
+      // exec apps/server/dist/index.js（host）或 docker compose up server（docker），
+      // 根本不经过 node CLI。这里不为它引 @aivideo/server 依赖（那会把 hono 拖进 CLI 的
+      // 安装面与镜像软链），只把走错入口的人指回去，而不是抛一句 Unknown command。
+      throw new Error("serve 是常驻服务，请用仓库根的启动脚本：./aivideo serve（按 AIVIDEO_MODE 走 docker 或 host）");
     default:
       throw new Error(`Unknown command: ${parsed.command.join(" ")}`);
   }
@@ -493,6 +499,7 @@ function printHelp(): void {
 Quick start:
   ./aivideo create                          Interactive quick create (recommended)
   ./aivideo serve                           Start shot-wall workbench in browser (http://127.0.0.1:8787)
+                                            由仓库根启动脚本接管，按 AIVIDEO_MODE 走 docker compose 或 direct node
   ./aivideo generate --brief "主题：夏季防晒喷雾；视频时长：30s"
 
 Commands:

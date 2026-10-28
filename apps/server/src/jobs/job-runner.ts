@@ -8,10 +8,11 @@
 import { existsSync } from "node:fs";
 import type { AppConfig, ProviderSelection } from "@aivideo/core";
 import { createProjectId } from "@aivideo/core";
-import type { CheckpointKind, ExecMode, Job, JobDto, JobPhase, JobRequest, StageKind } from "../types.js";
+import type { ExecMode, Job, JobDto, JobPhase, JobRequest, StageKind } from "../types.js";
 import { EventHub, JobEventLog } from "./events.js";
 import { projectDirOf as resolveProjectDir, scanProjects, writeJob } from "./job-store.js";
 import { defaultStages, type StageContext, type StageDeps, type StageRunner } from "./stages.js";
+import { breakStageOf, isStageKind, nextAfterStage } from "./transitions.js";
 
 /** JobRunner 的注入依赖（全部可测：routes 测试注入假 stages）。 */
 export interface JobRunnerDeps {
@@ -37,6 +38,10 @@ export class JobRunner {
   private readonly jobs = new Map<string, Job>();
   private queue: string[] = [];
   private active: { jobId: string; controller: AbortController } | null = null;
+  /** 关闭期间到达的新任务只落盘不入队：重启后由 boot() 重新拾起。 */
+  private shuttingDown = false;
+  private shutdownPromise: Promise<void> | null = null;
+  private idleWaiters: Array<() => void> = [];
 
   /**
    * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
@@ -178,7 +183,7 @@ export class JobRunner {
       return false;
     }
     if (decision === "redo-stage") {
-      if (!stage || !["script", "assets", "audio", "render"].includes(stage)) {
+      if (!isStageKind(stage)) {
         return false;
       }
       this.beginRun(job, stage, { force: stage });
@@ -259,7 +264,7 @@ export class JobRunner {
    */
   resume(jobId: string): boolean {
     const job = this.jobs.get(jobId);
-    if (!job || job.phase !== "failed" && job.phase !== "cancelled") {
+    if (!job || (job.phase !== "failed" && job.phase !== "cancelled")) {
       return false;
     }
     this.beginRun(job, job.breakStage ?? job.resumeStage ?? "script");
@@ -303,10 +308,66 @@ export class JobRunner {
   }
 
   /**
+   * @author zhangbaohong  @date 2026-10-28  @see https://github.com/1241751430/AIVideo.git
+   * 功能：优雅关闭：把运行中的任务就地落盘为 cancelled（保留 breakStage，重启后在界面上「继续」即可从中断阶段接上），
+   * 清空内存队列，并拒绝关闭期间新到的入队请求；返回的 promise 在驱动循环真正退出（子进程已收尸）后 resolve。
+   *
+   * 为什么不是「保持 running 让 boot() 自动续跑」：用户按 Ctrl+C 是明确要停，重启后静默重跑整条链路是替他做决定；
+   * 而 cancelled 与手动取消走同一条路径，语义、事件、界面表现全部一致，不需要第二套状态。
+   * 排队中的任务不动（它们还没开跑，磁盘上仍是 queued），boot() 会原样重新入队。
+   * @param timeoutMs 最多等多久；超时也 resolve —— 子进程已被 SIGKILL，剩下的只有等回调，不该把进程卡死
+   * @returns 关闭完成（或超时）后 resolve；重复调用返回同一个 promise
+   */
+  shutdown(timeoutMs = 15000): Promise<void> {
+    if (this.shutdownPromise) {
+      return this.shutdownPromise;
+    }
+    this.shuttingDown = true;
+    // 先清队列再取消活动任务：pump() 在 drive 退出的 finally 里还会跑一次，队列必须是空的。
+    this.queue = [];
+    if (this.active) {
+      const job = this.jobs.get(this.active.jobId);
+      if (job) {
+        this.cancel(job.id);
+      }
+      // cancel() 对已是终态的任务会提前返回（不 abort）；这里再显式中止一次，
+      // 确保无论台账停在哪个相位，正在跑的阶段都会收到取消信号。abort 可重复调用。
+      this.active.controller.abort();
+    }
+    this.shutdownPromise = this.waitForIdle(timeoutMs);
+    return this.shutdownPromise;
+  }
+
+  /**
+   * @author zhangbaohong  @date 2026-10-28  @see https://github.com/1241751430/AIVideo.git
+   * 功能：等待当前活动任务结束；已经空闲时立即返回，超时同样返回（不阻塞退出）。
+   */
+  private waitForIdle(timeoutMs: number): Promise<void> {
+    if (!this.active) {
+      return Promise.resolve();
+    }
+    return new Promise<void>((resolveIdle) => {
+      const timer = setTimeout(() => {
+        this.idleWaiters = this.idleWaiters.filter((waiter) => waiter !== onIdle);
+        resolveIdle();
+      }, timeoutMs);
+      const onIdle = (): void => {
+        clearTimeout(timer);
+        resolveIdle();
+      };
+      this.idleWaiters.push(onIdle);
+    });
+  }
+
+  /**
    * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
    * 功能：入队并泵动。
    */
   private enqueue(jobId: string): void {
+    if (this.shuttingDown) {
+      // 任务已经落盘为 queued，boot() 会在下次启动时把它捡回来；此刻再入队只会让它跑两秒就被中止。
+      return;
+    }
     this.queue.push(jobId);
     this.pump();
   }
@@ -327,8 +388,7 @@ export class JobRunner {
     job.resumeStage = stage;
     job.force = options.force;
     job.endStage = options.endStage;
-    // 重新入队即开启新一次运行：上一次停在哪儿不再是「当前」的断点。
-    job.breakStage = undefined;
+    // 重新入队即开启新一次运行：上一次停在哪儿不再是「当前」的断点（breakStage 由 setStatus 的 patch 一并清掉）。
     this.setStatus(job, { phase: "queued", checkpoint: undefined, stage: undefined, breakStage: undefined });
     this.enqueue(job.id);
   }
@@ -415,7 +475,7 @@ export class JobRunner {
           this.emit(current, "log", { message: `阶段 ${stage} 完成（本次运行的终点）` });
           return;
         }
-        const next = this.nextAfterStage(current, stage);
+        const next = nextAfterStage(current, stage);
         if (next.kind === "stage") {
           this.setStatus(current, { phase: "running", stage: next.stage });
           continue;
@@ -430,6 +490,11 @@ export class JobRunner {
       }
     } finally {
       this.active = null;
+      const waiters = this.idleWaiters;
+      this.idleWaiters = [];
+      for (const waiter of waiters) {
+        waiter();
+      }
       this.pump();
     }
   }
@@ -461,45 +526,6 @@ export class JobRunner {
         await this.stages.runRender(ctx);
         return;
     }
-  }
-
-  /**
-   * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
-   * 功能：阶段完成后的转移：auto 依次 script→assets→audio→render→done；
-   * guided 每阶段后进入对应检查点。
-   */
-  private nextAfterStage(job: Job, stage: StageKind): { kind: "stage"; stage: StageKind } | { kind: "await"; checkpoint: CheckpointKind } | { kind: "done" } {
-    // "script" 产物模式只要脚本与分镜：脚本阶段后直接收尾，不进入素材/旁白/渲染。
-    if (job.request.generationMode === "script") {
-      if (job.execMode === "guided" && stage === "script") {
-        return { kind: "await", checkpoint: "script" };
-      }
-      return { kind: "done" };
-    }
-    if (job.execMode === "auto") {
-      switch (stage) {
-        case "script":
-          return { kind: "stage", stage: "assets" };
-        case "assets":
-          return { kind: "stage", stage: "audio" };
-        case "audio":
-          return { kind: "stage", stage: "render" };
-        case "render":
-          return { kind: "done" };
-      }
-      return { kind: "done" };
-    }
-    switch (stage) {
-      case "script":
-        return { kind: "await", checkpoint: "script" };
-      case "assets":
-        return { kind: "await", checkpoint: "shots" };
-      case "audio":
-        return { kind: "await", checkpoint: "audio" };
-      case "render":
-        return { kind: "await", checkpoint: "final" };
-    }
-    return { kind: "done" };
   }
 
   /**
@@ -545,32 +571,4 @@ export class JobRunner {
       hasProjectDir: existsSync(this.projectDirOf(job.projectId))
     };
   }
-}
-
-/**
- * @author zhangbaohong  @date 2026-10-28  @see https://github.com/1241751430/AIVideo.git
- * 功能：推算取消时的断点阶段——「继续」该从哪一段接上。
- * 运行中取当前阶段；排队中取入队时声明的起点；等待中取通向该检查点的那一段：
- * 续跑靠输入指纹跳过已完成的阶段，随后按原模式重新停回同一检查点（script 回到脚本闸，
- * 即重新确认一次脚本——成片链路里没有从检查点直接跳过的旁路，宁可多点一次也不跳过人工确认）。
- */
-function breakStageOf(job: Job): StageKind | undefined {
-  if (job.phase === "running") {
-    return job.stage;
-  }
-  if (job.phase === "awaiting") {
-    switch (job.checkpoint) {
-      case "script":
-        return "script";
-      case "shots":
-        return "assets";
-      case "audio":
-        return "audio";
-      case "final":
-        return "render";
-      default:
-        return undefined;
-    }
-  }
-  return job.resumeStage ?? "script";
 }

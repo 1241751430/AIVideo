@@ -5,27 +5,23 @@
  * @description 项目/任务路由：创建（brief 解析 + 校验 + 参考图 base64 落盘 input/）、列表（任务 + 无任务旧目录 + 损坏隔离）、详情、删除、取消、检查点决策、工件快照与 SSE 事件流。
  * @see https://github.com/1241751430/AIVideo.git
  */
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, statSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { Hono } from "hono";
 import {
   createProjectId,
-  GenerateRequest,
-  GenerationMode,
-  inferInputLanguage,
   isValidProjectId,
   nonEmptyFileExists,
-  parseDuration,
-  parseStructuredBrief,
   previousVideoRelativePath,
   readRenderManifestFile,
   shotImageRelative,
-  shotVideoRelative,
-  validateGenerateRequest
+  shotVideoRelative
 } from "@aivideo/core";
-import type { ExecMode, JobDto, JobRequest, ProjectListItem } from "../types.js";
+import type { ExecMode, JobRequest, ProjectListItem } from "../types.js";
 import { JobEventLog, sseFrame } from "../jobs/events.js";
 import { removeProject, scanProjects } from "../jobs/job-store.js";
+import { isStageKind } from "../jobs/transitions.js";
+import { buildJobRequest, persistInputImages } from "./create-request.js";
 import type { ServerDeps } from "../app.js";
 
 export type { ProjectListItem } from "../types.js";
@@ -48,7 +44,7 @@ export function projectRoutes(deps: ServerDeps): Hono {
     let execMode: ExecMode;
     let projectId: string | undefined;
     try {
-      const parsed = buildJobRequest(deps, body);
+      const parsed = buildJobRequest(deps.config, body);
       request = parsed.request;
       execMode = parsed.execMode;
       const rawImages = Array.isArray(body.images) ? body.images : [];
@@ -134,10 +130,11 @@ export function projectRoutes(deps: ServerDeps): Hono {
       return c.json({ error: "decision must be approve|cancel|redo-stage" }, 400);
     }
     const stage = body?.stage;
-    if (decision === "redo-stage" && !["script", "assets", "audio", "render"].includes(String(stage))) {
+    // 只接受真实阶段名：加 as never 会把非法值一路送到 runner，靠 runner 再拒一次——两处判据容易走偏。
+    if (decision === "redo-stage" && !isStageKind(stage)) {
       return c.json({ error: "redo-stage requires a valid stage" }, 400);
     }
-    const ok = deps.runner.review(c.req.param("id"), decision, stage as never);
+    const ok = deps.runner.review(c.req.param("id"), decision, isStageKind(stage) ? stage : undefined);
     return ok ? c.json({ ok: true }) : c.json({ error: "Not awaiting a checkpoint" }, 409);
   });
 
@@ -292,127 +289,6 @@ function serveableAssetPath(projectDir: string, assetPath: unknown): string | nu
     return null;
   }
   return rel;
-}
-
-/**
- * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
- * 功能：把创建请求（briefText 与显式字段）合成为 JobRequest：显式字段优先、经 core 的 validateGenerateRequest 护栏校验；mode=auto|guided 是执行模式，generationMode 是产物模式。
- * @param deps 服务依赖（取配置默认值）
- * @param body 请求 JSON
- * @returns JobRequest 与执行模式；非法输入抛错
- */
-export function buildJobRequest(deps: ServerDeps, body: Record<string, unknown>): { request: JobRequest; execMode: ExecMode } {
-  const briefText = typeof body.briefText === "string" ? body.briefText : "";
-  const fields = briefText.trim() ? parseStructuredBrief(briefText) : {};
-  const defaults = deps.config.defaults;
-  const explicitString = (key: string): string | undefined =>
-    typeof body[key] === "string" && (body[key] as string).trim() ? (body[key] as string).trim() : undefined;
-
-  const theme = explicitString("theme") ?? fields.theme;
-  const content = explicitString("content") ?? fields.content;
-  if (!theme && !content) {
-    throw new Error("theme 或 content 至少提供一个（可直接输入一段 brief）");
-  }
-  for (const [label, value] of [["theme", theme], ["content", content]] as const) {
-    if (value && value.length > 2000) {
-      throw new Error(`${label} 超过 2000 字符上限`);
-    }
-  }
-
-  const rawGenerationMode = explicitString("generationMode") ?? fields.mode;
-  const generationMode: GenerationMode = rawGenerationMode === "script" ? "script" : "video";
-  const skill = explicitString("skill") ?? fields.skill ?? "auto";
-  const rawDuration = body.durationSeconds;
-  const durationSeconds =
-    typeof rawDuration === "number" ? Math.round(rawDuration) : (parseDuration(fields.duration) ?? defaults.durationSeconds);
-  const aspectRatio = explicitString("aspectRatio") ?? fields.aspect ?? defaults.aspectRatio;
-  const language =
-    explicitString("language") ?? fields.language ?? inferInputLanguage([theme, content]) ?? defaults.language;
-  const platform = explicitString("platform") ?? fields.platform ?? defaults.platform;
-  const providerProfile = explicitString("providerProfile") ?? fields["provider-profile"];
-
-  const generateRequest: GenerateRequest = {
-    theme,
-    content,
-    images: [],
-    skill,
-    mode: generationMode,
-    aspectRatio,
-    durationSeconds,
-    language,
-    platform,
-    persistArtifacts: true
-  };
-  validateGenerateRequest(generateRequest);
-
-  const execMode: ExecMode = explicitString("mode") === "guided" ? "guided" : "auto";
-  const request: JobRequest = {
-    theme,
-    content,
-    generationMode,
-    skill,
-    aspectRatio,
-    durationSeconds,
-    language,
-    platform,
-    providerProfile
-  };
-  return { request, execMode };
-}
-
-/**
- * @author zhangbaohong  @date 2026-10-08  @see https://github.com/1241751430/AIVideo.git
- * 功能：创建时参考图落盘：解码 data-URL/裸 base64，按魔数识别 png/jpeg/webp、单张 ≤10MB、总数 ≤20，
- * 写入 project/<id>/input/<n>.<ext>；任何一张非法即抛错（调用方清理整个预生成目录）。
- * @returns 落盘后的绝对路径列表（顺序即提交顺序；core 据此把第 n 张图按 id 绑定到第 n 个镜头，之后重排也不会换图）
- */
-function persistInputImages(projectsRoot: string, projectId: string, rawImages: unknown[]): string[] {
-  if (rawImages.length > 20) {
-    throw new Error("参考图最多 20 张");
-  }
-  const inputDir = join(projectsRoot, projectId, "input");
-  const written: string[] = [];
-  rawImages.forEach((raw, index) => {
-    if (typeof raw !== "string" || !raw.trim()) {
-      throw new Error(`images[${index}] 必须是非空 base64 字符串`);
-    }
-    const payload = raw.replace(/^data:[^,]*,/, "");
-    const buffer = Buffer.from(payload, "base64");
-    if (buffer.length === 0) {
-      throw new Error(`images[${index}] base64 解码为空`);
-    }
-    if (buffer.length > 10 * 1024 * 1024) {
-      throw new Error(`images[${index}] 超过 10MB 上限`);
-    }
-    const ext = sniffImageExt(buffer);
-    if (!ext) {
-      throw new Error(`images[${index}] 不是受支持的图片（png/jpeg/webp）`);
-    }
-    if (index === 0) {
-      mkdirSync(inputDir, { recursive: true });
-    }
-    const target = join(inputDir, `${index + 1}.${ext}`);
-    writeFileSync(target, buffer);
-    written.push(target);
-  });
-  return written;
-}
-
-/**
- * @author zhangbaohong  @date 2026-10-08  @see https://github.com/1241751430/AIVideo.git
- * 功能：按魔数嗅探图片扩展名：PNG(89 50 4E 47)/JPEG(FF D8)/WEBP(RIFF…WEBP)；未知返回 null。
- */
-function sniffImageExt(buffer: Buffer): string | null {
-  if (buffer.length >= 4 && buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4e && buffer[3] === 0x47) {
-    return "png";
-  }
-  if (buffer.length >= 2 && buffer[0] === 0xff && buffer[1] === 0xd8) {
-    return "jpg";
-  }
-  if (buffer.length >= 12 && buffer.subarray(0, 4).toString("ascii") === "RIFF" && buffer.subarray(8, 12).toString("ascii") === "WEBP") {
-    return "webp";
-  }
-  return null;
 }
 
 /**

@@ -589,3 +589,81 @@ test("取消后 resume 从断点续跑：guided 重新停回原检查点", async
     cleanup();
   }
 });
+
+test("shutdown：运行中任务落 cancelled 并留断点，队列清空，返回的 promise 在驱动退出后才 resolve", async () => {
+  let released = false;
+  const { stages, calls } = makeFakeStages({
+    hang: (_stage, ctx) =>
+      new Promise((_resolve, reject) => {
+        ctx.signal.addEventListener("abort", () => {
+          // 模拟真实子进程：信号到达后还要一点时间才收尸，驱动循环不会同步返回。
+          setTimeout(() => {
+            released = true;
+            reject(new Error("aborted"));
+          }, 20);
+        });
+      })
+  });
+  const { runner, cleanup } = makeRunner({ stages });
+  try {
+    const running = runner.create({ execMode: "auto", request: makeRequest("运行中") });
+    const queued = runner.create({ execMode: "auto", request: makeRequest("排队中") });
+    await waitUntil(() => runner.get(running.id)?.phase === "running", "running");
+
+    await runner.shutdown(2000);
+    assert.equal(released, true, "shutdown 必须等子进程收尸，不能提前 resolve");
+    assert.equal(runner.get(running.id)?.phase, "cancelled", "运行中任务就地落 cancelled，重启后由用户决定是否继续");
+    assert.equal(runner.get(running.id)?.breakStage, "script", "断点保留当前阶段，继续时不必从链路起点重跑");
+    assert.equal(runner.get(queued.id)?.phase, "queued", "排队中的任务保持 queued，boot() 会原样重新入队");
+    assert.deepEqual(calls, ["script"], "关服期间不得再启动任何阶段的执行");
+  } finally {
+    cleanup();
+  }
+});
+
+test("shutdown：之后创建的任务只落盘不入队，重启后 boot() 才执行", async () => {
+  const { stages, calls } = makeFakeStages();
+  const { runner, projectsRoot, cleanup } = makeRunner({ stages });
+  try {
+    await runner.shutdown(1000);
+    const late = runner.create({ execMode: "auto", request: makeRequest("关服期间") });
+    // 给驱动循环几次机会：如果 shutdown 后仍会泵队列，这里就会看到 script 被调用。
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assert.equal(runner.get(late.id)?.phase, "queued");
+    assert.deepEqual(calls, [], "关闭期间不接受新任务执行");
+
+    const revived = new JobRunner({
+      cwd: projectsRoot,
+      projectsRoot,
+      config: makeConfig(),
+      providers: {},
+      stages
+    });
+    revived.boot();
+    await waitUntil(() => revived.get(late.id)?.phase === "done", "revived done");
+    assert.deepEqual(calls, ["script", "assets", "audio", "render"]);
+  } finally {
+    cleanup();
+  }
+});
+
+test("shutdown 可重复调用：第二次直接复用第一次的 promise", async () => {
+  const { stages } = makeFakeStages({
+    hang: (_stage, ctx) =>
+      new Promise((_resolve, reject) => {
+        ctx.signal.addEventListener("abort", () => reject(new Error("aborted")));
+      })
+  });
+  const { runner, cleanup } = makeRunner({ stages });
+  try {
+    const job = runner.create({ execMode: "auto", request: makeRequest() });
+    await waitUntil(() => runner.get(job.id)?.phase === "running", "running");
+    const first = runner.shutdown(2000);
+    const second = runner.shutdown(2000);
+    assert.equal(first, second);
+    await first;
+    assert.equal(runner.get(job.id)?.phase, "cancelled");
+  } finally {
+    cleanup();
+  }
+});

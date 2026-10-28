@@ -189,6 +189,9 @@ export const defaultStages: StageRunner = {
       useGpu: ctx.deps.config.defaults.gpu === true,
       exec: {
         signal: ctx.signal,
+        // 服务端的子进程是 detached 的独立进程组：终端 Ctrl+C 只到服务端，由 abort 统一组杀
+        // （python 与它派生的 ffmpeg 一起收掉）。CLI 不走这条路——那里要靠终端把 SIGINT 直接发给前台进程组。
+        killProcessGroup: true,
         onStdoutLine: (line) => {
           if (line.startsWith("Clip ")) {
             ctx.log(line);

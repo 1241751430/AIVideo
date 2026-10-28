@@ -94,6 +94,15 @@ export interface ExecFileOptions {
   onStdoutLine?: (line: string) => void;
   /** Kills the child process when aborted; the promise rejects. */
   signal?: AbortSignal;
+  /**
+   * Kill the child's whole process group on abort instead of only the direct
+   * child. Needed for the render worker: python spawns ffmpeg as a
+   * grandchild, and killing python alone would leave an orphaned ffmpeg
+   * encoding into a project the user just cancelled or the server just
+   * stopped. On POSIX the child is started as its own group leader
+   * (`detached: true`) so a negative-pid signal reaches every descendant.
+   */
+  killProcessGroup?: boolean;
 }
 
 /**
@@ -122,26 +131,35 @@ export function execFileAsync(command: string, args: string[], options: ExecFile
       }
     }
 
-    const child = execFile(command, args, { maxBuffer: options.maxBufferBytes ?? 64 * 1024 * 1024 }, (error, stdout, stderr) => {
-      if (heartbeat) {
-        clearInterval(heartbeat);
-      }
-      if (options.signal) {
-        options.signal.removeEventListener("abort", onAbort);
-      }
-      if (options.onStdoutLine && lineBuffer) {
-        const line = lineBuffer.trimEnd();
-        if (line) {
-          options.onStdoutLine(line);
+    const child = execFile(
+      command,
+      args,
+      {
+        maxBuffer: options.maxBufferBytes ?? 64 * 1024 * 1024,
+        // Own process group so an abort can signal the whole tree (python → ffmpeg).
+        ...(options.killProcessGroup ? { detached: true } : {})
+      },
+      (error, stdout, stderr) => {
+        if (heartbeat) {
+          clearInterval(heartbeat);
         }
+        if (options.signal) {
+          options.signal.removeEventListener("abort", onAbort);
+        }
+        if (options.onStdoutLine && lineBuffer) {
+          const line = lineBuffer.trimEnd();
+          if (line) {
+            options.onStdoutLine(line);
+          }
+        }
+        if (error) {
+          const detail = [stderr, stdout].filter(Boolean).join("\n").trim();
+          rejectPromise(new Error(detail || error.message));
+          return;
+        }
+        resolvePromise(stdout);
       }
-      if (error) {
-        const detail = [stderr, stdout].filter(Boolean).join("\n").trim();
-        rejectPromise(new Error(detail || error.message));
-        return;
-      }
-      resolvePromise(stdout);
-    });
+    );
 
     let lineBuffer = "";
     if (options.onStdoutLine && child.stdout) {
@@ -160,6 +178,18 @@ export function execFileAsync(command: string, args: string[], options: ExecFile
     }
 
     function onAbort(): void {
+      const pid = child.pid;
+      if (options.killProcessGroup && pid !== undefined) {
+        // Negative pid = whole process group; the group exists because the
+        // child was started detached. Falling back to child.kill keeps the
+        // behaviour intact on platforms where group signalling is unavailable.
+        try {
+          process.kill(-pid, "SIGKILL");
+          return;
+        } catch {
+          // Fall through to the single-process kill below.
+        }
+      }
       child.kill("SIGKILL");
     }
     if (options.signal) {

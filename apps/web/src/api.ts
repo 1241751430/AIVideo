@@ -81,7 +81,7 @@ export interface RetryBatchResponse {
   deleted: string[];
 }
 
-/** 创建任务请求体（与 routes/projects.ts buildJobRequest 对齐）。 */
+/** 创建任务请求体（与 routes/create-request.ts 的 buildJobRequest 对齐）。 */
 export interface CreateProjectBody {
   briefText: string;
   mode: "auto" | "guided";

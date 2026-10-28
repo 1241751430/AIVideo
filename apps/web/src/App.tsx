@@ -134,7 +134,7 @@ export default function App() {
           ) : selected && selected.kind !== "job" ? (
             <LegacyProjectView item={selected} />
           ) : (
-            <TaskView jobId={selectedId} onDeleted={handleDeleted} onChanged={refreshProjects} />
+            <TaskView jobId={selectedId} onDeleted={handleDeleted} onChanged={refreshProjects} onBack={() => select(null)} />
           )}
         </main>
       </div>

@@ -11,6 +11,7 @@ import type { ShotArtifactEntry } from "@aivideo/shared";
 import { api, fileUrl } from "../api";
 import { useToast } from "../hooks/useToasts";
 import Chip from "./Chip";
+import ConfirmDialog from "./ConfirmDialog";
 import EmptyState from "./EmptyState";
 import Lightbox from "./Lightbox";
 import type { LightboxItem } from "./Lightbox";
@@ -268,6 +269,8 @@ function ShotCard({
   const [form, setForm] = useState<ShotForm>(() => formOf(entry));
   const [saving, setSaving] = useState(false);
   const [open, setOpen] = useState(false);
+  /** 待确认的重试目标：两个重试按钮都会删产物并重排任务，和删除同级，不能一点就走。 */
+  const [confirmRetry, setConfirmRetry] = useState<"asset" | "audio" | null>(null);
   const dirty = (): boolean =>
     form.title !== formOf(entry).title ||
     form.narration !== formOf(entry).narration ||
@@ -311,7 +314,7 @@ function ShotCard({
   };
 
   const retry = (target: "asset" | "audio"): void => {
-    submitRetry(target);
+    setConfirmRetry(target);
   };
 
   const submitRetry = (target: "asset" | "audio"): void => {
@@ -461,6 +464,25 @@ function ShotCard({
           </div>
         </div>
       )}
+      <ConfirmDialog
+        open={confirmRetry !== null}
+        title={confirmRetry === "audio" ? "重配音" : "重生成素材"}
+        message={
+          confirmRetry === "audio"
+            ? `确认重做第 ${index + 1} 镜的配音？现有配音文件会被删除，任务重新排队执行旁白阶段（可能再次调用远端模型）。`
+            : `确认重做第 ${index + 1} 镜的画面？现有素材会被删除，任务重新排队执行素材阶段（可能再次调用远端模型）。`
+        }
+        confirmLabel={confirmRetry === "audio" ? "重配音" : "重生成"}
+        busy={busy}
+        onConfirm={() => {
+          const target = confirmRetry;
+          setConfirmRetry(null);
+          if (target) {
+            submitRetry(target);
+          }
+        }}
+        onCancel={() => setConfirmRetry(null)}
+      />
     </article>
   );
 }

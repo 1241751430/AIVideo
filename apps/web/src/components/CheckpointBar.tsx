@@ -2,7 +2,7 @@
  * @file CheckpointBar.tsx
  * @author zhangbaohong
  * @date 2026-09-17
- * @description 检查点操作条：guided 模式等待确认时展示当前检查点说明与「继续 / 重做本阶段 / 放弃」决策入口；渐变描边卡样式，放弃动作经玻璃确认框兜底，操作反馈走 toast。
+ * @description 检查点操作条：guided 模式等待确认时展示当前检查点说明与「继续 / 重做本阶段 / 放弃」决策入口；渐变描边卡样式，放弃与重做（都会删产物并重跑）经玻璃确认框兜底，操作反馈走 toast。
  * @see https://github.com/1241751430/AIVideo.git
  */
 import { useState } from "react";
@@ -21,6 +21,7 @@ export default function CheckpointBar({ job, onChanged }: { job: JobDto; onChang
   const toast = useToast();
   const [busy, setBusy] = useState(false);
   const [confirmAbandon, setConfirmAbandon] = useState(false);
+  const [confirmRedo, setConfirmRedo] = useState(false);
   if (job.phase !== "awaiting" || !job.checkpoint) {
     return null;
   }
@@ -58,13 +59,25 @@ export default function CheckpointBar({ job, onChanged }: { job: JobDto; onChang
         <button className="primary" disabled={busy} onClick={() => decide("approve")}>
           <Check size={14} aria-hidden="true" /> 继续
         </button>
-        <button disabled={busy} onClick={() => decide("redo-stage")}>
+        <button disabled={busy} onClick={() => setConfirmRedo(true)}>
           <RotateCcw size={14} aria-hidden="true" /> 重做{STAGE_LABELS[checkpointToStage(checkpoint)]}阶段
         </button>
         <button className="danger" disabled={busy} onClick={() => setConfirmAbandon(true)}>
           <Ban size={14} aria-hidden="true" /> 放弃任务
         </button>
       </div>
+      <ConfirmDialog
+        open={confirmRedo}
+        title={`重做${STAGE_LABELS[checkpointToStage(checkpoint)]}阶段`}
+        message={`确认重做${STAGE_LABELS[checkpointToStage(checkpoint)]}阶段？该阶段已产出的文件会被清掉并重新执行（可能再次调用远端模型），完成后仍会回到本检查点等你确认。`}
+        confirmLabel="重做"
+        busy={busy}
+        onConfirm={() => {
+          setConfirmRedo(false);
+          decide("redo-stage");
+        }}
+        onCancel={() => setConfirmRedo(false)}
+      />
       <ConfirmDialog
         open={confirmAbandon}
         title="放弃任务"

@@ -8,6 +8,7 @@
 import { useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import { TriangleAlert } from "lucide-react";
+import { useFocusTrap } from "../hooks/useFocusTrap";
 
 /** ConfirmDialog 组件入参。 */
 export interface ConfirmDialogProps {
@@ -37,12 +38,15 @@ export default function ConfirmDialog({
   onCancel
 }: ConfirmDialogProps) {
   const confirmRef = useRef<HTMLButtonElement | null>(null);
+  const cardRef = useRef<HTMLDivElement | null>(null);
+
+  // 焦点陷阱：打开时聚焦确认按钮，Tab 不逃出浮层，关闭后焦点归还原按钮。
+  useFocusTrap(open, cardRef, confirmRef);
 
   useEffect(() => {
     if (!open) {
       return;
     }
-    confirmRef.current?.focus();
     const onKey = (e: KeyboardEvent): void => {
       if (e.key === "Escape") {
         onCancel();
@@ -58,6 +62,7 @@ export default function ConfirmDialog({
   return createPortal(
     <div className="overlay-backdrop" onClick={onCancel}>
       <div
+        ref={cardRef}
         className="confirm-card"
         role="dialog"
         aria-modal="true"

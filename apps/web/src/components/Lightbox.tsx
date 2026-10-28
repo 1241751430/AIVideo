@@ -5,9 +5,10 @@
  * @description 镜头画面灯箱：暗幕放大预览镜头图/视频，支持 ←/→ 跨镜切换与 Esc 关闭，底部显示序号与镜头标题；由镜头墙缩略区唤起。
  * @see https://github.com/1241751430/AIVideo.git
  */
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import { ChevronLeft, ChevronRight, X } from "lucide-react";
+import { useFocusTrap } from "../hooks/useFocusTrap";
 
 /** 灯箱条目。 */
 export interface LightboxItem {
@@ -31,6 +32,11 @@ interface Props {
  * 功能：渲染灯箱浮层并挂 ←/→/Esc 键监听。
  */
 export default function Lightbox({ items, index, onIndex, onClose }: Props) {
+  const stageRef = useRef<HTMLDivElement | null>(null);
+  const closeRef = useRef<HTMLButtonElement | null>(null);
+  // 灯箱铺满全屏，背后的缩略图墙对键盘仍可达，必须把焦点关在里面。
+  useFocusTrap(index !== null, stageRef, closeRef);
+
   useEffect(() => {
     if (index === null || items.length === 0) {
       return;
@@ -54,8 +60,15 @@ export default function Lightbox({ items, index, onIndex, onClose }: Props) {
   const item = items[index];
   return createPortal(
     <div className="overlay-backdrop lightbox" onClick={onClose}>
-      <div className="lightbox-stage" onClick={(e) => e.stopPropagation()}>
-        <button className="icon-btn lightbox-close" aria-label="关闭灯箱" onClick={onClose}>
+      <div
+        ref={stageRef}
+        className="lightbox-stage"
+        role="dialog"
+        aria-modal="true"
+        aria-label={`镜头预览 ${index + 1} / ${items.length}`}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <button ref={closeRef} className="icon-btn lightbox-close" aria-label="关闭灯箱" onClick={onClose}>
           <X size={16} />
         </button>
         {items.length > 1 && (

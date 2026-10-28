@@ -5,8 +5,10 @@
  * @description 快捷键速查表：玻璃浮层卡片列出全部键位（N/／/？/Esc/⌘Enter/←→），? 或侧栏按钮唤起，Esc 或点遮罩关闭。
  * @see https://github.com/1241751430/AIVideo.git
  */
+import { useRef } from "react";
 import { createPortal } from "react-dom";
 import { Keyboard, X } from "lucide-react";
+import { useFocusTrap } from "../hooks/useFocusTrap";
 
 /** 速查表条目。 */
 const SHEET_ROWS: Array<{ keys: string[]; desc: string }> = [
@@ -29,17 +31,28 @@ interface Props {
  * 功能：渲染快捷键速查浮层。
  */
 export default function ShortcutsSheet({ open, onClose }: Props) {
+  const cardRef = useRef<HTMLDivElement | null>(null);
+  const closeRef = useRef<HTMLButtonElement | null>(null);
+  useFocusTrap(open, cardRef, closeRef);
+
   if (!open) {
     return null;
   }
   return createPortal(
     <div className="overlay-backdrop" onClick={onClose}>
-      <div className="sheet-card" role="dialog" aria-label="快捷键速查" onClick={(e) => e.stopPropagation()}>
+      <div
+        ref={cardRef}
+        className="sheet-card"
+        role="dialog"
+        aria-modal="true"
+        aria-label="快捷键速查"
+        onClick={(e) => e.stopPropagation()}
+      >
         <header className="sheet-head">
           <Keyboard size={16} aria-hidden="true" />
           <b>键盘快捷键</b>
           <span className="spacer" />
-          <button className="icon-btn" aria-label="关闭速查表" onClick={onClose}>
+          <button ref={closeRef} className="icon-btn" aria-label="关闭速查表" onClick={onClose}>
             <X size={14} />
           </button>
         </header>

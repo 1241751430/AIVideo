@@ -65,11 +65,14 @@ function deriveProgress(job: JobDto, shots: ShotArtifactEntry[]): { percent: num
     audio: { percent: 70, note: (r) => `配音 ${Math.round(r * 100)}%` },
     render: { percent: 92, note: () => "合成渲染中" }
   };
-  const stage = job.stage ?? job.breakStage ?? "script";
-  const spec = stageBase[stage] ?? { percent: 5, note: () => "" };
+  // 断点未知（旧 job.json 没有 breakStage）时不要冒充脚本阶段的 5%：
+  // 中断/取消按 0% 起点展示，运行中才回退到脚本阶段的起始比例。
+  const stage = job.stage ?? job.breakStage;
   if (job.phase === "failed" || job.phase === "cancelled") {
-    return { percent: spec.percent, note: job.phase === "failed" ? "已中断" : "已取消" };
+    const spec = stage ? stageBase[stage] : undefined;
+    return { percent: spec?.percent ?? 0, note: job.phase === "failed" ? "已中断" : "已取消" };
   }
+  const spec = (stage ? stageBase[stage] : undefined) ?? { percent: 5, note: () => "" };
   let ratio = 0;
   let span = 0;
   if (stage === "assets") {

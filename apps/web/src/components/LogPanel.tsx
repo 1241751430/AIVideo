@@ -9,7 +9,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, Copy, Maximize2, Minimize2 } from "lucide-react";
 import type { EventRecord } from "@aivideo/shared";
 import { useToast } from "../hooks/useToasts";
-import { PHASE_LABELS } from "../labels";
+import { PHASE_LABELS, STAGE_LABELS } from "../labels";
 
 /** 日志级别过滤器。 */
 type LevelFilter = "all" | "log" | "status" | "error";
@@ -34,8 +34,9 @@ function lineOf(event: EventRecord): string {
     return `${time} ${String(event.data.message ?? "")}`;
   }
   const phase = String(event.data.phase ?? "");
+  const stage = event.data.stage ? STAGE_LABELS[String(event.data.stage) as keyof typeof STAGE_LABELS] ?? String(event.data.stage) : "";
   return `${time} ▸ ${PHASE_LABELS[phase as keyof typeof PHASE_LABELS] ?? phase}${
-    event.data.stage ? `（${String(event.data.stage)}）` : ""
+    stage ? `（${stage}）` : ""
   }${event.data.error ? `：${String(event.data.error)}` : ""}`;
 }
 

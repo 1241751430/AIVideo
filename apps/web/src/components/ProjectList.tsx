@@ -190,7 +190,17 @@ export default function ProjectList({ items, selectedId, onSelect, onDeleted }: 
             <div
               key={item.projectId}
               className={`project-item${item.projectId === selectedId ? " selected" : ""}`}
+              role="button"
+              tabIndex={0}
+              aria-current={item.projectId === selectedId ? "true" : undefined}
               onClick={() => onSelect(item.projectId)}
+              onKeyDown={(e) => {
+                // 整行可点但不能用 <button> 包：内部已有删除按钮。
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  onSelect(item.projectId);
+                }
+              }}
             >
               <span className={`dot ${dotClass(item)}`} aria-hidden="true" />
               <span className="meta">

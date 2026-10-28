@@ -105,10 +105,8 @@ export default function DeliverPanel({
             <video controls preload="metadata" src={videoUrl(job.id)} />
           </div>
           <div className="actions">
-            <a href={videoUrl(job.id)} download={`${job.request.theme || job.id}.mp4`}>
-              <button>
-                <Download size={14} aria-hidden="true" /> 下载成片
-              </button>
+            <a className="download-btn" href={videoUrl(job.id)} download={`${job.request.theme || job.id}.mp4`}>
+              <Download size={14} aria-hidden="true" /> 下载成片
             </a>
             <span className="muted deliver-file" title={job.projectId}>
               <CirclePlay size={13} aria-hidden="true" /> {artifacts?.manifest?.outputFile ?? "final.mp4"}
@@ -136,10 +134,13 @@ export default function DeliverPanel({
       {deliverables.length > 0 && (
         <div className="actions">
           {deliverables.map((item) => (
-            <a key={item.key} href={item.href} download={`${job.request.theme || job.id}-${item.file}`}>
-              <button>
-                <item.icon size={14} aria-hidden="true" /> {item.label}
-              </button>
+            <a
+              key={item.key}
+              className="download-btn"
+              href={item.href}
+              download={`${job.request.theme || job.id}-${item.file}`}
+            >
+              <item.icon size={14} aria-hidden="true" /> {item.label}
             </a>
           ))}
         </div>

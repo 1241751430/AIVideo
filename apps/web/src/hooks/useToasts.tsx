@@ -5,7 +5,7 @@
  * @description 全局通知体系：ToastProvider 以 portal 挂玻璃浮层，useToast() 暴露 success/error/info；支持行动按钮、自动过期与 aria-live 播报，替换全站原生 alert。
  * @see https://github.com/1241751430/AIVideo.git
  */
-import { createContext, useCallback, useContext, useMemo, useRef, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { CircleCheck, CircleX, Info, X } from "lucide-react";
@@ -50,6 +50,18 @@ const ToastContext = createContext<ToastApi | null>(null);
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [items, setItems] = useState<ToastItem[]>([]);
   const seq = useRef(0);
+  // 自动过期定时器归容器持有：卸载时统一清掉，避免通知已消失后回调再触碰已卸载的状态。
+  const timers = useRef(new Set<number>());
+
+  useEffect(() => {
+    const pending = timers.current;
+    return () => {
+      for (const timer of pending) {
+        window.clearTimeout(timer);
+      }
+      pending.clear();
+    };
+  }, []);
 
   const dismiss = useCallback((id: number): void => {
     setItems((prev) => prev.filter((t) => t.id !== id));
@@ -60,7 +72,11 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       seq.current += 1;
       const id = seq.current;
       setItems((prev) => [...prev.slice(-(MAX_TOASTS - 1)), { id, kind, text, action }]);
-      window.setTimeout(() => dismiss(id), DISMISS_MS[kind]);
+      const timer = window.setTimeout(() => {
+        timers.current.delete(timer);
+        dismiss(id);
+      }, DISMISS_MS[kind]);
+      timers.current.add(timer);
     },
     [dismiss]
   );

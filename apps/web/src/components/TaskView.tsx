@@ -58,11 +58,17 @@ export default function TaskView({ jobId, onDeleted, onChanged }: Props) {
     setArtifactsKey(0);
   }, [jobId]);
 
+  // 依赖数组只放基本量：直接写 job?.phase 也能跑，但区别在于「job 从 null 变成对象」
+  // 这一变化靠 job?.phase 的 undefined→值 表达不出来，多带一个布尔量才能首帧就拉一次工件。
+  const jobPhase = job?.phase;
+  const jobCheckpoint = job?.checkpoint;
+  const hasJob = job !== null;
+
   useEffect(() => {
-    if (job) {
+    if (hasJob) {
       reloadArtifacts();
     }
-  }, [job?.phase, job?.checkpoint, reloadArtifacts, job !== null]);
+  }, [jobPhase, jobCheckpoint, hasJob, reloadArtifacts]);
 
   if (error && !job) {
     return (
@@ -90,6 +96,10 @@ export default function TaskView({ jobId, onDeleted, onChanged }: Props) {
   const canCancel = busy || job.phase === "awaiting";
   // 失败/取消是终态：没有检查点条可点，只能靠「从断点继续」重新入队。
   const canResume = job.phase === "failed" || job.phase === "cancelled";
+  // 断点未知时不指名阶段：旧版本落盘的 job.json 没有 breakStage，
+  // 继承到它的人不该被告知「停在脚本阶段」这种编出来的事实。
+  const breakStageLabel = job.breakStage ? STAGE_LABELS[job.breakStage] : null;
+  const resumeHint = breakStageLabel ? `任务在${breakStageLabel}阶段` : "任务";
   const script = (artifacts?.script ?? null) as Record<string, unknown> | null;
 
   const handleMutated = (): void => {
@@ -180,11 +190,11 @@ export default function TaskView({ jobId, onDeleted, onChanged }: Props) {
         {canResume && (
           <div className="stale-bar" role="status">
             <TriangleAlert size={14} aria-hidden="true" />
-            任务在{STAGE_LABELS[job.breakStage ?? "script"]}阶段
+            {resumeHint}
             {job.phase === "failed" ? "中断" : "被取消"}，已完成的阶段会按输入指纹跳过，继续不会重复调用远端模型。
             <button className="primary" disabled={resuming} onClick={doResume}>
               <Play size={13} aria-hidden="true" />
-              {resuming ? "入队中…" : `从${STAGE_LABELS[job.breakStage ?? "script"]}继续`}
+              {resuming ? "入队中…" : breakStageLabel ? `从${breakStageLabel}继续` : "从断点继续"}
             </button>
           </div>
         )}

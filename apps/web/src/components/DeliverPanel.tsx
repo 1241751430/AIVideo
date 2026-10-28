@@ -2,11 +2,11 @@
  * @file DeliverPanel.tsx
  * @author zhangbaohong
  * @date 2026-09-17
- * @description 交付面板：影院式暗场框内在线播放成片（Range 流式）与下载；产物被编辑置 videoStale 时展示琥珀警示条与「重新渲染」CTA（覆盖式重写成片，先经确认框）；字幕（captions.srt）与脚本（script.md）在盘时给出独立下载口——它们此前只能去项目目录里找；脚本模式给出产物清单（脚本/分镜/镜头计数）；「打开文件夹」调宿主文件管理器，容器降级时展示宿主路径；操作反馈走 toast。
+ * @description 交付面板：影院式暗场框内在线播放成片（Range 流式）与下载；产物被编辑置 videoStale 时展示琥珀警示条与「重新渲染」CTA（覆盖式重写成片，先经确认框）；重渲保留的上一版成片（final.prev.mp4）在盘时给出下载口，覆盖后可取回；字幕（captions.srt）与脚本（script.md）在盘时给出独立下载口——它们此前只能去项目目录里找；脚本模式给出产物清单（脚本/分镜/镜头计数）；「打开文件夹」调宿主文件管理器，容器降级时展示宿主路径；操作反馈走 toast。
  * @see https://github.com/1241751430/AIVideo.git
  */
 import { useState } from "react";
-import { CircleCheck, CirclePlay, Download, FileText, FolderOpen, RotateCcw, Subtitles, TriangleAlert } from "lucide-react";
+import { CircleCheck, CirclePlay, Download, FileText, FolderOpen, History, RotateCcw, Subtitles, TriangleAlert } from "lucide-react";
 import type { ArtifactsSnapshot, JobDto } from "@aivideo/shared";
 import { api, fileUrl, videoUrl } from "../api";
 import { useToast } from "../hooks/useToasts";
@@ -67,12 +67,18 @@ export default function DeliverPanel({
   // 字幕/脚本一直在磁盘上，但此前只有成片一个下载口——文案工作者拿不到自己的东西。
   // 路径以服务端给的为准（字幕文件名来自 manifest），md 固定落在项目根。
   const captionsPath = artifacts?.manifest?.captionsFile ?? "captions/captions.srt";
+  // 重渲是覆盖式写入，服务端在渲染前会把旧成片挪到 .prev 槽位；这里给出取回入口，
+  // 否则用户点了「重新渲染」就等于把上一版永久丢掉。
+  const previousVideoPath = artifacts?.previousVideoFile ?? null;
   const deliverables: Array<{ key: string; label: string; icon: typeof Download; href: string; file: string }> = [
     ...(artifacts?.captionsReady
       ? [{ key: "srt", label: "下载字幕", icon: Subtitles, href: fileUrl(job.id, captionsPath), file: "captions.srt" }]
       : []),
     ...(artifacts?.scriptMdReady
       ? [{ key: "md", label: "下载脚本", icon: FileText, href: fileUrl(job.id, "script.md"), file: "script.md" }]
+      : []),
+    ...(previousVideoPath
+      ? [{ key: "prev", label: "下载上一版成片", icon: History, href: fileUrl(job.id, previousVideoPath), file: "上一版.mp4" }]
       : [])
   ];
 
@@ -150,7 +156,7 @@ export default function DeliverPanel({
       <ConfirmDialog
         open={confirming}
         title="重新渲染成片"
-        message="将强制重跑渲染阶段并覆盖当前成片（project 目录下的 final.mp4）。素材与配音不会重新生成，不产生远端费用。确认继续？"
+        message="将强制重跑渲染阶段并覆盖当前成片。素材与配音不会重新生成，不产生远端费用；当前成片会保留一份为 final.prev.mp4，覆盖后仍可在此下载。确认继续？"
         confirmLabel="重新渲染"
         danger={false}
         busy={busy}

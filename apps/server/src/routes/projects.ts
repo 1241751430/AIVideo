@@ -14,8 +14,10 @@ import {
   GenerationMode,
   inferInputLanguage,
   isValidProjectId,
+  nonEmptyFileExists,
   parseDuration,
   parseStructuredBrief,
+  previousVideoRelativePath,
   readRenderManifestFile,
   shotImageRelative,
   shotVideoRelative,
@@ -162,15 +164,12 @@ export function projectRoutes(deps: ServerDeps): Hono {
     const manifest = readRenderManifestFile(dir);
     const script = readJson("script.json");
     const brief = readJson("brief.json");
-    const fileExists = (absolutePath: string): boolean => {
-      try {
-        const st = statSync(absolutePath);
-        return st.isFile() && st.size > 0;
-      } catch {
-        return false;
-      }
-    };
+    const fileExists = (absolutePath: string): boolean => nonEmptyFileExists(absolutePath);
     const exists = (relative: string): boolean => fileExists(resolve(dir, relative));
+    // 重渲是覆盖式操作（见 renderProject 里的 .prev 备份）：把上一版的位置也一并算出来，
+    // 用户才有机会在覆盖后取回旧成片。没有 manifest 就没有「上一版」这个概念。
+    const previousCandidate = manifest?.outputFile ? previousVideoRelativePath(manifest.outputFile) : null;
+    const previousFile = previousCandidate && exists(previousCandidate) ? previousCandidate : null;
     const shots = (manifest?.shots ?? []).map((entry) => {
       const shotId = String(entry.shotId ?? "");
       const shotVideo = shotVideoRelative(shotId);
@@ -197,7 +196,11 @@ export function projectRoutes(deps: ServerDeps): Hono {
       // 这两份是「可交付但只在磁盘上」的产物：交付面板要给出下载入口，就得先知道盘上有没有。
       // 走同一套 fileExists 口径（存在且非空），避免把 0 字节的残留文件当成可下载。
       scriptMdReady: exists("script.md"),
-      captionsReady: exists(manifest?.captionsFile ?? "captions/captions.srt")
+      captionsReady: exists(manifest?.captionsFile ?? "captions/captions.srt"),
+      // 重渲是覆盖式操作（见 renderProject 里的 .prev 备份）：把上一版的位置也告诉前端，
+      // 用户才有机会在覆盖后取回旧成片。
+      previousVideoReady: previousFile !== null,
+      previousVideoFile: previousFile
     });
   });
 
@@ -443,7 +446,7 @@ function hasRenderedVideo(projectId: string, deps: ServerDeps): boolean {
   if (!manifest?.outputFile) {
     return false;
   }
-  return existsSync(resolve(deps.projectsRoot, projectId, manifest.outputFile));
+  return nonEmptyFileExists(resolve(deps.projectsRoot, projectId, manifest.outputFile));
 }
 
 /**

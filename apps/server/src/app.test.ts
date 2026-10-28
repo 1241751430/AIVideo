@@ -165,6 +165,27 @@ test("GET /:id/artifacts 汇总工件与成片就绪", async () => {
     };
     assert.equal(withExtras.scriptMdReady, true);
     assert.equal(withExtras.captionsReady, true);
+
+    // 重渲覆盖前的上一版：只有 .prev 槽位在盘时交付面板才给出取回入口。
+    const beforePrev = (await (await ctx.app.request(`/api/projects/${jobId}/artifacts`)).json()) as {
+      previousVideoReady: boolean;
+      previousVideoFile: string | null;
+    };
+    assert.equal(beforePrev.previousVideoReady, false);
+    assert.equal(beforePrev.previousVideoFile, null);
+    writeFileSync(join(dir, "output", "final.prev.mp4"), "9876543210", "utf8");
+    const withPrev = (await (await ctx.app.request(`/api/projects/${jobId}/artifacts`)).json()) as {
+      previousVideoReady: boolean;
+      previousVideoFile: string | null;
+    };
+    assert.equal(withPrev.previousVideoReady, true);
+    assert.equal(withPrev.previousVideoFile, "output/final.prev.mp4", "给出相对路径供 /file 拼接");
+    // 上一版要真的能取回：走既有 /file 白名单端点即可，不需要新端点。
+    const prevFile = await ctx.app.request(
+      `/api/projects/${jobId}/file?path=${encodeURIComponent("output/final.prev.mp4")}`
+    );
+    assert.equal(prevFile.status, 200);
+    assert.equal(await prevFile.text(), "9876543210");
   } finally {
     ctx.cleanup();
   }

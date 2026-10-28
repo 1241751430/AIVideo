@@ -196,7 +196,7 @@ export const defaultStages: StageRunner = {
       return;
     }
     await ensureRenderEnvironmentReady();
-    const { log } = await renderProject({
+    const { log, previousVideoPath } = await renderProject({
       projectsRoot: ctx.deps.projectsRoot,
       projectDir: ctx.projectDir,
       workerScript: join(ctx.deps.cwd, "workers", "media", "render.py"),
@@ -215,7 +215,12 @@ export const defaultStages: StageRunner = {
         render: renderStageFingerprint({ projectDir: ctx.projectDir, manifest })
       });
     }
-    ctx.log(`渲染完成（ffmpeg ${Math.max(0, log.split("\n").filter(Boolean).length)} 行输出）`);
+    const summary = `渲染完成（ffmpeg ${Math.max(0, log.split("\n").filter(Boolean).length)} 行输出）`;
+    ctx.log(
+      previousVideoPath
+        ? `${summary}；上一版成片已保留为 ${previousVideoPath}，可在交付面板下载`
+        : summary
+    );
   }
 };
 

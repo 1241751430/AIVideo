@@ -57,7 +57,7 @@ export async function runRender(
 
   const useGpu = getBooleanOption(options, "gpu") || config.defaults.gpu === true;
   console.log(`Rendering project: ${basename(projectDir)}${useGpu ? " (GPU accelerated)" : ""}`);
-  const { videoPath, log } = await renderProject({
+  const { videoPath, previousVideoPath, log } = await renderProject({
     projectsRoot,
     projectDir,
     workerScript: resolve(cwd, "workers", "media", "render.py"),
@@ -71,6 +71,10 @@ export async function runRender(
   });
   if (log) {
     process.stdout.write(log);
+  }
+  if (previousVideoPath) {
+    // 重渲是覆盖写：不告诉用户上一版去哪了，它就跟被删掉没区别。
+    console.log(`Previous video kept at: ${resolve(projectDir, previousVideoPath)}`);
   }
   printVideoReadySummary(projectDir, videoPath);
   return videoPath;

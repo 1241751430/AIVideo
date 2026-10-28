@@ -129,6 +129,13 @@ export interface ArtifactsSnapshot {
   scriptMdReady: boolean;
   /** captions/captions.srt 是否在盘。 */
   captionsReady: boolean;
+  /**
+   * 上一版成片（重渲覆盖前的备份）是否在盘。
+   * 重渲是覆盖式操作，只留一个备份槽位（output/final.prev.mp4），不建版本树。
+   */
+  previousVideoReady: boolean;
+  /** 上一版成片的项目内相对路径；不在盘时为 null。 */
+  previousVideoFile: string | null;
 }
 
 /** 单个能力的计费展示项。 */

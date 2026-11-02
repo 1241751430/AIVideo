@@ -7,15 +7,18 @@
  */
 
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
+  PROJECT_BGM_EXTS,
   deleteShotAudio,
   deleteShotGeneratedAssets,
+  findProjectBgm,
   isValidShotId,
   manifestAssetPaths,
+  projectBgmPath,
   shotAudioPath,
   shotImagePath,
   shotVideoPath
@@ -194,4 +197,36 @@ test("deleteShotAudio removes the wav when present", () => {
   writeFileSync(shotAudioPath(dir, "s1"), "wav");
   assert.deepEqual(deleteShotAudio(dir, "s1"), { deleted: [shotAudioPath(dir, "s1")] });
   assert.ok(!existsSync(shotAudioPath(dir, "s1")));
+});
+
+test("findProjectBgm answers exactly what render.py's find_bgm would", () => {
+  const dir = tempProject();
+  assert.equal(findProjectBgm(dir), null);
+
+  writeFileSync(join(dir, "audio", "bgm.ogg"), "ogg");
+  assert.equal(findProjectBgm(dir), "audio/bgm.ogg");
+
+  // 多首共存时按 PROJECT_BGM_EXTS 的顺序取第一个——与 render.py 的遍历顺序同口径。
+  writeFileSync(join(dir, "audio", "bgm.mp3"), "mp3");
+  assert.equal(findProjectBgm(dir), "audio/bgm.mp3");
+  assert.deepEqual([...PROJECT_BGM_EXTS], ["mp3", "wav", "aac", "m4a", "ogg"]);
+
+  // 空文件也算有：render.py 用的是 exists()，两边判据必须一致，否则指纹与混音会各说各话。
+  writeFileSync(join(dir, "audio", "bgm.wav"), "");
+  rmSync(join(dir, "audio", "bgm.mp3"));
+  assert.equal(findProjectBgm(dir), "audio/bgm.wav");
+
+  // 同前缀但非规范名的文件不参与判定（那是用户的散落文件，不是本系统的 BGM）。
+  rmSync(join(dir, "audio", "bgm.wav"));
+  rmSync(join(dir, "audio", "bgm.ogg"));
+  writeFileSync(join(dir, "audio", "bgm-v2.mp3"), "mp3");
+  assert.equal(findProjectBgm(dir), null);
+});
+
+test("projectBgmPath normalizes the extension and refuses what render.py cannot find", () => {
+  const dir = tempProject();
+  assert.equal(projectBgmPath(dir, "mp3"), join(dir, "audio", "bgm.mp3"));
+  assert.equal(projectBgmPath(dir, ".MP3"), join(dir, "audio", "bgm.mp3"));
+  assert.throws(() => projectBgmPath(dir, "flac"), /Unsupported BGM extension/);
+  assert.throws(() => projectBgmPath(dir, "../escape"), /Unsupported BGM extension/);
 });

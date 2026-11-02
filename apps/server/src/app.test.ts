@@ -141,11 +141,15 @@ test("GET /:id/artifacts 汇总工件与成片就绪", async () => {
       videoReady: boolean;
       scriptMdReady: boolean;
       captionsReady: boolean;
+      assetMode: string | null;
       shots: Array<{ files: Record<string, string | null> }>;
     };
     assert.equal(body.videoReady, true);
     assert.equal(body.scriptMdReady, false, "没有 script.md 时不给下载入口");
     assert.equal(body.captionsReady, false, "没有 captions.srt 时不给下载入口");
+    // 老格式清单的条目没有 assetKind（normalizeRenderManifest 原样透传、不补默认值）：
+    // 认不出来的来源只能按标题卡计——这正是默认配置下「没有 image/video 提供者」的样子。
+    assert.equal(body.assetMode, "title-card", "缺 assetKind 的老清单按标题卡计");
     assert.deepEqual(body.shots[0]?.files, {
       video: null,
       image: "assets/shot-01.png",
@@ -186,6 +190,83 @@ test("GET /:id/artifacts 汇总工件与成片就绪", async () => {
     );
     assert.equal(prevFile.status, 200);
     assert.equal(await prevFile.text(), "9876543210");
+
+    // 全片 BGM 的来源声明：script.json 里写了什么，快照顶层就回什么。
+    // 交付面板靠它渲染「用户上传 / 素材库 / AI 生成」角标与版权清单，读丢了等于版权标注消失。
+    const bgmProvenanceOf = async (): Promise<unknown> => {
+      const snapshot = (await (await ctx.app.request(`/api/projects/${jobId}/artifacts`)).json()) as {
+        bgmProvenance: unknown;
+      };
+      return snapshot.bgmProvenance;
+    };
+    writeFileSync(
+      join(dir, "script.json"),
+      JSON.stringify({ title: "t", scenes: [], bgmProvenance: { kind: "library", provider: "local-library-music" } }),
+      "utf8"
+    );
+    assert.deepEqual(await bgmProvenanceOf(), { kind: "library", provider: "local-library-music" });
+
+    // script.json 是可以手改的文件，形状不可信：非对象一律当「未登记」，
+    // 不能把字符串或数组原样透给前端（那边会当对象取字段，取到 undefined 反而更难看懂）。
+    for (const bogus of ["user_uploaded", ["user_uploaded"], 42, null]) {
+      writeFileSync(join(dir, "script.json"), JSON.stringify({ bgmProvenance: bogus }), "utf8");
+      assert.equal(await bgmProvenanceOf(), null, `形状不可信的 bgmProvenance 必须回 null：${JSON.stringify(bogus)}`);
+    }
+    // 没有 script.json 的旧项目：同样回 null，不凭空补一个「来源未知」的声明。
+    rmSync(join(dir, "script.json"));
+    assert.equal(await bgmProvenanceOf(), null);
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test("GET /:id/artifacts 的 assetMode 按每镜 assetKind 如实推导", async () => {
+  const ctx = makeTestApp();
+  try {
+    const jobId = await createDoneJob(ctx);
+    const dir = join(ctx.projectsRoot, jobId);
+    const readMode = async (id = jobId): Promise<string | null> => {
+      const snapshot = (await (await ctx.app.request(`/api/projects/${id}/artifacts`)).json()) as {
+        assetMode: string | null;
+      };
+      return snapshot.assetMode;
+    };
+
+    // 还没有清单：没有「画面模式」可谈，必须是 null 而不是「全是标题卡」。
+    assert.equal(await readMode(), null, "无清单不回 title-card");
+
+    const writeManifest = (shots: Array<Record<string, unknown>>): void => {
+      writeFileSync(join(dir, "render-manifest.json"), JSON.stringify({ shots, outputFile: "output/final.mp4" }), "utf8");
+    };
+    // 每一镜都有真实画面（模型生成或用户参考图）——包括历史遗留的非枚举值 "generated-image"，
+    // 只要不是 generated-card 就按真实画面计，不然老项目会被误报成「部分标题卡」。
+    writeManifest([
+      { shotId: "shot-01", assetKind: "image" },
+      { shotId: "shot-02", assetKind: "video" },
+      { shotId: "shot-03", assetKind: "generated-image" }
+    ]);
+    assert.equal(await readMode(), "generated");
+
+    writeManifest([{ shotId: "shot-01", assetKind: "image" }, { shotId: "shot-02", assetKind: "generated-card" }]);
+    assert.equal(await readMode(), "mixed");
+
+    writeManifest([{ shotId: "shot-01", assetKind: "generated-card" }, { shotId: "shot-02" }]);
+    assert.equal(await readMode(), "title-card");
+
+    // 脚本模式不产画面：即便盘上留着别的清单，也不该对用户说「本片全是标题卡」。
+    const scriptRes = await ctx.app.request("/api/projects", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ briefText: "主题：脚本；模式：script" })
+    });
+    const scriptJob = ((await scriptRes.json()) as { job: { id: string } }).job;
+    await waitUntil(() => ctx.runner.get(scriptJob.id)?.phase === "done", "script job done");
+    writeFileSync(
+      join(ctx.projectsRoot, scriptJob.id, "render-manifest.json"),
+      JSON.stringify({ shots: [{ shotId: "shot-01", assetKind: "image" }] }),
+      "utf8"
+    );
+    assert.equal(await readMode(scriptJob.id), null, "脚本模式豁免");
   } finally {
     ctx.cleanup();
   }

@@ -2,17 +2,22 @@
  * @file types.ts
  * @author zhangbaohong
  * @date 2026-09-17
- * @description 核心领域类型定义：生成请求与 Provider 能力枚举、创作产物（简报/脚本包/分镜/字幕/渲染清单）结构、应用与 Provider 配置结构，以及文本/图片/视频/语音四类模型 Provider 的接口契约。
+ * @description 核心领域类型定义：生成请求与 Provider 能力枚举、创作产物（简报/脚本包/分镜/字幕/渲染清单）结构、应用与 Provider 配置结构，以及文本/图片/视频/语音/音乐五类模型 Provider 的接口契约。
  * @see https://github.com/1241751430/AIVideo.git
  */
 
 export type GenerationMode = "script" | "video";
-export type ProviderCapability = "text" | "image" | "video" | "speech";
+export type ProviderCapability = "text" | "image" | "video" | "speech" | "music";
 
 export interface GenerateRequest {
   theme?: string;
   content?: string;
   images?: string[];
+  /**
+   * 用户给出的整段台词（可多句、可带换行）。**逐字对待**：不做 trim 之外的任何改写，
+   * 脚本阶段必须以 `src: "user"` 原样放进对应镜头的 `lines`。缺省时行为与未引入该字段时一致。
+   */
+  dialogue?: string;
   skill: string | "auto";
   mode: GenerationMode;
   aspectRatio: string;
@@ -40,6 +45,8 @@ export interface BriefDocument {
   theme?: string;
   content?: string;
   inputImages: string[];
+  /** 用户提供的整段台词；有值时脚本提示词会要求「逐字放进 lines 且 src=user」。 */
+  dialogue?: string;
   selectedSkillId: string;
   selectedSkillName: string;
   language: string;
@@ -47,6 +54,51 @@ export interface BriefDocument {
   aspectRatio: string;
   durationSeconds: number;
   creativeDirection: string;
+}
+
+/**
+ * 剧本角色。id 由模型给出（也可以用角色名归一），它只是 `ScriptLine.speaker` 的引用键，
+ * 因此允许大小写与 `_`/`-`，**不能过 slugify**（那会把大小写与合法符号抹平，导致 speaker 对不上）。
+ */
+export interface ScriptRole {
+  id: string;
+  name: string;
+  /** 该角色的音色标识（随提供者而异，如 "Tingting"）；缺省时按镜头/配置档默认回落。 */
+  voice?: string;
+  /** 外观描述，会被拼进该角色出场镜头的 visualPrompt（一致性取决于图像模型）。 */
+  appearance?: string;
+}
+
+/**
+ * 镜内台词。`text` 是**成句的原文**，渲染时直接交给语音合成，因此 `src: "user"` 的台词必须与用户输入逐字节相等
+ * （不 trim 内容内部、不改标点）。`speaker` 指向 `ScriptPackage.roles[].id`，对不上时归一化会丢弃该字段而不是丢整句。
+ */
+export interface ScriptLine {
+  speaker?: string;
+  text: string;
+  src: "user" | "generated";
+}
+
+/**
+ * 素材版权溯源。它是**对外交付物的一部分**：片子发出去以后，观众/平台有权利知道某个画面是哪来的。
+ *
+ * 硬约束（见 `normalizeScriptPackage` / `buildRenderManifest` 的校验）：**无许可的素材一律不进分镜**。
+ * `kind === "stock"` 必须同时给出 `sourceUrl` 与 `license`，缺一个就拒绝整份脚本/清单，而不是静默降级成标题卡——
+ * 「误导比缺失更伤信任」：一片没有标注来源的素材，用户会以为是自己可以随便用的。
+ */
+export interface AssetProvenance {
+  /** 来源类别：用户上传 / AI 生成 / 网络库存素材 / 本地素材库。 */
+  kind: "user_uploaded" | "ai_generated" | "stock" | "library";
+  /** 生成方/来源方 id，如 "openai-compatible-image"、"pexels"；`ai_generated` 时必填。 */
+  provider?: string;
+  /** 许可证标识，如 "CC0-1.0"、"CC-BY-4.0"、"provider-terms"；`stock` 时必填，`user_uploaded` 缺省为 "user-provided"。 */
+  license?: string;
+  /** 原始出处链接；`stock` 时必填（没有出处的网络素材无法核对许可）。 */
+  sourceUrl?: string;
+  /** 展示用署名文本，如 "Photo by Jane Doe / Pexels"。 */
+  attribution?: string;
+  /** 获取时间（ISO 8601），用于许可证版本追溯。 */
+  retrievedAt?: string;
 }
 
 export interface ScriptScene {
@@ -57,6 +109,13 @@ export interface ScriptScene {
   shotType: string;
   durationSeconds: number;
   caption: string;
+  /**
+   * 镜内对白。**为空数组或缺失时，该镜的一切行为与引入台词之前完全相同**（旁白取 `narration`）。
+   * 有值时 `narration` 退居「旁白/画外音」，配音顺序为 lines 在前、narration 在后。
+   */
+  lines?: ScriptLine[];
+  /** 本镜画面的来源声明（模型可给出）；归一化时按 [[AssetProvenance]] 的硬约束校验后带到分镜。 */
+  provenance?: AssetProvenance;
 }
 
 export interface ScriptPackage {
@@ -68,6 +127,13 @@ export interface ScriptPackage {
   bgmStyle: string;
   cta: string;
   hashtags: string[];
+  /** 角色表（最多 4 个，id 唯一）。缺省或空时台词只保留 `text`，不引用音色。 */
+  roles?: ScriptRole[];
+  /**
+   * 全片 BGM 的来源声明。用户上传的曲子走 `kind: "user_uploaded"`；音乐提供者生成的走 `ai_generated`
+   * （`provider` 必填）。缺省时视为「未声明」——交付面板与 `script.md` 会显示为未知来源，而不是编一个。
+   */
+  bgmProvenance?: AssetProvenance;
 }
 
 export interface StoryboardShot {
@@ -85,6 +151,19 @@ export interface StoryboardShot {
    * 只有 assetSource=reference_image 的镜头有值；早期项目缺该字段时由读取方回退到镜头当前下标。
    */
   inputImageIndex?: number;
+  /**
+   * 镜内台词，由 `script.json` 的 `scenes[].lines` 原样带下来。**缺失或为空时该镜行为与引入台词之前完全相同**
+   * （配音只念 `narration`）；有值时 `lines` 在前、`narration` 作为旁白/画外音在后，合成进同一个 `audio/<id>.wav`。
+   * 字段按需展开写入：无台词的镜头不落这个键，故事 board.json 与今天逐字节相同。
+   */
+  lines?: ScriptLine[];
+  /** 逐镜覆盖音色；缺省时先按 `lines[].speaker` 找角色音色，再交给 provider 的默认音色。 */
+  voice?: string;
+  /**
+   * 该镜画面的来源声明，由 `script.json` 的 `scenes[].provenance` 原样带下来。
+   * 与 [[StoryboardShot.lines]] 同样按需展开：没有声明就不落这个键，storyboard.json 与今天逐字节相同。
+   */
+  provenance?: AssetProvenance;
 }
 
 export interface Storyboard {
@@ -109,6 +188,8 @@ export interface RenderShot {
   overlayText: string;
   caption: string;
   visualPrompt: string;
+  /** 该镜画面的来源声明，随清单落盘，交付面板与导出文稿据此展示版权信息。 */
+  provenance?: AssetProvenance;
 }
 
 /**
@@ -135,6 +216,11 @@ export interface RenderShotInput {
   overlayText: string;
   caption: string;
   visualPrompt: string;
+  /**
+   * 该镜画面的来源声明（来自分镜）。它是「声明的输入」而非执行结果，因此与 visualPrompt 同处 input 分节——
+   * 素材阶段重写清单时必须原样带回去，否则来源信息会在第一次跑素材时凭空消失。
+   */
+  provenance?: AssetProvenance;
 }
 
 /** 执行状态：素材/配音阶段原地写入的结果，按 shotId 绑定（重排镜头只动 input.shots，状态天然跟随）。 */
@@ -188,6 +274,7 @@ export interface ProviderProfileConfig {
   image?: string;
   video?: string;
   speech?: string;
+  music?: string;
 }
 
 export interface AppConfig {
@@ -278,11 +365,39 @@ export interface SpeechProvider {
   synthesizeSpeech(request: SpeechGenerationRequest): Promise<{ outputPath: string }>;
 }
 
+export interface MusicGenerationRequest {
+  prompt: string;
+  outputPath: string;
+  durationSeconds: number;
+  /** 成片风格，来自 script.bgmStyle，供 provider 拼提示词 */
+  style?: string;
+}
+
+export interface MusicProvider {
+  readonly id: string;
+  readonly capability: "music";
+  readonly isRemote: boolean;
+  /**
+   * 该提供者的曲子属于哪一种来源，用于写进 `bgmProvenance`：本地素材库出来的记 `library`（曲目本身另有许可），
+   * 模型现生成的记 `ai_generated`。缺省按 `ai_generated` 处理——宁可把「未知」说成 AI 生成，也不要把
+   * 一首模型生成的曲子标成「素材库」而让用户以为它来自某个有明确许可的曲库。
+   */
+  readonly provenanceKind?: "library" | "ai_generated";
+  test(options?: { live?: boolean }): Promise<ProviderHealth>;
+  /**
+   * 合成（或从素材库取）一首曲子写到 outputPath。
+   * **返回 null 表示「这个 provider 提供不了」**（如素材库里没有匹配曲目），而不是失败：
+   * 上层据此跳过 BGM 并在阶段日志与交付面板里明示「无 BGM」，绝不静默产出一个空音频。
+   */
+  synthesizeMusic(request: MusicGenerationRequest): Promise<{ outputPath: string } | null>;
+}
+
 export interface ProviderSelection {
   text?: TextModelProvider;
   image?: ImageModelProvider;
   video?: VideoModelProvider;
   speech?: SpeechProvider;
+  music?: MusicProvider;
 }
 
 export interface ProjectArtifacts {

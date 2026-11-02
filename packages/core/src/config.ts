@@ -62,6 +62,20 @@ const DEFAULT_CONFIG: AppConfig = {
       enabled: true,
       description: "预留远程视频模型接口"
     },
+    "local-library-music": {
+      type: "local-library-music",
+      capability: "music",
+      vendor: "builtin",
+      enabled: true,
+      description: "按 bgmStyle 从 assets/bgm-library/ 取本地曲目；没有匹配就不配乐"
+    },
+    "noop-music": {
+      type: "noop-music",
+      capability: "music",
+      vendor: "builtin",
+      enabled: true,
+      description: "不产音乐的占位实现：声明了音乐能力但实际不配乐"
+    },
     "openai-text": {
       type: "openai-compatible",
       capability: "text",
@@ -165,25 +179,29 @@ const DEFAULT_CONFIG: AppConfig = {
       text: "local-rule-text",
       image: "noop-image",
       video: "noop-video",
-      speech: "local-say"
+      speech: "local-say",
+      music: "local-library-music"
     },
     openai: {
       text: "openai-text",
       image: "openai-image",
       video: "noop-video",
-      speech: "local-say"
+      speech: "local-say",
+      music: "local-library-music"
     },
     china: {
       text: "aliyun-text",
       image: "aliyun-image",
       video: "noop-video",
-      speech: "local-say"
+      speech: "local-say",
+      music: "local-library-music"
     },
     volcengine: {
       text: "volcengine-text",
       image: "volcengine-image",
       video: "volcengine-video",
-      speech: "local-say"
+      speech: "local-say",
+      music: "local-library-music"
     }
   }
 };

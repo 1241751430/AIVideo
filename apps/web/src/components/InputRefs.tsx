@@ -7,14 +7,15 @@
  */
 import { useEffect, useState } from "react";
 import { Image as ImageIcon } from "lucide-react";
+import { MAX_INPUT_IMAGES } from "@aivideo/shared";
 import { inputImageUrl } from "../api";
 
 /**
  * 探测上限（防越界请求无限延伸）。
- * 必须与创建时的参考图上限对齐（服务端 apps/server/src/jobs/upload-store.ts 的上传序号上限 MAX_INPUT_IMAGES = 20），
- * 否则用户在创建页传了 12 张，任务头只显示得出 8 张，看起来像丢图。
+ * 与创建时的参考图上限同源（@aivideo/shared 的 MAX_INPUT_IMAGES），否则用户在创建页传了 20 张、
+ * 任务头只显示得出前几张，看起来像丢图。
  */
-const MAX_PROBE = 20;
+const MAX_PROBE = MAX_INPUT_IMAGES;
 
 /** InputRefs 组件入参。 */
 interface Props {

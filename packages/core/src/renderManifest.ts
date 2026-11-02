@@ -78,7 +78,10 @@ export function writeRenderManifestFile(projectDir: string, manifest: RenderMani
         durationSeconds: shot.durationSeconds,
         overlayText: shot.overlayText,
         caption: shot.caption,
-        visualPrompt: shot.visualPrompt
+        visualPrompt: shot.visualPrompt,
+        // 版权溯源属于「声明的输入」：重排镜头、素材阶段重写清单都要把它原样带回去。
+        // 条件展开而非直接赋值，是为了让没有 provenance 的项目落盘与今天逐字节相同。
+        ...(shot.provenance ? { provenance: shot.provenance } : {})
       }))
     },
     state: {
@@ -127,7 +130,9 @@ function flattenRenderManifest(input: RenderManifestFile["input"], state: unknow
         ...(shotState.audioPath !== undefined ? { audioPath: shotState.audioPath } : {}),
         overlayText: entry.overlayText,
         caption: entry.caption,
-        visualPrompt: entry.visualPrompt
+        visualPrompt: entry.visualPrompt,
+        // 老清单没有 provenance 就不落键：读回来的形状与升级前一致。
+        ...(entry.provenance ? { provenance: entry.provenance } : {})
       };
     })
   };

@@ -5,13 +5,14 @@
  * @description 参考图分片上传路由（挂载于 /api/uploads，与 /api/projects 的 :id 通配完全隔离）：
  * 先建会话、再一张一 PUT 二进制流（每请求体 ≤10MB，服务端边写边限流）、最后创建任务时只带 uploadId 由服务端按序搬进项目 input/。
  * 这样无论用户选了多少张图，单个 HTTP 请求的体积都是常数级，不再随张数线性膨胀。
+ * 另含 `PUT /:uploadId/bgm`：创建卡片选中的背景音乐同样先落到会话里，创建时随任务一并落盘——
+ * 任务一创建就入队开跑，那时 `PUT /api/projects/:id/bgm` 会被 guardEditable 以 409 拒绝，只能走这条预上传路线。
  * @see https://github.com/1241751430/AIVideo.git
  */
 import { Hono } from "hono";
-import { MAX_INPUT_IMAGES } from "@aivideo/core";
+import { MAX_INPUT_IMAGES, MAX_INPUT_IMAGE_BYTES, MAX_BGM_BYTES } from "@aivideo/shared";
 import type { ServerDeps } from "../app.js";
 import {
-  MAX_INPUT_IMAGE_BYTES,
   UploadError,
   createUploadSession,
   listUploadSession,
@@ -19,6 +20,7 @@ import {
   removeUploadSession,
   sweepExpiredUploads
 } from "../jobs/upload-store.js";
+import { receiveSessionBgm } from "../jobs/bgm-store.js";
 
 /**
  * @author zhangbaohong  @date 2026-10-28  @see https://github.com/1241751430/AIVideo.git
@@ -42,6 +44,27 @@ export function uploadRoutes(deps: ServerDeps): Hono {
       return c.json({ error: "上传会话不存在或已过期" }, 404);
     }
     return c.json(session);
+  });
+
+  /**
+   * 创建卡片选中的背景音乐：请求体即音频二进制，落到会话目录的 `bgm.<ext>`，创建任务时由 bgmUploadId 引用。
+   * **必须注册在 `/:uploadId/:index` 之前**：Hono 按注册顺序匹配，否则 "bgm" 会被 `:index` 吞走
+   * （parseInt("bgm") → NaN → receiveImage 抛「序号必须…」）。
+   */
+  router.put("/:uploadId/bgm", async (c) => {
+    const declared = Number.parseInt(c.req.header("content-length") ?? "", 10);
+    if (Number.isFinite(declared) && declared > MAX_BGM_BYTES) {
+      return c.json({ error: `背景音乐不能超过 ${MAX_BGM_BYTES / (1024 * 1024)}MB` }, 413);
+    }
+    try {
+      const bgm = await receiveSessionBgm(deps.projectsRoot, c.req.param("uploadId"), c.req.raw.body);
+      return c.json({ bgm });
+    } catch (error) {
+      if (error instanceof UploadError) {
+        return c.json({ error: error.message }, error.status);
+      }
+      return c.json({ error: error instanceof Error ? error.message : String(error) }, 500);
+    }
   });
 
   router.put("/:uploadId/:index", async (c) => {

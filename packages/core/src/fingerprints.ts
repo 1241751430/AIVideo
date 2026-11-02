@@ -9,7 +9,9 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
-import type { BriefDocument, RenderManifest, Storyboard, StoryboardShot } from "./types.js";
+import type { BriefDocument, RenderManifest, ScriptLine, ScriptRole, Storyboard, StoryboardShot } from "./types.js";
+import { findProjectBgm } from "./shotFiles.js";
+import { resolveVoice } from "./voice.js";
 
 /**
  * Stage input fingerprints: the rebuild criterion for each pipeline stage,
@@ -68,6 +70,8 @@ export interface ScriptFingerprintInput {
   theme?: string;
   content?: string;
   images?: string[];
+  /** 用户台词：它直接决定 scenes[].lines，改一个字就必须重写脚本。缺省不参与哈希，老项目指纹故不受影响。 */
+  dialogue?: string;
   skill: string;
   mode: string;
   aspectRatio: string;
@@ -140,12 +144,14 @@ function describeRenderInput(
 /**
  * @author zhangbaohong  @date 2026-10-27  @see https://github.com/1241751430/AIVideo.git
  * 功能：script 阶段指纹：主题/正文/用户要求/模板/mode/宽高比/时长/语言/平台 + 参考图（文件名与字节数）。
+ * 台词只在**确实给了**时才进哈希：没有台词的项目载荷与引入该字段之前逐字节相同，老项目不会因为升级被判成「输入变了」。
  */
 export function scriptStageFingerprint(input: ScriptFingerprintInput): string {
   return fingerprintOf({
     stage: "script",
     theme: input.theme ?? "",
     content: input.content ?? "",
+    ...(input.dialogue ? { dialogue: input.dialogue } : {}),
     skill: input.skill,
     mode: input.mode,
     aspectRatio: input.aspectRatio,
@@ -180,17 +186,32 @@ export function assetsShotFingerprint(input: {
 
 /**
  * @author zhangbaohong  @date 2026-10-27  @see https://github.com/1241751430/AIVideo.git
- * 功能：audio 阶段的单镜指纹：与失效矩阵同口径——旁白文本或镜头时长变化即需重新合成（改画面/字幕不需要）。
+ * 功能：audio 阶段的单镜指纹：与失效矩阵同口径——旁白文本、镜头时长、音色或台词变化即需重新合成（改画面/字幕不需要）。
+ * 音色必须进来：同一段台词换个嗓子就是另一份产物，漏掉它会让「换了音色但 wav 被复用」成为静默 bug。
+ * 每句台词带上**解析后的音色**而不只是 speaker：角色表里的 voice 变了、speaker 改了，都会换一副嗓子，必须重配。
+ * @param input.shot 分镜镜头（旁白/时长/台词/逐镜音色）
+ * @param input.roles 角色表；决定每句台词实际用哪个嗓子
+ * @param input.language 语种
+ * @returns 该镜 audio 阶段指纹
  */
 export function audioShotFingerprint(input: {
-  shot: { narration: string; durationSeconds?: number };
+  shot: { narration: string; durationSeconds?: number; lines?: ScriptLine[]; voice?: string };
+  roles?: ScriptRole[];
   language?: string;
 }): string {
   return fingerprintOf({
     stage: "audio",
     narration: input.shot.narration,
     durationSeconds: input.shot.durationSeconds ?? null,
-    language: input.language ?? ""
+    language: input.language ?? "",
+    voice: input.shot.voice ?? "",
+    // 恒展开成数组（哪怕为空）：载荷形状固定，老项目只是多一个空数组——按 §5.2 的预期触发一次重配。
+    lines: (input.shot.lines ?? []).map((line) => ({
+      text: line.text,
+      speaker: line.speaker ?? "",
+      src: line.src,
+      voice: resolveVoice(line, input.roles) ?? ""
+    }))
   });
 }
 
@@ -198,6 +219,8 @@ export function audioShotFingerprint(input: {
  * @author zhangbaohong  @date 2026-10-27  @see https://github.com/1241751430/AIVideo.git
  * 功能：render 阶段指纹：清单里的全部渲染入参（尺寸/时长/BGM + 每镜标题、字幕、时长、画面素材与配音文件的 size/mtime）。
  * 素材被重新生成或删除都会改变指纹，因此「素材更新后成片未重渲」可以被精确识别。
+ * BGM 除 `bgmStyle` 字符串外还必须带上**文件本身**：换曲/删曲/静默替换都是成片内容的变化，
+ * 只哈希风格名会让「换了背景音乐但成片没变」看起来像缓存命中。
  * 刻意不含 outputFile/captionsFile：它们只决定写到哪里，不决定成片内容，改路径不该触发重渲。
  */
 export function renderStageFingerprint(input: {
@@ -212,6 +235,7 @@ export function renderStageFingerprint(input: {
     height: manifest.height,
     durationSeconds: manifest.durationSeconds,
     bgmStyle: manifest.bgmStyle,
+    bgm: describeRenderInput(input.projectDir, findProjectBgm(input.projectDir) ?? undefined),
     shots: manifest.shots.map((shot) => ({
       shotId: shot.shotId,
       title: shot.title,
@@ -333,13 +357,15 @@ function summarizeShotFingerprints(
  * @author zhangbaohong  @date 2026-10-27  @see https://github.com/1241751430/AIVideo.git
  * 功能：plan 视图：不执行任何阶段，只凭磁盘上的指纹与产物算出各阶段「会不会重做」以及会重做哪些镜头；
  * 老项目（无指纹文件）全部报 unknown，等价于旧行为（文件存在即复用）。
- * @param input projectDir + 可选的任务请求（缺省则 script 报 unknown，因为请求无法从磁盘还原）+ 可选产物
+ * @param input projectDir + 可选的任务请求（缺省则 script 报 unknown，因为请求无法从磁盘还原）+ 可选产物 + 可选角色表
  * @returns 按 script → assets → audio → render 顺序的阶段结论
  */
 export function buildStagePlan(input: {
   projectDir: string;
   request?: ScriptFingerprintInput;
   artifacts?: FingerprintArtifacts | null;
+  /** 角色表（来自 script.json）：audio 阶段要按它解析每句台词的音色，缺省时角色音色一律不计。 */
+  roles?: ScriptRole[];
 }): StagePlanEntry[] {
   const recorded = readStageFingerprints(input.projectDir);
   const script: StagePlanEntry = {
@@ -368,7 +394,7 @@ export function buildStagePlan(input: {
     })
   );
   const audio = summarizeShotFingerprints(artifacts.storyboard.shots, recorded?.audio, (shot) =>
-    audioShotFingerprint({ shot, language: artifacts.brief.language })
+    audioShotFingerprint({ shot, roles: input.roles, language: artifacts.brief.language })
   );
   return [
     script,

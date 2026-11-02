@@ -2,11 +2,11 @@
  * @file TaskView.tsx
  * @author zhangbaohong
  * @date 2026-09-17
- * @description 任务详情视图：bento 任务头（状态徽标 + 参数 chips + 参考图条 + 派生进度 stepper）、SSE 断线提示条、图标化操作组（刷新/取消/删除走确认框与 toast）；组合检查点操作条、脚本编辑器、镜头墙、交付面板与运行日志，订阅 SSE 并在阶段/检查点变化后刷新工件快照，运行期额外按节拍补拉（镜头逐张落盘，只靠阶段切换跟不上进度）；项目不存在时给出返回新建的出口。
+ * @description 任务详情视图：bento 任务头（状态徽标 + 参数 chips + 参考图条 + 派生进度 stepper）、SSE 断线提示条、画面模式常驻提示（全片标题卡或部分缺失时明说「没有真实画面」，不把标题卡说成 AI 生成）、图标化操作组（刷新/取消/删除走确认框与 toast）；组合检查点操作条、脚本编辑器、镜头墙、交付面板与运行日志，订阅 SSE 并在阶段/检查点变化后刷新工件快照，运行期额外按节拍补拉（镜头逐张落盘，只靠阶段切换跟不上进度）；项目不存在时给出返回新建的出口。
  * @see https://github.com/1241751430/AIVideo.git
  */
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Ban, Play, RefreshCw, Trash, TriangleAlert, WifiOff } from "lucide-react";
+import { Ban, ImageOff, Play, RefreshCw, Trash, TriangleAlert, WifiOff } from "lucide-react";
 import type { ArtifactsSnapshot } from "@aivideo/shared";
 import { api } from "../api";
 import { useJobStream } from "../hooks/useJobStream";
@@ -225,6 +225,23 @@ export default function TaskView({ jobId, onDeleted, onChanged, onBack }: Props)
           {job.request.language && <Chip label={job.request.language} title="口播语言" />}
         </div>
         <InputRefs projectId={job.projectId} />
+        {/*
+          画面模式常驻提示：默认配置下没有 image/video 提供者时，每一镜都只是标题卡（文字占位），
+          但界面此前不说明，用户会把「出了片子」误当成「AI 画了画面」。只说事实，不替用户判断要不要配置。
+          assetMode 为 null（脚本模式 / 还没有清单）时不渲染——那时没有「画面模式」可谈。
+        */}
+        {artifacts?.assetMode === "title-card" && (
+          <div className="stale-bar" role="status">
+            <ImageOff size={14} aria-hidden="true" />
+            本片全部镜头为标题卡（文字占位），没有真实画面——当前配置没有可用的图片/视频模型，或素材生成全部失败。
+          </div>
+        )}
+        {artifacts?.assetMode === "mixed" && (
+          <div className="stale-bar" role="status">
+            <ImageOff size={14} aria-hidden="true" />
+            部分镜头只有标题卡占位，未生成真实画面——可在上方镜头墙重试缺失的镜头。
+          </div>
+        )}
         {job.error && <div className="error-line">{job.error}</div>}
         {canResume && (
           <div className="stale-bar" role="status">

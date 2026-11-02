@@ -10,10 +10,9 @@
 import { closeSync, existsSync, mkdirSync, openSync, readdirSync, renameSync, rmSync, statSync, writeSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
-import { assertPathWithin, MAX_INPUT_IMAGES } from "@aivideo/core";
-
-/** 单张参考图的大小上限：10MB（按落盘字节数计，与 core 的生成前校验口径一致）。 */
-export const MAX_INPUT_IMAGE_BYTES = 10 * 1024 * 1024;
+import { assertPathWithin } from "@aivideo/core";
+// 张数与单张字节上限都定义在 @aivideo/shared：前端选图预校验、服务端边写边限流、core 的生成前校验读的是同一组常量。
+import { MAX_INPUT_IMAGES, MAX_INPUT_IMAGE_BYTES } from "@aivideo/shared";
 
 /** 会话目录名：以 `.` 开头，`isValidProjectId` 必然拒绝，因此项目列表/扫描不会把它当成项目。 */
 export const UPLOADS_DIR_NAME = ".uploads";
@@ -205,9 +204,12 @@ export async function receiveImage(
     throw new UploadError(400, "请求体为空");
   }
 
-  const tmp = join(dir, `${index}.part`);
+  // 临时名必须逐请求唯一：客户端重试、双击、断线重发都会让同一序号出现两个并发 PUT，
+  // 共用 `<index>.part` 时两个 fd 都以写模式打开同一个文件，写入互相覆盖，最终落下一张半新半旧的损坏图。
+  // 用 `wx` 独占创建，配上 uuid 后既不会撞名，也堵住了「同路径第二个写者」这条路。
+  const tmp = join(dir, `${index}.${randomUUID()}.part`);
   const reader = body.getReader();
-  const fd = openSync(tmp, "w");
+  const fd = openSync(tmp, "wx");
   let bytes = 0;
   let head = Buffer.alloc(0);
   try {
@@ -227,7 +229,12 @@ export async function receiveImage(
       if (head.length < 16) {
         head = Buffer.concat([head, Buffer.from(value.subarray(0, 16 - head.length))]);
       }
-      writeSync(fd, value);
+      // writeSync 允许短写（返回值小于请求长度），一次没写完就继续写剩余部分，
+      // 否则大图在慢盘上会静默丢尾巴——嗅探通过、文件却是截断的。
+      let offset = 0;
+      while (offset < value.byteLength) {
+        offset += writeSync(fd, value, offset, value.byteLength - offset);
+      }
     }
   } catch (error) {
     closeSync(fd);

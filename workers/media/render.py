@@ -951,11 +951,12 @@ def render(project_dir: Path, manifest_path: Path, gpu: bool = False) -> Path:
     if bgm:
         print(f"Mixing BGM: {bgm.name}", flush=True)
         with_bgm = work_dir / "with_bgm.mp4"
-        try:
-            run(build_bgm_mix_command(output_path, bgm, with_bgm))
-            shutil.move(str(with_bgm), str(output_path))
-        except RuntimeError as exc:
-            warn(f"BGM mix failed; keeping video without BGM: {exc}")
+        # 字幕可以降级、BGM 不可以，这个不对称是有意的：
+        # 字幕缺失只是少了一层可选信息，而成片「有音乐」是用户上传/生成 BGM 的全部目的；
+        # 静默吞掉混音失败，用户会拿到一条没有音乐的片子却以为一切正常——这比直接失败难查得多。
+        # 因此这里不 catch：混音失败让渲染阶段真正失败，日志与界面都能看到原因。
+        run(build_bgm_mix_command(output_path, bgm, with_bgm))
+        shutil.move(str(with_bgm), str(output_path))
 
     validate_output_video(output_path, manifest["width"], manifest["height"])
 

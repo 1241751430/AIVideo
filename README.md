@@ -101,12 +101,14 @@ Notes:
 
 | Endpoint | Purpose |
 |----------|---------|
-| `POST /api/projects` | Create job (`briefText`, `uploadId` — see the three upload rows below — `mode`, `generationMode`, `skill`, `durationSeconds`, `aspectRatio`, `language`, `platform`, `providerProfile`) |
+| `POST /api/projects` | Create job (`briefText`, `uploadId` — see the three upload rows below — `bgmUploadId`, `dialogue`, `mode`, `generationMode`, `skill`, `durationSeconds`, `aspectRatio`, `language`, `platform`, `providerProfile`) |
 | `POST /api/uploads` | Open a reference-image upload session; returns `uploadId` / `maxImages` (20) / `maxBytes` (10 MB) |
 | `PUT /api/uploads/:uploadId/:index` | Upload reference image `index` (0-based, must be contiguous); the body is the raw image bytes, ≤10 MB per request |
+| `PUT /api/uploads/:uploadId/bgm` | Upload background music into the session (raw audio bytes, ≤20 MB); the create request consumes it via `bgmUploadId` — `PUT /:id/bgm` is already 409 once the job exists |
 | `GET` / `DELETE /api/uploads/:uploadId` | Inspect received images / discard the session (idle sessions are swept after 24 h) |
 | `GET /api/projects` / `GET /api/projects/:id` | List / inspect jobs + legacy project dirs |
 | `DELETE /api/projects/:id` / `POST /api/projects/:id/cancel` | Remove / cancel |
+| `PUT` / `DELETE /api/projects/:id/bgm` | Replace / clear the project's background music (overwrite-style; clearing is idempotent) |
 | `GET /api/projects/:id/events` | SSE stream (status + logs, `Last-Event-ID` replay) |
 | `POST /api/projects/:id/review` | Checkpoint decision: `approve` / `cancel` / `redo-stage` |
 | `PUT /api/projects/:id/artifacts/script` · `PUT /api/projects/:id/shots/:shotId` | Inline edits (invalidation matrix applied automatically) |
@@ -129,6 +131,21 @@ Theme: Summer sunscreen spray; Content: lightweight, non-greasy; Aspect: 9:16; D
 ```
 
 Free-form descriptions also work. Images can be passed via `--images`, uploaded during `create`, or dragged into the workbench create page.
+
+### User-supplied dialogue
+
+Write your lines under a `dialogue:` / `台词：` key and they are used **verbatim** — every punctuation mark, space and line break is preserved, and the AI is never allowed to rewrite, shorten or reorder them. The block always runs to the end of the brief, so it can contain `;`, `；` and newlines without being mistaken for key/value separators:
+
+```
+Theme: Summer sunscreen spray; Aspect: 9:16; Duration: 30s
+台词：这瓶防晒，我用了三年。
+出门前十五分钟，涂满一整枚硬币的量；
+别心疼，晒黑更心疼。
+```
+
+Every line lands in `script.json` with `src: "user"`. If the model paraphrases one, it is replaced with your exact wording; if it drops one, that line is put back — no line you wrote can go missing from the finished video. Lines are split on sentence-ending punctuation and newlines only, and are never trimmed internally. The same text can be passed as `--dialogue "…"` on the CLI or as `dialogue` in the `POST /api/projects` body.
+
+Scenes without dialogue (or with no `dialogue` at all) behave exactly as before — `lines` is simply absent from the scene, and `narration` remains the voiceover.
 
 ## Deployment
 
@@ -278,6 +295,16 @@ When possible, non-critical failures are downgraded so the project can still exp
 - Subtitle burn-in failure keeps the video without burned subtitles
 - BGM mixing failure keeps the video without BGM
 - Final output is checked for video stream, duration, and expected resolution
+
+## Background Music
+
+BGM resolves in one place, at the end of the `audio` stage, and never fails the film:
+
+1. **Your upload wins.** A track uploaded at create time (`bgmUploadId`) or later via `PUT /api/projects/:id/bgm` becomes `audio/bgm.<ext>` and is used as-is — no provider is consulted.
+2. **Otherwise the music provider picks a track by `bgmStyle`.** The built-in `local-library-music` provider searches `assets/bgm-library/` (see that folder's README for the matching rules and how to point it elsewhere with `baseURL`). Tracks keep their own extension, so a `.wav` library item lands as `audio/bgm.wav`.
+3. **Otherwise the film has no BGM, and the UI says so.** The delivery panel shows "本片无 BGM" instead of staying silent about it; the renderer simply finds no track and mixes nothing.
+
+Provider failures are logged (`BGM 获取失败…本片无 BGM`) rather than raised — narration and picture are the film. The BGM file is part of the render fingerprint, so changing or removing it marks the video stale; the renderer loops short tracks with `-stream_loop -1`, and the audio stage warns in the log when a track is under half the film length.
 
 ## Security Notes
 

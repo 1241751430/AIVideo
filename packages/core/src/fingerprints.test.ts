@@ -8,7 +8,7 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -138,7 +138,8 @@ test("fingerprints: script fingerprint tracks every request field that changes t
     { aspectRatio: "16:9" },
     { durationSeconds: 60 },
     { language: "en-US" },
-    { platform: "bilibili" }
+    { platform: "bilibili" },
+    { dialogue: "你给的台词，一个字都不许改。" }
   ]) {
     assert.notEqual(
       scriptStageFingerprint({ ...scriptInput(), ...patch }),
@@ -146,6 +147,13 @@ test("fingerprints: script fingerprint tracks every request field that changes t
       `script 指纹应对 ${JSON.stringify(patch)} 变化`
     );
   }
+
+  // 台词是「有/没有」而不是「空串等价」：没给台词时载荷里根本不该出现这个键，老项目才不会因升级被判成输入变了。
+  assert.equal(
+    scriptStageFingerprint({ ...scriptInput(), dialogue: "" }),
+    base,
+    "空台词与没台词必须得到同一指纹"
+  );
 });
 
 test("fingerprints: script fingerprint tracks reference image identity and size", () => {
@@ -199,6 +207,38 @@ test("fingerprints: audio fingerprint tracks narration, duration and language", 
   assert.notEqual(audioShotFingerprint({ shot: shot({ durationSeconds: 8 }), language: "zh-CN" }), base);
   assert.notEqual(audioShotFingerprint({ shot: shot(), language: "en-US" }), base);
   assert.equal(audioShotFingerprint({ shot: shot({ visualPrompt: "换画面", caption: "换字幕" }), language: "zh-CN" }), base);
+});
+
+test("fingerprints: audio fingerprint tracks the voice", () => {
+  const narration = "同一句台词";
+  const tingting = audioShotFingerprint({ shot: { narration, voice: "Tingting" }, language: "zh-CN" });
+  const meijia = audioShotFingerprint({ shot: { narration, voice: "Meijia" }, language: "zh-CN" });
+  const unset = audioShotFingerprint({ shot: { narration }, language: "zh-CN" });
+
+  assert.notEqual(tingting, meijia, "换音色必须重配，否则 wav 会被当成已复用");
+  assert.notEqual(tingting, unset, "显式音色与「交给 provider 兜底」不是同一件事");
+  assert.equal(unset, audioShotFingerprint({ shot: { narration, voice: "" }, language: "zh-CN" }));
+});
+
+test("fingerprints: render fingerprint tracks the bgm file itself, not just its style name", () => {
+  const dir = tempProject();
+  mkdirSync(join(dir, "audio"), { recursive: true });
+  const renderManifest = manifest();
+  const fingerprint = (): string => renderStageFingerprint({ projectDir: dir, manifest: renderManifest });
+
+  const withoutBgm = fingerprint();
+  writeFileSync(join(dir, "audio", "bgm.mp3"), "first-song");
+  const withFirstSong = fingerprint();
+  assert.notEqual(withFirstSong, withoutBgm, "出现 BGM 即改变成片内容");
+
+  // 同名换曲（字节数变化）同样要重渲——这正是用户「换了一首」的常见路径。
+  writeFileSync(join(dir, "audio", "bgm.mp3"), "a-completely-different-song");
+  const withSecondSong = fingerprint();
+  assert.notEqual(withSecondSong, withFirstSong, "换曲必须重渲");
+
+  // 删曲回到无 BGM。
+  rmSync(join(dir, "audio", "bgm.mp3"));
+  assert.equal(fingerprint(), withoutBgm, "删掉 BGM 后指纹回到无 BGM 的状态");
 });
 
 test("fingerprints: render fingerprint tracks manifest inputs and asset file state", () => {

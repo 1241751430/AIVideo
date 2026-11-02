@@ -133,6 +133,101 @@ test("editing: rejects unknown shots, bad ids, and illegal durations", async () 
   assert.throws(() => updateShot(dir, shot.id, { visualPrompt: "  " }), /non-empty string/);
 });
 
+test("editing: lines are persisted verbatim, mirrored into script.json/md, and invalidate the audio", async () => {
+  const { dir, artifacts } = await materializedProject();
+  const shot = artifacts.storyboard.shots[0]!;
+  writeFileSync(shotAudioPath(dir, shot.id), "wav");
+
+  const text = "  他说：「走！」  ";
+  const result = updateShot(dir, shot.id, { lines: [{ speaker: "路人", text, src: "user" }] });
+  assert.equal(result.audioInvalidated, true, "台词变了就是另一份配音");
+  assert.equal(result.assetInvalidated, false, "台词不影响画面");
+  assert.deepEqual(result.deleted, [shotAudioPath(dir, shot.id)]);
+
+  const storyboard = JSON.parse(readFileSync(join(dir, "storyboard.json"), "utf8")) as Storyboard;
+  // 落盘的是原文：user 台词从输入到合成任何环节都不得改写，连首尾空白也不动。
+  assert.deepEqual(storyboard.shots[0]!.lines, [{ text, src: "user" }]);
+  const script = loadScriptPackage(dir)!;
+  assert.deepEqual(script.scenes[0]!.lines, [{ text, src: "user" }], "script.json 与分镜同步");
+  assert.match(readFileSync(join(dir, "script.md"), "utf8"), /台词:   他说：「走！」  /);
+});
+
+test("editing: a speaker that is not in the role table is dropped, the line itself is kept", async () => {
+  const { dir, artifacts } = await materializedProject();
+  const shot = artifacts.storyboard.shots[0]!;
+
+  updateShot(dir, shot.id, { lines: [{ speaker: "查无此人", text: "对白照留", src: "generated" }] });
+  const storyboard = JSON.parse(readFileSync(join(dir, "storyboard.json"), "utf8")) as Storyboard;
+  assert.deepEqual(storyboard.shots[0]!.lines, [{ text: "对白照留", src: "generated" }]);
+});
+
+test("editing: clearing lines deletes the key so the file returns to its pre-lines shape", async () => {
+  const { dir, artifacts } = await materializedProject();
+  const shot = artifacts.storyboard.shots[0]!;
+  const before = JSON.parse(readFileSync(join(dir, "storyboard.json"), "utf8")) as Storyboard;
+  assert.ok(!("lines" in before.shots[0]!), "fixture 本身就不带台词");
+
+  updateShot(dir, shot.id, { lines: [{ text: "先说一句", src: "generated" }] });
+  writeFileSync(shotAudioPath(dir, shot.id), "wav");
+  const cleared = updateShot(dir, shot.id, { lines: [] });
+
+  assert.equal(cleared.audioInvalidated, true, "清空台词要重新配一次（只剩旁白）");
+  const storyboard = JSON.parse(readFileSync(join(dir, "storyboard.json"), "utf8")) as Storyboard;
+  assert.ok(!("lines" in storyboard.shots[0]!), "空数组不落键——清空后应与从未有过台词时逐字节一致");
+  assert.ok(!("lines" in loadScriptPackage(dir)!.scenes[0]!));
+});
+
+test("editing: illegal lines reject the whole edit and write nothing", async () => {
+  const { dir, artifacts } = await materializedProject();
+  const shot = artifacts.storyboard.shots[0]!;
+  const original = readFileSync(join(dir, "storyboard.json"), "utf8");
+
+  // HTTP 层是直接 cast 的，类型约束靠 core 兜住。
+  type RawPatch = Parameters<typeof updateShot>[2];
+  const illegal: Array<[unknown, RegExp]> = [
+    ["不是数组", /must be an array/],
+    [[null], /must be an object/],
+    [[{ text: "", src: "user" }], /non-empty string/],
+    [[{ text: "   ", src: "user" }], /non-empty string/],
+    [[{ text: "有字", src: "borrowed" }], /must be "user" or "generated"/],
+    [[{ text: "a", src: "user" }, { text: "b", src: "user" }, { text: "c", src: "user" }, { text: "d", src: "user" }], /at most 3 lines/],
+    // 一条不合法就整次拒绝：不做部分写入，避免存下半套台词。
+    [[{ text: "合法的一句", src: "user" }, { text: "", src: "user" }], /lines\[1\]\.text/]
+  ];
+  for (const [lines, expected] of illegal) {
+    assert.throws(
+      () => updateShot(dir, shot.id, { caption: "不该被写入", lines } as unknown as RawPatch),
+      expected
+    );
+  }
+  assert.equal(readFileSync(join(dir, "storyboard.json"), "utf8"), original, "拒绝时磁盘上什么都没变");
+});
+
+test("editing: voice overrides invalidate the audio, and an empty string clears them without a re-synthesis", async () => {
+  const { dir, artifacts } = await materializedProject();
+  const shot = artifacts.storyboard.shots[0]!;
+  writeFileSync(shotAudioPath(dir, shot.id), "wav");
+
+  const changed = updateShot(dir, shot.id, { voice: " Meijia " });
+  assert.equal(changed.audioInvalidated, true);
+  const storyboard = JSON.parse(readFileSync(join(dir, "storyboard.json"), "utf8")) as Storyboard;
+  assert.equal(storyboard.shots[0]!.voice, "Meijia", "音色去首尾空白后落盘");
+
+  // 传空串 = 清除覆盖。本来就有覆盖 → 是一次真实变化，要重配。
+  writeFileSync(shotAudioPath(dir, shot.id), "wav");
+  const cleared = updateShot(dir, shot.id, { voice: "" });
+  assert.equal(cleared.audioInvalidated, true);
+  const after = JSON.parse(readFileSync(join(dir, "storyboard.json"), "utf8")) as Storyboard;
+  assert.ok(!("voice" in after.shots[0]!), "清除覆盖后不落键");
+
+  // 已经没有覆盖了，再传一次空串：语义上什么都没变，不该白删一次配音。
+  writeFileSync(shotAudioPath(dir, shot.id), "wav");
+  const noop = updateShot(dir, shot.id, { voice: "  " });
+  assert.equal(noop.audioInvalidated, false);
+  assert.deepEqual(noop.deleted, []);
+  assert.ok(existsSync(shotAudioPath(dir, shot.id)));
+});
+
 test("editing: script meta updates rewrite script.md and keep the output filename", async () => {
   const { dir, artifacts } = await materializedProject();
   const before = readRenderManifestFile(dir)!.outputFile;

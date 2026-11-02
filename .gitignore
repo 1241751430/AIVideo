@@ -10,3 +10,7 @@ coverage
 *.log
 __pycache__
 .aivideo
+
+# 本地 BGM 曲库：目录与说明进版本库，音频本身不进——版权与体积都不该跟着仓库走
+assets/bgm-library/*
+!assets/bgm-library/README.md

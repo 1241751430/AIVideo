@@ -34,6 +34,20 @@ export function uploadIdOf(body: Record<string, unknown>): string | undefined {
 }
 
 /**
+ * @author zhangbaohong  @date 2026-10-30  @see https://github.com/1241751430/AIVideo.git
+ * 功能：从请求体里取背景音乐的上传会话 id：`bgmUploadId` 非空字符串才算「随创建带了曲子」。
+ * 刻意不复用 uploadIdOf：那一支会在 body.images 非空时抛错（拒绝内联 base64），
+ * 而参考图与曲子在创建卡片上各有自己的会话——曲子的会话不该因为用户删光了参考图就失效，
+ * 也不该把「带图」的那份校验搬过来。非字符串一律当作没带曲子（后续 PUT 换曲仍然可用）。
+ * @param body 请求 JSON
+ * @returns 上传会话 id；没有曲子时返回 undefined
+ */
+export function bgmUploadIdOf(body: Record<string, unknown>): string | undefined {
+  const uploadId = body.bgmUploadId;
+  return typeof uploadId === "string" && uploadId.trim() ? uploadId.trim() : undefined;
+}
+
+/**
  * @author zhangbaohong  @date 2026-10-28  @see https://github.com/1241751430/AIVideo.git
  * 功能：把创建请求（briefText 与显式字段）合成为 JobRequest：显式字段优先、经 core 的 validateGenerateRequest 护栏校验；
  * mode=auto|guided 是执行模式，generationMode 是产物模式。
@@ -70,11 +84,15 @@ export function buildJobRequest(config: AppConfig, body: Record<string, unknown>
     explicitString("language") ?? fields.language ?? inferInputLanguage([theme, content]) ?? defaults.language;
   const platform = explicitString("platform") ?? fields.platform ?? defaults.platform;
   const providerProfile = explicitString("providerProfile") ?? fields["provider-profile"];
+  // 台词只去首尾空白（那是输入框与 brief 标记带来的噪音），内部换行/标点/空格一律原样带走：
+  // 它是「用户怎么说就怎么用」的那部分，任何更进一步的规范化都会让成片里出现的不是用户的原话。
+  const dialogue = explicitString("dialogue") ?? fields.dialogue;
 
   const generateRequest: GenerateRequest = {
     theme,
     content,
     images: [],
+    ...(dialogue ? { dialogue } : {}),
     skill,
     mode: generationMode,
     aspectRatio,
@@ -95,7 +113,8 @@ export function buildJobRequest(config: AppConfig, body: Record<string, unknown>
     durationSeconds,
     language,
     platform,
-    providerProfile
+    providerProfile,
+    ...(dialogue ? { dialogue } : {})
   };
   return { request, execMode };
 }

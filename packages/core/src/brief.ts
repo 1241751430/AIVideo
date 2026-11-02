@@ -51,18 +51,56 @@ const BRIEF_KEY_MAP: Record<string, string> = {
   image: "images",
   images: "images",
   "图片": "images",
-  "参考图片": "images"
+  "参考图片": "images",
+  dialogue: "dialogue",
+  lines: "dialogue",
+  "台词": "dialogue",
+  "对白": "dialogue",
+  "脚本台词": "dialogue",
+  bgm: "bgm",
+  music: "bgm",
+  "音乐": "bgm",
+  "背景音乐": "bgm"
 };
+
+/**
+ * 台词块的起始标记。台词是用户原样提供的成句文本，可能包含 `;`、`；`、换行——这些正是普通 brief 的分段符，
+ * 所以它必须**先于分段**被整块取走，否则多句台词会被切成若干残句（第一句去当 theme，其余变成解析失败的行）。
+ * 约定：台词块占据从该标记到文本末尾的全部内容（即写在最后）；单行式的 `台词：xxx` 仍然照旧解析。
+ */
+const DIALOGUE_BLOCK_PATTERN = /^[ \t]*(?:台词|对白|脚本台词|dialogue)[ \t]*[:：]/im;
+
+/**
+ * @author zhangbaohong  @date 2026-10-30  @see https://github.com/1241751430/AIVideo.git
+ * 功能：把 structured brief 里「台词块」整体摘出来，返回剩余文本与台词原文。
+ * 台词只去掉首尾空白（那是标记与分隔带来的噪音），内部换行/标点/空格一律原样保留——用户怎么给就怎么用。
+ * @param text 已把 `\r` 归一为 `\n` 的 brief 文本
+ * @returns rest 供后续按段解析的文本；dialogue 台词原文（没有台词块时为 undefined）
+ */
+function extractDialogueBlock(text: string): { rest: string; dialogue?: string } {
+  const match = DIALOGUE_BLOCK_PATTERN.exec(text);
+  if (!match) {
+    return { rest: text };
+  }
+  const dialogue = text.slice(match.index + match[0].length).trim();
+  return {
+    rest: text.slice(0, match.index),
+    ...(dialogue ? { dialogue } : {})
+  };
+}
 
 /**
  * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
  * 功能：把中英文键值对形式的 brief 文本解析为规范化选项，整句无法解析时作为主题
  * @param input 结构化或非结构化的 brief 文本
- * @returns 以规范选项键（theme/content/mode/...）为键的字符串表
+ * @returns 以规范选项键（theme/content/mode/dialogue/...）为键的字符串表
  */
 export function parseStructuredBrief(input: string): Record<string, string> {
-  const normalized = input.replace(/\r/g, "\n");
-  const segments = normalized
+  // CRLF 只折成**一个**换行：把 `\r` 直接换成 `\n` 会让 Windows 文本里每个换行变成空行，
+  // 对分段无害，但台词块是逐字保留的，多出来的空行会真的进到配音文本里。
+  const normalized = input.replace(/\r\n?/g, "\n");
+  const { rest, dialogue } = extractDialogueBlock(normalized);
+  const segments = rest
     .split(/[;\n；]+/)
     .map((segment) => segment.trim())
     .filter(Boolean);
@@ -83,8 +121,13 @@ export function parseStructuredBrief(input: string): Record<string, string> {
     parsed[key] = normalizeBriefValue(key, rawValue);
   }
 
-  if (Object.keys(parsed).length === 0 && input.trim()) {
-    parsed.theme = input.trim();
+  if (dialogue) {
+    parsed.dialogue = dialogue;
+  }
+
+  // 回退主题只看「摘掉台词块」之后的部分：否则整段台词会被当成主题，用户说的话就成了影片题目。
+  if (Object.keys(parsed).length === 0 && rest.trim()) {
+    parsed.theme = rest.trim();
   }
 
   return parsed;

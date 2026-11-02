@@ -36,6 +36,12 @@ export class JobRunner {
   private readonly events: EventHub;
   private readonly providersFor: (profile?: string) => ProviderSelection;
   private readonly jobs = new Map<string, Job>();
+  /**
+   * 每个项目一个 JobEventLog 实例：日志对象内部缓存了「上次写完后文件长什么样」（size/mtime/末条 id/末 1000 行），
+   * 每次 emit 都 new 一个新的，缓存永远是空的——高频 log 事件（ffmpeg 每行一次）就退化成「整文件读取 + 逐行 JSON.parse」。
+   * 按 projectId 复用后，追加只剩 stat + 一次写；forget() 时同步清理，避免长期驻留。
+   */
+  private readonly eventLogs = new Map<string, JobEventLog>();
   private queue: string[] = [];
   private active: { jobId: string; controller: AbortController } | null = null;
   /** 关闭期间到达的新任务只落盘不入队：重启后由 boot() 重新拾起。 */
@@ -287,6 +293,10 @@ export class JobRunner {
    * 功能：从内存与队列中移除任务（调用方负责删除磁盘目录）。
    */
   forget(jobId: string): void {
+    const job = this.jobs.get(jobId);
+    if (job) {
+      this.eventLogs.delete(job.projectId);
+    }
     this.jobs.delete(jobId);
     this.queue = this.queue.filter((id) => id !== jobId);
   }
@@ -305,6 +315,22 @@ export class JobRunner {
    */
   projectDirOf(projectId: string): string {
     return resolveProjectDir(this.deps.projectsRoot, projectId);
+  }
+
+  /**
+   * @author zhangbaohong  @date 2026-10-30  @see https://github.com/1241751430/AIVideo.git
+   * 功能：按 projectId 取（并缓存）该项目的事件日志实例；runner 内部追加与 SSE 路由的重放必须共用同一个实例，
+   * 否则路由侧每次连接都新建一个空缓存对象，首帧重放又要重读一遍整个 events.jsonl。
+   * @param projectId 项目 id
+   * @returns 该项目的事件日志
+   */
+  eventLogOf(projectId: string): JobEventLog {
+    let log = this.eventLogs.get(projectId);
+    if (!log) {
+      log = new JobEventLog(this.projectDirOf(projectId));
+      this.eventLogs.set(projectId, log);
+    }
+    return log;
   }
 
   /**
@@ -554,8 +580,7 @@ export class JobRunner {
    * 功能：追加事件到 events.jsonl 并向进程内监听者广播。
    */
   private emit(job: Job, type: "status" | "log", data: Record<string, unknown>): void {
-    const log = new JobEventLog(this.projectDirOf(job.projectId));
-    const event = log.append(type, data);
+    const event = this.eventLogOf(job.projectId).append(type, data);
     this.events.publish(job.id, event);
   }
 

@@ -22,6 +22,13 @@ const MEDIA_TYPES: Record<string, string> = {
   ".jpeg": "image/jpeg",
   ".webp": "image/webp",
   ".wav": "audio/wav",
+  // 自定义 BGM 的四种落盘扩展名（与 core 的 PROJECT_BGM_EXTS 对齐，wav 已在上方）。
+  // 缺了它们，artifacts 回来的 `audio/bgm.mp3` 打到 /file 会被「file type not allowed」挡掉——
+  // 能换曲却听不了，是最难解释的一类 Bug。
+  ".mp3": "audio/mpeg",
+  ".aac": "audio/aac",
+  ".m4a": "audio/mp4",
+  ".ogg": "audio/ogg",
   ".srt": "text/plain; charset=utf-8",
   ".md": "text/markdown; charset=utf-8"
 };

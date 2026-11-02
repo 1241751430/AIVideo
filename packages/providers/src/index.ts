@@ -2,16 +2,19 @@
  * @file index.ts
  * @author zhangbaohong
  * @date 2026-09-17
- * @description AI 视频生成各类模型提供者（文案/图片/视频/语音）的实现与注册装配入口
+ * @description AI 视频生成各类模型提供者（文案/图片/视频/语音/音乐）的实现与注册装配入口
  * @see https://github.com/1241751430/AIVideo.git
  */
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { copyFileSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { dirname, extname, join, basename } from "node:path";
 import {
   AppConfig,
   execFileAsync,
   ImageGenerationRequest,
   ImageModelProvider,
+  MusicGenerationRequest,
+  MusicProvider,
+  PROJECT_BGM_EXTS,
   ProviderCapability,
   ProviderConfig,
   ProviderHealth,
@@ -758,6 +761,199 @@ class LocalSpeechProvider implements SpeechProvider {
 }
 
 /**
+ * Local BGM library: picks a track from `assets/bgm-library/` whose file name
+ * matches the script's `bgmStyle` keywords and copies it to the requested path.
+ *
+ * It is strictly "use it if there is one": no match means `null`, never an
+ * exception — a missing song must degrade to a video without music, not fail the
+ * audio stage. Files are matched by their *content* extension, so a `.wav` track
+ * is copied as `.wav` even when the caller asked for `.mp3`: a copied MP3-named
+ * WAV would still decode via ffmpeg but lie about what is on disk.
+ */
+class LocalLibraryMusicProvider implements MusicProvider {
+  readonly capability = "music" as const;
+  readonly isRemote = false;
+  /**
+   * 曲目是从 `assets/bgm-library` 复制来的，不是模型现生成的：溯源必须记 `library`。
+   * 记成 `ai_generated` 会让「这首曲子由 AI 生成」成为一句假话，而曲库里的曲子另有许可，
+   * 用户据此判断能不能商用时会得到相反结论。
+   */
+  readonly provenanceKind = "library" as const;
+
+  /**
+   * @author zhangbaohong  @date 2026-10-30  @see https://github.com/1241751430/AIVideo.git
+   * 功能：记录该素材库音乐提供者的 id，并确定素材库根目录（baseURL 可覆盖，便于测试与部署）
+   */
+  constructor(
+    readonly id: string,
+    private readonly config: ProviderConfig
+  ) {}
+
+  /**
+   * @author zhangbaohong  @date 2026-10-30  @see https://github.com/1241751430/AIVideo.git
+   * 功能：给出素材库根目录：config.baseURL 优先，否则取工作目录下的 assets/bgm-library
+   */
+  private libraryRoot(): string {
+    const configured = this.config.baseURL?.trim();
+    return configured ? configured : join(process.cwd(), "assets", "bgm-library");
+  }
+
+  /**
+   * @author zhangbaohong  @date 2026-10-30  @see https://github.com/1241751430/AIVideo.git
+   * 功能：列出素材库里可用的曲目（只认 render.py 能消费的扩展名），目录不存在时返回空数组
+   * @returns 绝对路径列表（按文件名排序，保证同一风格每次都挑到同一首）
+   */
+  private listTracks(): string[] {
+    try {
+      return readdirSync(this.libraryRoot(), { withFileTypes: true })
+        .filter((entry) => entry.isFile())
+        .map((entry) => entry.name)
+        .filter((name) => (PROJECT_BGM_EXTS as readonly string[]).includes(extname(name).slice(1).toLowerCase()))
+        .sort()
+        .map((name) => join(this.libraryRoot(), name));
+    } catch {
+      // 目录不存在或不可读：等价于「库里没有曲子」，交给上层明示「无 BGM」。
+      return [];
+    }
+  }
+
+  /**
+   * @author zhangbaohong  @date 2026-10-30  @see https://github.com/1241751430/AIVideo.git
+   * 功能：报告素材库是否可用及其中的曲目数量
+   * @returns 目录存在且有曲目时为 ok；否则说明没有可用素材（不是故障，是本机没放曲子）
+   */
+  async test(): Promise<ProviderHealth> {
+    const tracks = this.listTracks();
+    return {
+      providerId: this.id,
+      capability: this.capability,
+      ok: true,
+      message: tracks.length > 0
+        ? `Local BGM library has ${tracks.length} track(s).`
+        : `Local BGM library is empty (${this.libraryRoot()}); videos will be rendered without music.`,
+      liveChecked: false
+    };
+  }
+
+  /**
+   * @author zhangbaohong  @date 2026-10-30  @see https://github.com/1241751430/AIVideo.git
+   * 功能：按 style 关键词从素材库挑一首曲目复制到目标路径；没有匹配项时返回 null 让上层跳过 BGM
+   * @returns 实际落盘路径（可能与请求路径扩展名不同，以素材原格式为准）；无匹配时为 null
+   */
+  async synthesizeMusic(request: MusicGenerationRequest): Promise<{ outputPath: string } | null> {
+    const tracks = this.listTracks();
+    if (tracks.length === 0) {
+      return null;
+    }
+    const style = (request.style ?? request.prompt ?? "").trim();
+    const best = style ? pickLibraryTrack(tracks, style) : tracks[0];
+    if (!best) {
+      return null;
+    }
+    // 保留素材自身扩展名：把 wav 写成 bgm.mp3 会让磁盘上的文件与实际编码不符。
+    const target = join(
+      dirname(request.outputPath),
+      `${basename(request.outputPath, extname(request.outputPath))}${extname(best)}`
+    );
+    mkdirSync(dirname(target), { recursive: true });
+    copyFileSync(best, target);
+    return { outputPath: target };
+  }
+}
+
+/**
+ * Placeholder music provider: reports a successful synthesis without writing a
+ * file, mirroring `NoopImageProvider`. It exists so a profile can *declare* a
+ * music slot that is not actually configured yet; consumers must verify the
+ * returned path is on disk before claiming the video has music.
+ */
+class NoopMusicProvider implements MusicProvider {
+  readonly capability = "music" as const;
+  readonly isRemote = false;
+
+  /**
+   * @author zhangbaohong  @date 2026-10-30  @see https://github.com/1241751430/AIVideo.git
+   * 功能：记录该 noop 音乐提供者的 id
+   */
+  constructor(readonly id: string) {}
+
+  /**
+   * @author zhangbaohong  @date 2026-10-30  @see https://github.com/1241751430/AIVideo.git
+   * 功能：报告音乐生成未启用，成片将不带背景音乐
+   * @returns 恒为 ok 的健康状态（未配置不是故障）
+   */
+  async test(): Promise<ProviderHealth> {
+    return {
+      providerId: this.id,
+      capability: this.capability,
+      ok: true,
+      message: "Music generation disabled; videos will be rendered without background music.",
+      liveChecked: false
+    };
+  }
+
+  /**
+   * @author zhangbaohong  @date 2026-10-30  @see https://github.com/1241751430/AIVideo.git
+   * 功能：不产出任何音频，仅原样回显请求的输出路径（调用方需自行确认文件是否落盘）
+   */
+  async synthesizeMusic(request: MusicGenerationRequest): Promise<{ outputPath: string }> {
+    return { outputPath: request.outputPath };
+  }
+}
+
+/**
+ * @author zhangbaohong  @date 2026-10-30  @see https://github.com/1241751430/AIVideo.git
+ * 功能：从素材库曲目里按 style 关键词挑最贴近的一首：整名命中优先，其次整名包含于 style，最后是文件名里某个关键词出现在 style 中
+ * @param tracks 素材库曲目绝对路径（已排序）
+ * @param style 风格描述（来自 script.bgmStyle），中英文混排都要能切词
+ * @returns 最匹配的曲目绝对路径；全无命中时返回 null
+ */
+function pickLibraryTrack(tracks: string[], style: string): string | null {
+  const styleFlat = flattenForMatch(style);
+  if (!styleFlat) {
+    return null;
+  }
+  let best: { path: string; rank: number } | null = null;
+  for (const track of tracks) {
+    const base = basename(track, extname(track));
+    const nameFlat = flattenForMatch(base);
+    if (!nameFlat) {
+      continue;
+    }
+    let rank = Number.POSITIVE_INFINITY;
+    if (nameFlat === styleFlat) {
+      rank = 0;
+    } else if (nameFlat.length >= 2 && styleFlat.includes(nameFlat)) {
+      rank = 1;
+    } else {
+      // 文件名可以带分隔符（`epic-trailer`），任一段（≥2 字符）出现在风格描述里就算弱命中。
+      const tokens = base
+        .toLowerCase()
+        .split(/[^a-z0-9一-鿿]+/)
+        .filter((token) => token.length >= 2);
+      if (tokens.some((token) => styleFlat.includes(token))) {
+        rank = 2;
+      }
+    }
+    // tracks 已排序，同分时保留先出现的那个，保证选曲稳定可复现。
+    if (rank !== Number.POSITIVE_INFINITY && (!best || rank < best.rank)) {
+      best = { path: track, rank };
+    }
+  }
+  return best?.path ?? null;
+}
+
+/**
+ * @author zhangbaohong  @date 2026-10-30  @see https://github.com/1241751430/AIVideo.git
+ * 功能：把风格描述/文件名压成只含小写字母数字与汉字的串，去掉空格标点，让中英文混排的粗匹配不受排版影响
+ * @param value 原始文本
+ * @returns 归一化后的匹配串
+ */
+function flattenForMatch(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9一-鿿]+/g, "");
+}
+
+/**
  * Volcengine (语音技术) text-to-speech via the openspeech JSON API.
  *
  * Auth uses a separate appid + access token from the 语音技术 console — it is
@@ -959,6 +1155,7 @@ const textProviderRegistry = new Map<string, ProviderFactory<TextModelProvider>>
 const imageProviderRegistry = new Map<string, ProviderFactory<ImageModelProvider>>();
 const videoProviderRegistry = new Map<string, ProviderFactory<VideoModelProvider>>();
 const speechProviderRegistry = new Map<string, ProviderFactory<SpeechProvider>>();
+const musicProviderRegistry = new Map<string, ProviderFactory<MusicProvider>>();
 
 textProviderRegistry.set("local-rule-text", () => new LocalRuleTextProvider());
 textProviderRegistry.set("openai-compatible", (id, cfg) => new OpenAICompatibleTextProvider(id, cfg));
@@ -968,6 +1165,8 @@ videoProviderRegistry.set("noop-video", (id) => new NoopVideoProvider(id));
 videoProviderRegistry.set("ark-seedance-video", (id, cfg) => new ArkSeedanceVideoProvider(id, cfg));
 speechProviderRegistry.set("local-say", (id) => new LocalSpeechProvider(id));
 speechProviderRegistry.set("ark-tts-speech", (id, cfg) => new ArkTTSSpeechProvider(id, cfg));
+musicProviderRegistry.set("local-library-music", (id, cfg) => new LocalLibraryMusicProvider(id, cfg));
+musicProviderRegistry.set("noop-music", (id) => new NoopMusicProvider(id));
 
 /**
  * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
@@ -1002,6 +1201,14 @@ export function registerSpeechProvider(type: string, factory: ProviderFactory<Sp
 }
 
 /**
+ * @author zhangbaohong  @date 2026-10-30  @see https://github.com/1241751430/AIVideo.git
+ * 功能：向音乐提供者注册表登记一个 provider type 工厂
+ */
+export function registerMusicProvider(type: string, factory: ProviderFactory<MusicProvider>): void {
+  musicProviderRegistry.set(type, factory);
+}
+
+/**
  * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
  * 功能：按配置从注册表实例化某能力的提供者；未指定或禁用返回 undefined，未知类型抛错
  * @param registry 该能力对应的 type→工厂注册表
@@ -1031,7 +1238,7 @@ function instantiateFromRegistry<T>(
 
 /**
  * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
- * 功能：按 profile 装配文案/图片/视频/语音四类提供者的选择结果
+ * 功能：按 profile 装配文案/图片/视频/语音/音乐五类提供者的选择结果
  * @param config 全局应用配置
  * @param profileName 配置档名称；缺省使用默认档
  */
@@ -1042,7 +1249,8 @@ export function createProviderSelection(config: AppConfig, profileName?: string)
     text: instantiateFromRegistry(textProviderRegistry, config, profile.text, "text"),
     image: instantiateFromRegistry(imageProviderRegistry, config, profile.image, "image"),
     video: instantiateFromRegistry(videoProviderRegistry, config, profile.video, "video"),
-    speech: instantiateFromRegistry(speechProviderRegistry, config, profile.speech, "speech")
+    speech: instantiateFromRegistry(speechProviderRegistry, config, profile.speech, "speech"),
+    music: instantiateFromRegistry(musicProviderRegistry, config, profile.music, "music")
   };
 }
 
@@ -1064,7 +1272,8 @@ export async function testProviders(
     instantiateFromRegistry(textProviderRegistry, config, profile.text, "text"),
     instantiateFromRegistry(imageProviderRegistry, config, profile.image, "image"),
     instantiateFromRegistry(videoProviderRegistry, config, profile.video, "video"),
-    instantiateFromRegistry(speechProviderRegistry, config, profile.speech, "speech")
+    instantiateFromRegistry(speechProviderRegistry, config, profile.speech, "speech"),
+    instantiateFromRegistry(musicProviderRegistry, config, profile.music, "music")
   ].filter(Boolean);
 
   return Promise.all(checks.map((provider) => provider!.test({ live })));

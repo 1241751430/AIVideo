@@ -2,7 +2,7 @@
  * @file shotFiles.ts
  * @author zhangbaohong
  * @date 2026-09-17
- * @description 单镜产物路径的唯一事实来源：约定 assets/<id>.mp4、assets/<id>.png、audio/<id>.wav 布局，校验 shotId 字符合法性，并提供资产/配音删除能力，支撑「删文件即重做该镜头」契约。
+ * @description 单镜产物路径的唯一事实来源：约定 assets/<id>.mp4、assets/<id>.png、audio/<id>.wav 布局，校验 shotId 字符合法性，并提供资产/配音删除能力，支撑「删文件即重做该镜头」契约；另给出项目级 BGM（audio/bgm.<ext>）的查找与拼接助手，与 workers/media/render.py 的 find_bgm 同口径。
  * @see https://github.com/1241751430/AIVideo.git
  */
 
@@ -70,6 +70,68 @@ export function shotImagePath(projectDir: string, shotId: string): string {
 export function shotAudioPath(projectDir: string, shotId: string): string {
   assertValidShotId(shotId);
   return join(projectDir, "audio", `${shotId}.wav`);
+}
+
+/**
+ * @author zhangbaohong  @date 2026-10-30  @see https://github.com/1241751430/AIVideo.git
+ * 功能：拼接某镜头多段配音的临时目录 audio/.segments/<id>/（shotId 先做合法性校验）。
+ * 放在 audio/ 下的隐藏子目录里：cleanupRenderWorkspace 只保留 bgm.<ext>、其余条目连同子目录一律清掉，
+ * 因此中断残留的临时分段不会污染项目；以点开头也让它不出现在用户浏览音频目录的结果里。
+ */
+export function shotSegmentsDir(projectDir: string, shotId: string): string {
+  assertValidShotId(shotId);
+  return join(projectDir, "audio", ".segments", shotId);
+}
+
+/**
+ * @author zhangbaohong  @date 2026-10-30  @see https://github.com/1241751430/AIVideo.git
+ * 功能：拼接某镜头第 index 段配音的临时 wav 路径 audio/.segments/<id>/<index>.wav。
+ * index 必须是 0 或正整数：拼进路径前先挡住小数/负数/超出安全整数的值（否则会出现 "." 与 "e+21" 这类文件名）。
+ */
+export function shotSegmentPath(projectDir: string, shotId: string, index: number): string {
+  if (!Number.isSafeInteger(index) || index < 0) {
+    throw new Error(`Invalid narration segment index: ${JSON.stringify(index)}`);
+  }
+  return join(shotSegmentsDir(projectDir, shotId), `${index}.wav`);
+}
+
+/** 项目级 BGM 的固定文件名主干：`audio/bgm.<ext>`，由 workers/media/render.py 的 find_bgm 消费。 */
+export const PROJECT_BGM_BASENAME = "bgm";
+
+/**
+ * render.py 的 find_bgm 认这些扩展名，顺序即优先级；audio/ 下同时存在多个时，
+ * 查找结果必须与 render.py 完全一致，否则「指纹算的曲子」和「实际混进去的曲子」会不是同一首。
+ */
+export const PROJECT_BGM_EXTS = ["mp3", "wav", "aac", "m4a", "ogg"] as const;
+
+/**
+ * @author zhangbaohong  @date 2026-10-30  @see https://github.com/1241751430/AIVideo.git
+ * 功能：查找项目当前的 BGM，返回项目内相对路径（如 audio/bgm.mp3）；没有则返回 null。
+ * 遍历顺序与 render.py 的 find_bgm 严格一致——两处必须给出同一个答案，否则指纹与实际混音会指向不同的曲子。
+ */
+export function findProjectBgm(projectDir: string): string | null {
+  for (const ext of PROJECT_BGM_EXTS) {
+    const relative = `audio/${PROJECT_BGM_BASENAME}.${ext}`;
+    // 判据刻意用 existsSync 而非 nonEmptyFileExists：render.py 的 find_bgm 认 exists()，
+    // 这里多说一个「空文件不算」会导致指纹认为无 BGM 而渲染层仍去混音，两边结论必须一致。
+    if (existsSync(join(projectDir, relative))) {
+      return relative;
+    }
+  }
+  return null;
+}
+
+/**
+ * @author zhangbaohong  @date 2026-10-30  @see https://github.com/1241751430/AIVideo.git
+ * 功能：拼接 BGM 的绝对路径（扩展名可带点、大小写不敏感）；不在支持列表内的扩展名直接抛错，
+ * 避免写入一个 render.py 永远找不到的文件（那会表现成「上传成功但没有音乐」的静默失败）。
+ */
+export function projectBgmPath(projectDir: string, ext: string): string {
+  const normalized = ext.replace(/^\./, "").toLowerCase();
+  if (!(PROJECT_BGM_EXTS as readonly string[]).includes(normalized)) {
+    throw new Error(`Unsupported BGM extension: ${JSON.stringify(ext)}`);
+  }
+  return join(projectDir, "audio", `${PROJECT_BGM_BASENAME}.${normalized}`);
 }
 
 /**

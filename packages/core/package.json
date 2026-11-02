@@ -16,6 +16,7 @@
     "test": "pnpm run test:compiled"
   },
   "dependencies": {
+    "@aivideo/shared": "workspace:*",
     "yaml": "^2.8.1"
   },
   "devDependencies": {

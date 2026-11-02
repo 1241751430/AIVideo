@@ -44,3 +44,34 @@ test("parseDuration understands second suffix", () => {
   assert.equal(parseDuration("45s"), 45);
   assert.equal(parseDuration("30"), 30);
 });
+
+test("parseStructuredBrief 把台词块整段取走，而不是按分号切开", () => {
+  // 台词里同时出现半角分号、全角分号和换行——它们全是 brief 的分段符，
+  // 若台词不先整块摘走，这里会被切成四段残句，只有第一句能落进 dialogue。
+  const parsed = parseStructuredBrief("主题：防晒喷雾\n台词：甲说：你好；乙说：再见;\n第三句！");
+  assert.equal(parsed.theme, "防晒喷雾");
+  assert.equal(parsed.dialogue, "甲说：你好；乙说：再见;\n第三句！");
+  // 摘走台词块之后，其余段落仍按原逻辑解析。
+  assert.equal(parsed.content, undefined);
+});
+
+test("parseStructuredBrief 保留台词内部换行且不因 CRLF 多出空行", () => {
+  // Windows 文本：`\r\n` 只折成一个 `\n`。若把 `\r` 单独换成 `\n`，每行之间会多出一个空行，
+  // 台词是要逐字进配音的，那点空行会真的变成朗读里的停顿。
+  const parsed = parseStructuredBrief("主题：夏天\r\n台词：第一句。\r\n第二句。\r\n");
+  assert.equal(parsed.theme, "夏天");
+  assert.equal(parsed.dialogue, "第一句。\n第二句。");
+});
+
+test("parseStructuredBrief 只剩台词时不会把台词当主题", () => {
+  const parsed = parseStructuredBrief("台词：今天我们来聊聊防晒。");
+  assert.equal(parsed.dialogue, "今天我们来聊聊防晒。");
+  assert.equal(parsed.theme, undefined);
+});
+
+test("parseStructuredBrief 单句台词仍然可用且只去首尾空白", () => {
+  const parsed = parseStructuredBrief("  主题：防晒霜；dialogue:   你好，世界。  ");
+  assert.equal(parsed.theme, "防晒霜");
+  // 句中的标点与空格原样：只允许掐掉标记两侧及首尾的空白。
+  assert.equal(parsed.dialogue, "你好，世界。");
+});

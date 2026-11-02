@@ -2,11 +2,11 @@
  * @file ProviderStatus.tsx
  * @author zhangbaohong
  * @date 2026-10-08
- * @description 顶栏服务与模型状态徽章组：服务健康灯、四能力（文案/图片/视频/旁白）本地/远端属性、GPU 标记与配置告警汇总，数据源为 /api/summary 与 /api/healthz。
+ * @description 顶栏服务与模型状态徽章组：服务健康灯、五能力（文案/图片/视频/旁白/音乐）本地/远端属性、GPU 标记与配置告警汇总，数据源为 /api/summary 与 /api/healthz。
  * @see https://github.com/1241751430/AIVideo.git
  */
 import type { Capability, SummaryResponse } from "@aivideo/shared";
-import { Image, Mic, TriangleAlert, Type, Video, Zap } from "lucide-react";
+import { Image, Mic, Music, TriangleAlert, Type, Video, Zap } from "lucide-react";
 
 /** ProviderStatus 组件入参。 */
 interface Props {
@@ -15,12 +15,13 @@ interface Props {
   serviceOk: boolean;
 }
 
-/** 四能力与图标的对应（键即 SummaryResponse.providers 的字段）。 */
+/** 五能力与图标的对应（键即 SummaryResponse.providers 的字段）。 */
 const CAPABILITIES: Array<{ key: Capability; label: string; Icon: typeof Type }> = [
   { key: "text", label: "文案", Icon: Type },
   { key: "image", label: "图片", Icon: Image },
   { key: "video", label: "视频", Icon: Video },
-  { key: "speech", label: "旁白", Icon: Mic }
+  { key: "speech", label: "旁白", Icon: Mic },
+  { key: "music", label: "音乐", Icon: Music }
 ];
 
 /**

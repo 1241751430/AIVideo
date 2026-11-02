@@ -7,14 +7,14 @@
  */
 
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, mkdirSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { loadConfig, resolveProfileId, validateConfig } from "./config.js";
 import { autoSelectSkill, getSkillById } from "./skills.js";
 import { GenerateRequest, ProviderSelection, VideoModelProvider } from "./types.js";
-import { cleanupExpiredProjects, createProjectId, generateArtifacts, loadAssetArtifacts, materializeProject, prepareGeneratedAssets, toScriptMarkdown, toSrt, validateGenerateRequest } from "./workflow.js";
+import { cleanupExpiredProjects, cleanupRenderWorkspace, createProjectId, generateArtifacts, loadAssetArtifacts, materializeProject, prepareGeneratedAssets, toScriptMarkdown, toSrt, validateGenerateRequest } from "./workflow.js";
 
 test("autoSelectSkill chooses ecommerce for shopping intent", () => {
   const skill = autoSelectSkill({
@@ -189,6 +189,31 @@ test("cleanupExpiredProjects rejects non-positive maxAgeDays", () => {
   assert.throws(() => cleanupExpiredProjects("/tmp", -1), /positive number/);
 });
 
+test("cleanupRenderWorkspace sweeps intermediates but keeps the user's BGM", () => {
+  const projectDir = mkdtempSync(join(tmpdir(), "aivideo-cleanup-"));
+  mkdirSync(join(projectDir, "audio", ".segments"), { recursive: true });
+  mkdirSync(join(projectDir, "captions"), { recursive: true });
+  mkdirSync(join(projectDir, ".render_tmp"), { recursive: true });
+  writeFileSync(join(projectDir, "audio", "s1.wav"), "wav");
+  writeFileSync(join(projectDir, "audio", "bgm-v2.mp3"), "same-prefix but not the canonical name");
+  writeFileSync(join(projectDir, "audio", "bgm.mp3"), "user bgm");
+  writeFileSync(join(projectDir, "captions", "captions.srt"), "srt");
+  writeFileSync(join(projectDir, ".render_tmp", "clip.mp4"), "tmp");
+
+  cleanupRenderWorkspace(projectDir);
+
+  // 可再生中间产物全部清掉。
+  assert.ok(!existsSync(join(projectDir, "audio", "s1.wav")));
+  assert.ok(!existsSync(join(projectDir, "audio", ".segments")));
+  assert.ok(!existsSync(join(projectDir, "captions")));
+  assert.ok(!existsSync(join(projectDir, ".render_tmp")));
+  // 只认规范名 `bgm.<ext>`；同前缀的散落文件仍属中间物。
+  assert.ok(!existsSync(join(projectDir, "audio", "bgm-v2.mp3")));
+  // 用户资产必须原样保留：清理阶段无权删除用户选的背景音乐。
+  assert.ok(existsSync(join(projectDir, "audio", "bgm.mp3")), "用户上传的 BGM 不能被清理掉");
+  assert.equal(readFileSync(join(projectDir, "audio", "bgm.mp3"), "utf8"), "user bgm");
+});
+
 test("toSrt generates valid SRT output", () => {
   const captions = [
     { startSeconds: 0, endSeconds: 5, text: "Hello" },
@@ -224,6 +249,380 @@ test("toScriptMarkdown includes title and scenes", () => {
   assert.match(md, /# Test Title/);
   assert.match(md, /## 镜头 1: Opening/);
   assert.match(md, /#test/);
+});
+
+test("toScriptMarkdown 把台词与对白分开标注，用户原话一字不改", () => {
+  const md = toScriptMarkdown({
+    title: "T",
+    summary: "s",
+    openingHook: "h",
+    voiceover: "v",
+    scenes: [
+      {
+        id: "scene-1",
+        heading: "开场",
+        narration: "旁白",
+        visualPrompt: "v",
+        shotType: "medium",
+        durationSeconds: 5,
+        caption: "c",
+        lines: [
+          { speaker: "甲", text: "用户给的原话！", src: "user" },
+          { text: "模型写的补充对白。", src: "generated" }
+        ]
+      }
+    ],
+    bgmStyle: "b",
+    cta: "c",
+    hashtags: []
+  });
+  // 用户台词标「台词」，模型写的标「对白」——交付面板上要能一眼看出哪句是自己写的。
+  assert.match(md, /- 旁白: 旁白\n- 台词\(甲\): 用户给的原话！/);
+  assert.match(md, /- 对白: 模型写的补充对白。/);
+});
+
+test("toScriptMarkdown 把镜级与 BGM 的来源声明列成版权清单", () => {
+  // script.md 是对外交付物：片子发出去之后，观众与平台有权知道每个画面和曲子的出处，所以它必须落在正文里，
+  // 而不是只存在于某个前端悬停提示或私有字段中。
+  const md = toScriptMarkdown({
+    title: "T",
+    summary: "s",
+    openingHook: "h",
+    voiceover: "v",
+    scenes: [
+      {
+        id: "scene-1",
+        heading: "开场",
+        narration: "旁白",
+        visualPrompt: "v",
+        shotType: "medium",
+        durationSeconds: 5,
+        caption: "c",
+        provenance: {
+          kind: "stock",
+          provider: "pexels",
+          license: "CC0-1.0",
+          sourceUrl: "https://example.com/photo/1",
+          attribution: "Photo by Jane Doe / Pexels",
+          retrievedAt: "2026-10-30T00:00:00.000Z"
+        }
+      },
+      // 没有声明的镜头不进清单：留一行全「—」只会让人以为这镜也有来源只是没写。
+      {
+        id: "scene-2",
+        heading: "结尾",
+        narration: "旁白 2",
+        visualPrompt: "v2",
+        shotType: "wide",
+        durationSeconds: 5,
+        caption: "c2"
+      }
+    ],
+    bgmStyle: "b",
+    cta: "c",
+    hashtags: [],
+    bgmProvenance: { kind: "library", license: "project-asset" }
+  });
+
+  assert.match(md, /## 素材与版权清单/);
+  assert.match(md, /\| 位置 \| 来源 \| 提供方 \| 许可 \| 出处 \| 署名 \| 获取时间 \|/);
+  assert.match(md, /\| 镜头 1（开场） \| 网络素材 \| pexels \| CC0-1\.0 \| https:\/\/example\.com\/photo\/1 \| Photo by Jane Doe \/ Pexels \| 2026-10-30T00:00:00\.000Z \|/);
+  assert.match(md, /\| 全片 BGM \| 素材库 \| — \| project-asset \| — \| — \| — \|/);
+  assert.doesNotMatch(md, /镜头 2（结尾）/, "没声明来源的镜头不该出现在清单里");
+});
+
+test("toScriptMarkdown 转义标题里的竖线，避免版权表被截断", () => {
+  // 标题是自由文本（模型生成或用户编辑），里面完全可能有竖线；不转义会把 7 列表格切成一堆错位单元格。
+  const md = toScriptMarkdown({
+    title: "T",
+    summary: "s",
+    openingHook: "h",
+    voiceover: "v",
+    scenes: [
+      {
+        id: "scene-1",
+        heading: "左边 | 右边",
+        narration: "n",
+        visualPrompt: "v",
+        shotType: "medium",
+        durationSeconds: 5,
+        caption: "c",
+        provenance: { kind: "ai_generated", provider: "mock-image" }
+      }
+    ],
+    bgmStyle: "b",
+    cta: "c",
+    hashtags: []
+  });
+  assert.match(md, /\| 镜头 1（左边 \\\| 右边） \| AI 生成 \| mock-image \|/);
+});
+
+test("toScriptMarkdown 在一条来源声明都没有时不改输出（与升级前逐字节相同）", () => {
+  // 兼容性红线：旧项目重新导出 script.md 不能凭空多出一节空表。
+  const script = {
+    title: "T",
+    summary: "s",
+    openingHook: "h",
+    voiceover: "v",
+    scenes: [
+      {
+        id: "scene-1",
+        heading: "开场",
+        narration: "n",
+        visualPrompt: "v",
+        shotType: "medium",
+        durationSeconds: 5,
+        caption: "c"
+      }
+    ],
+    bgmStyle: "b",
+    cta: "c",
+    hashtags: ["t"]
+  };
+  const md = toScriptMarkdown(script);
+  assert.doesNotMatch(md, /素材与版权清单/);
+  assert.equal(
+    md,
+    ["# T", "", "## 摘要", "s", "", "## 开头钩子", "h", "", "## 旁白总稿", "v", "", "## 分镜",
+      "## 镜头 1: 开场\n- 时长: 5s\n- 旁白: n\n- 字幕: c\n- 提示词: v",
+      "", "## BGM", "b", "", "## CTA", "c", "", "## Hashtags", "#t"].join("\n")
+  );
+});
+
+test("generateArtifacts 把用户台词逐句原样铺进 lines（离线路径一条不丢）", async () => {
+  // 台词里的全角冒号、逗号、问号、句号与换行都得原样带出来：这些正是「用户怎么说就怎么用」的边界。
+  const dialogue = "第一句：你好，世界！\n第二句别改我。\n第三句？";
+  const request: GenerateRequest = {
+    theme: "夏季防晒喷雾",
+    dialogue,
+    skill: "ecommerce",
+    mode: "video",
+    aspectRatio: "9:16",
+    durationSeconds: 30
+  };
+  const skill = getSkillById("ecommerce")!;
+  const artifacts = await generateArtifacts({ request, providers: {}, skill });
+
+  const lines = artifacts.script.scenes.flatMap((scene) => scene.lines ?? []);
+  assert.deepEqual(
+    lines.map((line) => line.text),
+    ["第一句：你好，世界！", "第二句别改我。", "第三句？"],
+    "台词必须逐句原样落盘，顺序不变"
+  );
+  assert.ok(lines.every((line) => line.src === "user"), "用户台词一律标 src=user");
+  // brief 同样要带上原文：续跑时脚本阶段只认磁盘上的 brief.json，丢了台词就再也补不回来。
+  assert.equal(artifacts.brief.dialogue, dialogue);
+});
+
+test("远端模型改写或漏掉用户台词时，落盘的一定是用户原文", async () => {
+  const dialogue = "第一句话。第二句话。第三句话。";
+  const seenPrompts: string[] = [];
+  const providers: ProviderSelection = {
+    text: {
+      id: "mock-text",
+      capability: "text",
+      isRemote: false,
+      async test() {
+        return { providerId: "mock-text", capability: "text", ok: true, message: "ok", liveChecked: false };
+      },
+      async generateText(request) {
+        seenPrompts.push(request.systemPrompt);
+        return JSON.stringify({
+          title: "t",
+          summary: "s",
+          openingHook: "h",
+          voiceover: "v",
+          scenes: [
+            {
+              id: "scene-1",
+              heading: "h1",
+              narration: "n1",
+              visualPrompt: "v1",
+              shotType: "medium",
+              durationSeconds: 15,
+              caption: "c1",
+              // 第二句被模型「润色」了：它不是用户原话，必须被识别出来并换成原文。
+              // 第三句被模型标成 generated，但那句本来就是用户说的，要认回来而不是再补一遍。
+              lines: [
+                { text: "第一句话。", src: "user" },
+                { text: "第二句话呢，改写得流利多了。", src: "user" },
+                { text: "第三句话。", src: "generated" }
+              ]
+            },
+            {
+              id: "scene-2",
+              heading: "h2",
+              narration: "n2",
+              visualPrompt: "v2",
+              shotType: "wide",
+              durationSeconds: 15,
+              caption: "c2"
+            }
+          ],
+          bgmStyle: "b",
+          cta: "c",
+          hashtags: []
+        });
+      }
+    }
+  };
+
+  const artifacts = await generateArtifacts({
+    request: { theme: "防晒", dialogue, skill: "ecommerce", mode: "video", aspectRatio: "9:16", durationSeconds: 30 },
+    providers,
+    skill: getSkillById("ecommerce")!
+  });
+
+  // 提示词里必须把「逐字使用」的约束交代清楚，否则模型没有理由照做。
+  assert.match(seenPrompts[0] ?? "", /src="user"/);
+  assert.match(seenPrompts[0] ?? "", /不许改|不得改动/);
+
+  const texts = artifacts.script.scenes.flatMap((scene) => (scene.lines ?? []).map((line) => line.text));
+  // 用集合比而不是排序比：中文句子的字典序与「第几句」无关，排序比只会测到 sort 的实现。
+  assert.deepEqual(new Set(texts), new Set(["第一句话。", "第二句话。", "第三句话。"]), "润色版不得出现，漏掉的句子必须补回");
+  assert.equal(texts.length, 3, "同一句台词不能既认领又补回、在成片里念两遍");
+  const userLines = artifacts.script.scenes.flatMap((scene) => (scene.lines ?? []).filter((line) => line.src === "user"));
+  assert.equal(userLines.length, 3, "用户说的每一句都要标成 src=user");
+});
+
+test("没有台词时产物与引入台词之前一致（不写 lines、Markdown 不多出行）", async () => {
+  const request: GenerateRequest = {
+    theme: "AI 智能体介绍",
+    skill: "knowledge",
+    mode: "script",
+    aspectRatio: "16:9",
+    durationSeconds: 30
+  };
+  const artifacts = await generateArtifacts({ request, providers: {}, skill: getSkillById("knowledge")! });
+
+  assert.equal(artifacts.brief.dialogue, undefined);
+  assert.ok(
+    artifacts.script.scenes.every((scene) => !("lines" in scene)),
+    "没有台词就不该出现 lines 字段——空数组落盘会让老产物的形状变样"
+  );
+  const md = toScriptMarkdown(artifacts.script);
+  assert.doesNotMatch(md, /^- (台词|对白)/m);
+  assert.match(md, /^## 镜头 1: /m);
+});
+
+test("模型的 stock 声明缺出处或许可：整份脚本被拒，绝不降级成「没有来源」的镜头", async (t) => {
+  // 「没标出处的素材」比「没素材」危险得多：用户会以为它是自己能随便用的。
+  // 所以这种情况不能悄悄把 provenance 丢掉（那样镜头照用、版权信息凭空消失），
+  // 也不能继续用这份脚本——整份退回本地脚本，一条声明都不落。
+  const warn = t.mock.method(console, "warn");
+  const providers: ProviderSelection = {
+    text: {
+      id: "mock-text",
+      capability: "text",
+      isRemote: false,
+      async test() {
+        return { providerId: "mock-text", capability: "text", ok: true, message: "ok", liveChecked: false };
+      },
+      async generateText() {
+        return JSON.stringify({
+          title: "远端脚本不该被采用",
+          summary: "s",
+          openingHook: "h",
+          voiceover: "v",
+          scenes: [
+            {
+              id: "scene-1",
+              heading: "远端镜头",
+              narration: "n1",
+              visualPrompt: "v1",
+              shotType: "medium",
+              durationSeconds: 30,
+              caption: "c1",
+              // 只有 provider，没有 sourceUrl 与 license：这一镜到底能不能用，说不清。
+              provenance: { kind: "stock", provider: "pexels" }
+            }
+          ],
+          bgmStyle: "b",
+          cta: "c",
+          hashtags: []
+        });
+      }
+    }
+  };
+
+  const artifacts = await generateArtifacts({
+    request: { theme: "AI 智能体介绍", skill: "knowledge", mode: "video", aspectRatio: "16:9", durationSeconds: 30 },
+    providers,
+    skill: getSkillById("knowledge")!
+  });
+
+  assert.equal(warn.mock.callCount(), 1, "不合格的声明必须留下一条可追查的告警");
+  const message = String(warn.mock.calls[0]?.arguments[0] ?? "");
+  // 定位文案要具体到哪一镜、缺的是哪个字段，否则出了一次就再也不知道是谁的锅。
+  assert.match(message, /镜头 1 的素材声明不合法/);
+  assert.match(message, /kind="stock" 必须同时给出 sourceUrl 与 license/);
+
+  // 产物必须是本地回退脚本而不是远端那份：标题里的「｜知识口播视频方案」是本地规则拼的。
+  assert.equal(artifacts.script.title, "AI 智能体介绍｜知识口播视频方案");
+  assert.ok(
+    artifacts.script.scenes.every((scene) => !("provenance" in scene)),
+    "回退路径不产任何来源声明——凭空补一个 ai_generated 之类同样是在说假话"
+  );
+  assert.ok(
+    artifacts.storyboard.shots.every((shot) => !("provenance" in shot)),
+    "storyboard.json 不能带着未声明来源的镜头落盘"
+  );
+  assert.ok(
+    artifacts.renderManifest.shots.every((shot) => !("provenance" in shot)),
+    "render-manifest 是对外交付物，更不能出现一条说不清出处的声明"
+  );
+});
+
+test("模型的 ai_generated 声明缺 provider：同样整份拒绝，不假装「知道是谁生成的」", async (t) => {
+  // provider 是「谁生成的」的唯一证据。只写 kind 不写 provider，等于把一份不可追溯的素材
+  // 说成「AI 生成」——交付面板上那个标签就成了空头承诺。
+  const warn = t.mock.method(console, "warn");
+  const providers: ProviderSelection = {
+    text: {
+      id: "mock-text",
+      capability: "text",
+      isRemote: false,
+      async test() {
+        return { providerId: "mock-text", capability: "text", ok: true, message: "ok", liveChecked: false };
+      },
+      async generateText() {
+        return JSON.stringify({
+          title: "远端脚本不该被采用",
+          summary: "s",
+          openingHook: "h",
+          voiceover: "v",
+          scenes: [
+            {
+              id: "scene-1",
+              heading: "远端镜头",
+              narration: "n1",
+              visualPrompt: "v1",
+              shotType: "medium",
+              durationSeconds: 30,
+              caption: "c1",
+              provenance: { kind: "ai_generated" }
+            }
+          ],
+          bgmStyle: "b",
+          cta: "c",
+          hashtags: []
+        });
+      }
+    }
+  };
+
+  const artifacts = await generateArtifacts({
+    request: { theme: "AI 智能体介绍", skill: "knowledge", mode: "video", aspectRatio: "16:9", durationSeconds: 30 },
+    providers,
+    skill: getSkillById("knowledge")!
+  });
+
+  assert.equal(warn.mock.callCount(), 1);
+  assert.match(String(warn.mock.calls[0]?.arguments[0] ?? ""), /镜头 1 的素材声明不合法/);
+  assert.match(String(warn.mock.calls[0]?.arguments[0] ?? ""), /kind="ai_generated" 必须给出 provider/);
+  assert.equal(artifacts.script.title, "AI 智能体介绍｜知识口播视频方案");
+  assert.ok(artifacts.script.scenes.every((scene) => !("provenance" in scene)));
+  assert.ok(artifacts.renderManifest.shots.every((shot) => !("provenance" in shot)));
 });
 
 test("createProjectId generates unique slugified id", () => {
@@ -470,7 +869,7 @@ test("prepareGeneratedAssets does not trust manifest-recorded paths outside the 
  * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
  * 功能：测试辅助：按给定的用户图片列表生成 video 模式产物（参考镜混排场景）。
  */
-async function buildReferenceArtifacts(imagePaths: string[]) {
+async function buildReferenceArtifacts(imagePaths: string[], providers: ProviderSelection = {}) {
   const request: GenerateRequest = {
     theme: "AI 智能体介绍",
     images: imagePaths,
@@ -480,7 +879,11 @@ async function buildReferenceArtifacts(imagePaths: string[]) {
     durationSeconds: 20
   };
   const skill = autoSelectSkill({ theme: request.theme });
-  return generateArtifacts({ request, providers: {}, skill });
+  // Providers default to none on purpose: the honesty rule is that a shot which
+  // no provider can illustrate is recorded as a title card. Tests that need the
+  // "will actually be generated" assetSource have to say a remote provider
+  // exists — generateArtifacts only reads `isRemote`, it never calls the model.
+  return generateArtifacts({ request, providers, skill });
 }
 
 /**
@@ -504,9 +907,12 @@ test("shots mix per-shot: first N animate the user images, the rest are generate
   const shots = artifacts.storyboard.shots;
   assert.ok(shots.length >= 3);
   // Each user image is spent on exactly one shot; once they run out, the
-  // remaining shots fall back to generated assets.
+  // remaining shots fall back to generated assets. At build time no visual
+  // provider is configured, so those shots are honestly recorded as title
+  // cards — a title card is a placeholder ("no picture yet"), not a verdict,
+  // and the asset stage below is what actually fills them in.
   shots.forEach((shot, index) => {
-    assert.equal(shot.assetSource, index < inputImages.length ? "reference_image" : "generated_image");
+    assert.equal(shot.assetSource, index < inputImages.length ? "reference_image" : "title_card");
   });
 
   const capturedRefs = new Map<string, string[] | undefined>();
@@ -753,6 +1159,86 @@ test("a reference shot reuses an existing in-project mp4 instead of paying twice
   assert.equal(result.succeeded, shots.length);
   assert.equal(artifacts.renderManifest.shots[0]!.assetKind, "video");
   assert.equal(artifacts.renderManifest.shots[0]!.assetPath, `assets/${shots[0]!.id}.mp4`);
+});
+
+test("来源声明经落盘与读回后逐字段不变（分镜、清单、脚本三处都在）", async () => {
+  // 版权信息最怕「写的时候对、读回来丢了」：素材阶段与重渲都是从磁盘重新读产物的，
+  // 只要有一处私吞了 provenance，交付面板上那个角标就会在第一次续跑后消失。
+  const stock = {
+    kind: "stock",
+    provider: "pexels",
+    license: "CC0-1.0",
+    sourceUrl: "https://example.com/photo/1",
+    attribution: "Photo by Jane Doe / Pexels",
+    retrievedAt: "2026-10-30T00:00:00.000Z"
+  };
+  const providers: ProviderSelection = {
+    text: {
+      id: "mock-text",
+      capability: "text",
+      isRemote: false,
+      async test() {
+        return { providerId: "mock-text", capability: "text", ok: true, message: "ok", liveChecked: false };
+      },
+      async generateText() {
+        return JSON.stringify({
+          title: "带溯源的片子",
+          summary: "s",
+          openingHook: "h",
+          voiceover: "v",
+          scenes: [
+            {
+              id: "scene-1",
+              heading: "开场",
+              narration: "n1",
+              visualPrompt: "v1",
+              shotType: "medium",
+              durationSeconds: 15,
+              caption: "c1",
+              provenance: stock
+            },
+            // 第二镜没有声明：读回来也不能凭空多出一个键，否则「有没有来源」这件事就不可信了。
+            {
+              id: "scene-2",
+              heading: "结尾",
+              narration: "n2",
+              visualPrompt: "v2",
+              shotType: "wide",
+              durationSeconds: 15,
+              caption: "c2"
+            }
+          ],
+          bgmStyle: "warm",
+          cta: "c",
+          hashtags: [],
+          bgmProvenance: { kind: "library", license: "project-asset" }
+        });
+      }
+    }
+  };
+  const artifact = await generateArtifacts({
+    request: { theme: "溯源自检", skill: "knowledge", mode: "video", aspectRatio: "16:9", durationSeconds: 30 },
+    providers,
+    skill: getSkillById("knowledge")!
+  });
+  const projectDir = mkdtempSync(join(tmpdir(), "aivideo-provenance-"));
+  materializeProject(projectDir, artifact);
+
+  // script.json 是权威来源：全片 BGM 的声明只存在这里，没有别的去处。
+  const script = JSON.parse(readFileSync(join(projectDir, "script.json"), "utf8")) as Record<string, unknown>;
+  assert.deepEqual(script.bgmProvenance, { kind: "library", license: "project-asset" });
+  const scriptScenes = script.scenes as Array<Record<string, unknown>>;
+  assert.deepEqual(scriptScenes[0]?.provenance, stock);
+  assert.equal("provenance" in (scriptScenes[1] ?? {}), false);
+
+  const loaded = loadAssetArtifacts(projectDir);
+  assert.ok(loaded);
+  assert.deepEqual(loaded.storyboard.shots[0]?.provenance, stock, "分镜是镜头墙与续跑的口径，声明不能丢");
+  assert.equal("provenance" in (loaded.storyboard.shots[1] ?? {}), false);
+  // 清单走的是 input/state 分节格式，读回要跨过 flattenRenderManifest 这一层：
+  // 这正是「重排镜头后声明是否还在」的关键路径。
+  assert.deepEqual(loaded.renderManifest.shots[0]?.provenance, stock, "清单里的声明要在 flatten 后仍然完整");
+  assert.equal("provenance" in (loaded.renderManifest.shots[1] ?? {}), false);
 });
 
 test("loadAssetArtifacts round-trips a materialized project", async () => {

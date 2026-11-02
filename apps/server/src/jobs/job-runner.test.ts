@@ -13,6 +13,7 @@ import { join } from "node:path";
 import type { AppConfig } from "@aivideo/core";
 import type { JobRequest, StageKind } from "../types.js";
 import { JobRunner } from "./job-runner.js";
+import { JobEventLog } from "./events.js";
 import { writeJob } from "./job-store.js";
 import type { StageContext, StageRunner } from "./stages.js";
 
@@ -663,6 +664,64 @@ test("shutdown 可重复调用：第二次直接复用第一次的 promise", asy
     assert.equal(first, second);
     await first;
     assert.equal(runner.get(job.id)?.phase, "cancelled");
+  } finally {
+    cleanup();
+  }
+});
+
+test("eventLogOf 按项目复用同一实例：同一 id 两次取到同一对象，不同 id 各自独立", () => {
+  const { stages } = makeFakeStages();
+  const { runner, cleanup } = makeRunner({ stages });
+  try {
+    const first = runner.eventLogOf("cache-probe-a");
+    const second = runner.eventLogOf("cache-probe-a");
+    // 这是缓存能否生效的唯一判据：每次 new 一个 JobEventLog，内部 cache 永远是空的，
+    // 追加就得把整个 events.jsonl 读一遍再逐行 parse（ffmpeg 每行一次 log 事件，代价是线性的）。
+    assert.equal(first, second);
+    assert.ok(first instanceof JobEventLog);
+    assert.notEqual(runner.eventLogOf("cache-probe-b"), first);
+  } finally {
+    cleanup();
+  }
+});
+
+test("eventLogOf 与 runner 内部追加共用实例：重放读得到刚写的状态事件，追加的 id 接着往下走", async () => {
+  const { stages } = makeFakeStages();
+  const { runner, cleanup } = makeRunner({ stages });
+  try {
+    const job = runner.create({ execMode: "auto", request: makeRequest(), projectId: "cache-probe-c" });
+    await waitUntil(() => runner.get(job.id)?.phase === "done", "done");
+
+    const log = runner.eventLogOf(job.projectId);
+    const replayed = log.after(0);
+    // create 时的 queued + 四个阶段各自的 status，至少 5 条；SSE 路由重放走的就是这条路径。
+    assert.ok(replayed.length >= 5, `重放事件过少：${replayed.length}`);
+    assert.equal(replayed[0]?.data.phase, "queued");
+    // id 必须严格递增：路由靠 Last-Event-ID 续传，重号会让客户端重复收或漏收。
+    assert.deepEqual(
+      replayed.map((event) => event.id),
+      replayed.map((_event, index) => index + 1)
+    );
+
+    // 复用实例后，追加直接接着缓存里的末条 id 往下编，不会因为「没重读文件」而重号。
+    const lastId = replayed[replayed.length - 1]?.id ?? 0;
+    const appended = log.append("log", { message: "after-done" });
+    assert.equal(appended.id, lastId + 1);
+    assert.equal(log.after(lastId).length, 1);
+  } finally {
+    cleanup();
+  }
+});
+
+test("forget 会连同事件日志缓存一起清掉：再取是新实例，旧对象不会被长期驻留", async () => {
+  const { stages } = makeFakeStages();
+  const { runner, cleanup } = makeRunner({ stages });
+  try {
+    const job = runner.create({ execMode: "auto", request: makeRequest(), projectId: "cache-probe-d" });
+    await waitUntil(() => runner.get(job.id)?.phase === "done", "done");
+    const before = runner.eventLogOf(job.projectId);
+    runner.forget(job.id);
+    assert.notEqual(runner.eventLogOf(job.projectId), before);
   } finally {
     cleanup();
   }

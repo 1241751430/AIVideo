@@ -5,8 +5,7 @@
  * @description 检查点编辑与重试路由：脚本元信息 PUT、单镜字段 PUT（core 失效矩阵自动清理过期产物）、镜头拖拽排序 PUT /:id/shots/order、单镜素材/配音重试（删文件 + 重新入队对应阶段，复用续跑机制只重做该镜）、批量重试失败镜头（单次重排素材阶段）、重新渲染入口与断点续跑入口。
  * @see https://github.com/1241751430/AIVideo.git
  */
-import { existsSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { resolve } from "node:path";
 import { Hono } from "hono";
 import type { RenderManifest, ScriptMetaPatch, ShotEditPatch } from "@aivideo/core";
 import {
@@ -21,10 +20,7 @@ import {
   updateShot
 } from "@aivideo/core";
 import type { ServerDeps } from "../app.js";
-import type { Job } from "../types.js";
-
-/** 路由守卫结果：要么拿到任务实体与项目目录，要么已给出状态码响应。 */
-type Guarded = { ok: true; job: Job; projectDir: string } | { ok: false; status: 404 | 409; error: string };
+import { guardEditable } from "./guard.js";
 
 /**
  * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
@@ -224,25 +220,6 @@ export function reviewRoutes(deps: ServerDeps): Hono {
   });
 
   return router;
-}
-
-/**
- * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
- * 功能：编辑/重试的并发闸门：任务必须存在且不在 queued/running（避免与阶段执行争写同一产物文件）。
- */
-function guardEditable(deps: ServerDeps, jobId: string): Guarded {
-  const job = deps.runner.get(jobId);
-  if (!job) {
-    return { ok: false, status: 404, error: "Unknown project" };
-  }
-  if (job.phase === "queued" || job.phase === "running") {
-    return { ok: false, status: 409, error: "任务执行中，编辑与重试需等待当前阶段结束" };
-  }
-  const projectDir = deps.runner.projectDirOf(job.projectId);
-  if (!existsSync(projectDir)) {
-    return { ok: false, status: 404, error: "Project directory not found" };
-  }
-  return { ok: true, job, projectDir };
 }
 
 /**

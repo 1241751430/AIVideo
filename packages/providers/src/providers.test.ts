@@ -2,11 +2,11 @@
  * @file providers.test.ts
  * @author zhangbaohong
  * @date 2026-09-17
- * @description providers 包单元测试：默认提供者选择与健康检查，以及 ArkTTS 语音、Ark Seedance 视频、OpenAI 兼容图片提供者的 mock fetch 行为验证
+ * @description providers 包单元测试：默认提供者选择与健康检查，本地曲库音乐提供者的选曲/缺曲语义，以及 ArkTTS 语音、Ark Seedance 视频、OpenAI 兼容图片提供者的 mock fetch 行为验证
  * @see https://github.com/1241751430/AIVideo.git
  */
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -24,8 +24,92 @@ test("createProviderSelection returns default local providers", () => {
 test("testProviders reports health for configured profile", async () => {
   const config = loadConfig(process.cwd());
   const health = await testProviders(config, "default");
-  assert.equal(health.length, 4);
+  assert.equal(health.length, 5);
   assert.ok(health.some((item) => item.providerId === "local-rule-text"));
+  assert.ok(health.some((item) => item.providerId === "local-library-music"));
+});
+
+// --- local BGM library provider (no network, real files in a temp dir) ---
+
+/**
+ * @author zhangbaohong  @date 2026-10-30  @see https://github.com/1241751430/AIVideo.git
+ * 功能：构造一个指向临时曲库的配置，并把曲库根塞进 baseURL（提供者工厂拿不到 cwd，只能靠配置覆盖）
+ * @param tracks 曲库里要放的曲目文件名 → 内容
+ * @returns 测试用配置、曲库目录与项目输出目录
+ */
+function musicTestConfig(tracks: Record<string, string>): { config: AppConfig; libraryDir: string; outputDir: string } {
+  const libraryDir = mkdtempSync(join(tmpdir(), "bgm-library-"));
+  const outputDir = mkdtempSync(join(tmpdir(), "bgm-output-"));
+  for (const [name, content] of Object.entries(tracks)) {
+    mkdirSync(join(libraryDir, name.includes("/") ? name.slice(0, name.lastIndexOf("/")) : "."), { recursive: true });
+    writeFileSync(join(libraryDir, name), content);
+  }
+  const config = loadConfig(process.cwd());
+  config.providers["local-library-music"] = {
+    ...config.providers["local-library-music"]!,
+    baseURL: libraryDir
+  };
+  return { config, libraryDir, outputDir };
+}
+
+test("曲库按 style 命中时复制到目标路径，并保留素材自身的扩展名", async () => {
+  const { config, outputDir } = musicTestConfig({ "epic-trailer.wav": "wav-bytes" });
+  const music = createProviderSelection(config, "default").music;
+  assert.ok(music, "default profile 选中 local-library-music");
+
+  // 调用方按 mp3 命名，素材其实是 wav：落盘要用素材的扩展名，否则 disk 上的文件与实际编码不符。
+  const result = await music.synthesizeMusic({
+    prompt: "epic trailer",
+    outputPath: join(outputDir, "bgm.mp3"),
+    durationSeconds: 30,
+    style: "epic trailer 的史诗预告感"
+  });
+  assert.ok(result);
+  assert.equal(result.outputPath, join(outputDir, "bgm.wav"));
+  assert.equal(readFileSync(result.outputPath, "utf8"), "wav-bytes");
+});
+
+test("曲库没有匹配曲目时返回 null（不是抛错），上层据此明示「无 BGM」", async () => {
+  const { config, outputDir } = musicTestConfig({ "calm-piano.mp3": "mp3-bytes" });
+  const music = createProviderSelection(config, "default").music;
+  assert.ok(music);
+
+  const result = await music.synthesizeMusic({
+    prompt: "x",
+    outputPath: join(outputDir, "bgm.mp3"),
+    durationSeconds: 30,
+    style: "燃爆的电子舞曲"
+  });
+  assert.equal(result, null);
+  assert.equal(existsSync(join(outputDir, "bgm.mp3")), false, "取不到就不能凭空留下一个空文件");
+});
+
+test("曲库目录不存在时返回 null，健康检查如实说明库是空的", async () => {
+  const libraryDir = join(tmpdir(), "bgm-library-does-not-exist-xyz");
+  const outputDir = mkdtempSync(join(tmpdir(), "bgm-output-"));
+  const config = loadConfig(process.cwd());
+  config.providers["local-library-music"] = { ...config.providers["local-library-music"]!, baseURL: libraryDir };
+  const music = createProviderSelection(config, "default").music;
+  assert.ok(music);
+
+  assert.equal(await music.synthesizeMusic({ prompt: "x", outputPath: join(outputDir, "bgm.mp3"), durationSeconds: 30 }), null);
+  const health = await music.test();
+  assert.equal(health.ok, true, "库为空不是故障，只是本机没放曲子");
+  assert.equal(health.capability, "music");
+  assert.match(health.message, /empty/i);
+});
+
+test("noop-music 回显路径但不产文件，健康检查自陈「不配乐」", async () => {
+  const config = loadConfig(process.cwd());
+  config.profiles["music-noop"] = { music: "noop-music" };
+  const music = createProviderSelection(config, "music-noop").music;
+  assert.ok(music);
+  const outputDir = mkdtempSync(join(tmpdir(), "bgm-noop-"));
+  const target = join(outputDir, "bgm.mp3");
+  const result = await music.synthesizeMusic({ prompt: "x", outputPath: target, durationSeconds: 30 });
+  assert.deepEqual(result, { outputPath: target });
+  assert.equal(existsSync(target), false, "noop 不写文件——调用方必须自己确认盘上有没有");
+  assert.match((await music.test()).message, /without background music/);
 });
 
 test("custom baseURL is rejected unless explicitly allowed", async () => {

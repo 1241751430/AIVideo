@@ -21,9 +21,11 @@ import {
   generateArtifacts,
   getConfigTemplate,
   getEnvTemplate,
+  isValidProjectId,
   loadAssetArtifacts,
   loadConfig,
   loadDotEnv,
+  loadScriptPackage,
   materializeProject,
   prepareGeneratedAssets,
   resolveProjectDir,
@@ -286,8 +288,10 @@ async function chooseResumeProject(cwd: string, config: AppConfig): Promise<stri
   if (!existsSync(projectsRoot)) {
     return undefined;
   }
+  // 只认合法项目 id：projects 根目录里还躺着 `.uploads`（分片上传会话）这类以点开头的内部目录，
+  // 按 isDirectory 一筛就会把它们当成可续跑项目，用户选中后必然报「找不到 storyboard.json」。
   const candidates = readdirSync(projectsRoot, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory())
+    .filter((entry) => entry.isDirectory() && isValidProjectId(entry.name))
     .map((entry) => {
       try {
         return { name: entry.name, mtime: statSync(join(projectsRoot, entry.name)).mtimeMs };
@@ -375,7 +379,10 @@ async function runVideoPhase(
   await synthesizeNarration({
     projectDir,
     shots: artifacts.storyboard.shots,
+    // 角色表决定镜内台词用哪副嗓子；没有 script.json 时只是不解析角色音色，旁白照常合成。
+    roles: loadScriptPackage(projectDir)?.roles,
     speechProvider: providers.speech,
+    language: artifacts.brief.language,
     reportProgress: (message) => console.log(message)
   });
   console.log("Starting video render. This may take a while...");
@@ -478,6 +485,10 @@ function buildGenerateRequest(
     theme: getStringOption(normalizedOptions, "theme"),
     content: getStringOption(normalizedOptions, "content"),
     images,
+    // 台词只去首尾空白，内部原样：它是用户的原话，CLI 这一层也不许「顺手整理」。
+    ...(getStringOption(normalizedOptions, "dialogue")?.trim()
+      ? { dialogue: getStringOption(normalizedOptions, "dialogue")!.trim() }
+      : {}),
     skill: getStringOption(normalizedOptions, "skill") ?? "auto",
     mode: (getStringOption(normalizedOptions, "mode") as GenerateRequest["mode"]) ?? "video",
     aspectRatio: getStringOption(normalizedOptions, "aspect") ?? config.defaults.aspectRatio,
@@ -514,6 +525,7 @@ Commands:
   aivideo render --project <id|path>        Re-render an existing project
 Advanced generate flags:
   --theme --content --images --skill --mode --aspect --duration
+  --dialogue "..."                          User-supplied lines, used verbatim (src=user)
   --language --platform --provider-profile --no-persist-artifacts --cleanup-after-render
   --dry-run                                 Generate script and storyboard without rendering
   --gpu                                     Enable GPU-accelerated video encoding (auto-detects encoder)

@@ -2,7 +2,7 @@
  * @file ShotWall.tsx
  * @author zhangbaohong
  * @date 2026-09-17
- * @description 镜头墙：缩略图优先的镜头卡网格——角标（时长/景别/转场/素材来源）、产物齐备小灯与拖拽排序把手（调 PUT /:id/shots/order，失败即回滚）；标题/旁白/字幕/提示词/时长编辑收进折叠抽屉，保存与单镜重试以 toast 反馈；缩略区可点开灯箱（←/→ 跨镜、Esc），顶部提供「重试失败镜头」批量入口；core 失效矩阵自动删除过期产物。
+ * @description 镜头墙：缩略图优先的镜头卡网格——角标（时长/景别/转场/素材来源声明/画面来源，悬停可见许可与出处）、产物齐备小灯与拖拽排序把手（调 PUT /:id/shots/order，失败即回滚）；标题/旁白/字幕/提示词/时长编辑收进折叠抽屉，保存与单镜重试以 toast 反馈；缩略区可点开灯箱（←/→ 跨镜、Esc），顶部提供「重试失败镜头」批量入口；core 失效矩阵自动删除过期产物。
  * @see https://github.com/1241751430/AIVideo.git
  */
 import { useEffect, useMemo, useState } from "react";
@@ -10,6 +10,14 @@ import { Clock, GripVertical, Image as ImageIcon, Maximize2, Mic, Pencil, Video 
 import type { ShotArtifactEntry } from "@aivideo/shared";
 import { api, fileUrl } from "../api";
 import { useToast } from "../hooks/useToasts";
+import {
+  ASSET_SOURCE_LABELS,
+  PROVENANCE_LABELS,
+  PROVENANCE_TONES,
+  parseProvenance,
+  provenanceHint
+} from "../labels";
+import type { AssetSourceKind, ProvenanceTone } from "../labels";
 import Chip from "./Chip";
 import ConfirmDialog from "./ConfirmDialog";
 import EmptyState from "./EmptyState";
@@ -79,6 +87,47 @@ function sbField(entry: ShotArtifactEntry, key: string): string | null {
  */
 function keyOf(entry: ShotArtifactEntry, index: number): string {
   return String(entry.shotId ?? `shot-${index + 1}`);
+}
+
+/** 角标：`label` 是文字，`title` 是悬停说明，`tone` 决定配色（缺省中性）。 */
+interface Badge {
+  label: string;
+  title: string;
+  tone?: ProvenanceTone;
+}
+
+/**
+ * @author zhangbaohong  @date 2026-10-30  @see https://github.com/1241751430/AIVideo.git
+ * 功能：组装单镜角标：景别、转场、来源声明、画面来源。
+ * 来源声明（provenance）优先于旧的 assetSource 角标：它有出处与许可，是版权的权威口径；
+ * 但两者维度不同，assetSource 仍单独展示——「这镜是标题卡」这件事不能因为有了版权声明就看不见了。
+ */
+function badgesOf(entry: ShotArtifactEntry): Badge[] {
+  const badges: Badge[] = [];
+  const shotType = sbField(entry, "shotType");
+  if (shotType) {
+    badges.push({ label: shotType, title: "景别" });
+  }
+  const transition = sbField(entry, "transition");
+  if (transition) {
+    badges.push({ label: transition, title: "转场" });
+  }
+  // 分镜里那份是归一化后的权威声明；manifest 条目兜底，覆盖「分镜被瘦身删掉、只剩清单」的场景。
+  const provenance = parseProvenance(entry.storyboard?.provenance) ?? parseProvenance(entry.provenance);
+  if (provenance) {
+    badges.push({
+      label: PROVENANCE_LABELS[provenance.kind],
+      title: provenanceHint(provenance),
+      tone: PROVENANCE_TONES[provenance.kind]
+    });
+  }
+  const assetSource = sbField(entry, "assetSource");
+  if (assetSource) {
+    // 未知取值原样展示而不是隐藏：服务端将来加了新的 assetSource，界面上不该凭空少一个角标。
+    const label = ASSET_SOURCE_LABELS[assetSource as AssetSourceKind] ?? assetSource;
+    badges.push({ label, title: "画面来源" });
+  }
+  return badges;
 }
 
 /**
@@ -333,11 +382,7 @@ function ShotCard({
 
   const assetFile = entry.files.video ?? entry.files.image ?? entry.files.manifestAsset;
   const duration = form.durationSeconds ? `${form.durationSeconds}s` : null;
-  const metaChips = [
-    { label: sbField(entry, "shotType"), title: "景别" },
-    { label: sbField(entry, "transition"), title: "转场" },
-    { label: sbField(entry, "assetSource"), title: "素材来源" }
-  ].filter((c): c is { label: string; title: string } => Boolean(c.label));
+  const metaChips = badgesOf(entry);
 
   return (
     <article className={`shot-card${dragging ? " dragging" : ""}${open ? " editing" : ""}`}>
@@ -408,7 +453,7 @@ function ShotCard({
       {metaChips.length > 0 && (
         <div className="shot-badges">
           {metaChips.map((c) => (
-            <Chip key={c.title} label={c.label} title={c.title} />
+            <Chip key={c.title} label={c.label} title={c.title} tone={c.tone} />
           ))}
         </div>
       )}

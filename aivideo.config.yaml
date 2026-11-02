@@ -35,6 +35,22 @@ providers:
     enabled: true
     description: 预留远程视频模型接口
 
+  # 按 script.bgmStyle 从 assets/bgm-library/ 里挑曲目；库里没有匹配项时明示「无 BGM」，不会编一首出来。
+  # baseURL 可指向另一处素材库目录（缺省为 <工作目录>/assets/bgm-library）。
+  local-library-music:
+    type: local-library-music
+    capability: music
+    vendor: builtin
+    enabled: true
+    description: 按 bgmStyle 从本地素材库取曲目，取不到就不配乐
+
+  noop-music:
+    type: noop-music
+    capability: music
+    vendor: builtin
+    enabled: true
+    description: 不产音乐的占位实现（声明了音乐能力但实际不配乐）
+
   openai-text:
     type: openai-compatible
     capability: text
@@ -137,21 +153,25 @@ profiles:
     image: noop-image
     video: noop-video
     speech: local-say
+    music: local-library-music
 
   openai:
     text: openai-text
     image: openai-image
     video: noop-video
     speech: local-say
+    music: local-library-music
 
   china:
     text: aliyun-text
     image: aliyun-image
     video: noop-video
     speech: local-say
+    music: local-library-music
 
   volcengine:
     text: volcengine-text
     image: volcengine-image
     video: volcengine-video
     speech: local-say
+    music: local-library-music

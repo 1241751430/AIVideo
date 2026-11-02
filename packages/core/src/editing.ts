@@ -8,10 +8,11 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { BriefDocument, RenderManifest, ScriptPackage, Storyboard } from "./types.js";
-import { buildCaptions, resolveInputImageIndex, toScriptMarkdown, toSrt, MAX_DURATION_SECONDS, MIN_SHOT_DURATION_SECONDS } from "./workflow.js";
+import { BriefDocument, RenderManifest, ScriptLine, ScriptPackage, Storyboard } from "./types.js";
+import { buildCaptions, resolveInputImageIndex, toScriptMarkdown, toSrt, MAX_DURATION_SECONDS, MAX_LINES_PER_SCENE, MIN_SHOT_DURATION_SECONDS } from "./workflow.js";
 import { readRenderManifestFile, writeRenderManifestFile } from "./renderManifest.js";
 import { deleteShotAudio, deleteShotGeneratedAssets, isValidShotId } from "./shotFiles.js";
+import { stableStringify } from "./fingerprints.js";
 import { nonEmptyFileExists, writeJsonFile } from "./utils.js";
 
 /**
@@ -28,6 +29,13 @@ export interface ShotEditPatch {
   caption?: string;
   visualPrompt?: string;
   durationSeconds?: number;
+  /**
+   * 镜内台词（整组替换，不是逐条合并）。传空数组即清空台词，该镜回到「只念 narration」。
+   * 缺省表示不动台词；给了就必须整体合法，否则整次编辑被拒（不做部分写入）。
+   */
+  lines?: ScriptLine[];
+  /** 逐镜音色；传空串表示清除该镜的覆盖，回到「角色音色 → provider 默认」。 */
+  voice?: string;
 }
 
 export interface ShotEditResult {
@@ -138,11 +146,18 @@ export function updateShot(projectDir: string, shotId: string, patch: ShotEditPa
       throw new Error(`Shot duration must be at least ${MIN_SHOT_DURATION_SECONDS} second.`);
     }
   }
+  // 先读一次 script.json：台词要按角色表校验 speaker，镜像回 scene 也要它。
+  const script = loadScriptPackage(projectDir);
+  const lines = patch.lines !== undefined ? normalizeEditLines(patch.lines, script) : undefined;
+  const voice = patch.voice !== undefined ? normalizeVoiceOverride(patch.voice) : undefined;
 
   const narrationChanged = patch.narration !== undefined && patch.narration !== shot.narration;
   const durationChanged = durationSeconds !== undefined && durationSeconds !== shot.durationSeconds;
   const visualPromptChanged = visualPrompt !== undefined && visualPrompt !== shot.visualPrompt;
-  const audioInvalidated = narrationChanged || durationChanged;
+  const linesChanged = lines !== undefined && stableStringify(lines) !== stableStringify(shot.lines ?? []);
+  // 空串表示「清除逐镜覆盖」，与「没有这个字段」是同一件事，比较时先归一化掉。
+  const voiceChanged = voice !== undefined && (voice || undefined) !== shot.voice;
+  const audioInvalidated = narrationChanged || durationChanged || linesChanged || voiceChanged;
   const assetInvalidated = visualPromptChanged;
 
   if (title !== undefined) {
@@ -159,6 +174,22 @@ export function updateShot(projectDir: string, shotId: string, patch: ShotEditPa
   }
   if (durationSeconds !== undefined) {
     shot.durationSeconds = durationSeconds;
+  }
+  if (lines !== undefined) {
+    // 空数组不落键：`lines` 缺失与 `lines: []` 在配音侧等价，但前者能让 storyboard.json
+    // 与「引入台词之前」逐字节相同——编辑清空台词后应当回到那个状态。
+    if (lines.length > 0) {
+      shot.lines = lines;
+    } else {
+      delete shot.lines;
+    }
+  }
+  if (voice !== undefined) {
+    if (voice) {
+      shot.voice = voice;
+    } else {
+      delete shot.voice;
+    }
   }
 
   const total = Math.round(storyboard.shots.reduce((sum, entry) => sum + entry.durationSeconds, 0) * 10) / 10;
@@ -199,7 +230,7 @@ export function updateShot(projectDir: string, shotId: string, patch: ShotEditPa
   mkdirSync(join(projectDir, "captions"), { recursive: true });
   writeFileSync(join(projectDir, "captions", "captions.srt"), toSrt(buildCaptions(storyboard)), "utf8");
 
-  syncScriptPackageWithShot(projectDir, shotId, shot);
+  syncScriptPackageWithShot(projectDir, shotId, shot, script);
   return { assetInvalidated, audioInvalidated, deleted };
 }
 
@@ -288,12 +319,69 @@ function restoreSpecForShot(
 }
 
 /**
- * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
- * 功能：当项目存在 script.json 时，把编辑后的镜头字段镜像回对应 scene 并重写 script.json 与 script.md。
+ * @author zhangbaohong  @date 2026-10-30  @see https://github.com/1241751430/AIVideo.git
+ * 功能：校验并归一化一次「整组替换」的台词编辑：必须是数组、条数不超过单镜上限、每条 text 非空、src 只能是 user/generated。
+ * 与模型输出侧的 normalizeLines 有两处刻意的不同：不做部分写入（一条不合法就整次编辑被拒，避免存下半套台词）；
+ * text 只去首尾空白做非空判定、落盘的仍是原文——`src: "user"` 的台词从输入到合成，任何环节都不得改写。
+ * @param lines 请求体里的台词（HTTP 层直接 cast，类型未知）
+ * @param script 项目的 script.json；缺省时没有角色表，speaker 一律丢弃
+ * @returns 可落盘的台词数组（可能为空数组，表示清空该镜台词）
  */
-/** Mirror the edited shot into script.json/script.md when a script package exists. */
-function syncScriptPackageWithShot(projectDir: string, shotId: string, shot: Storyboard["shots"][number]): void {
-  const script = loadScriptPackage(projectDir);
+function normalizeEditLines(lines: unknown, script: ScriptPackage | null): ScriptLine[] {
+  if (!Array.isArray(lines)) {
+    throw new Error("shot.lines must be an array.");
+  }
+  if (lines.length > MAX_LINES_PER_SCENE) {
+    throw new Error(`shot.lines accepts at most ${MAX_LINES_PER_SCENE} lines per shot (got ${lines.length}).`);
+  }
+  const roleIds = new Set((script?.roles ?? []).map((role) => role.id));
+  return lines.map((item, index) => {
+    if (!item || typeof item !== "object") {
+      throw new Error(`shot.lines[${index}] must be an object.`);
+    }
+    const raw = item as Partial<ScriptLine>;
+    if (typeof raw.text !== "string" || raw.text.trim().length === 0) {
+      throw new Error(`shot.lines[${index}].text must be a non-empty string.`);
+    }
+    const src = raw.src === undefined ? "generated" : raw.src;
+    if (src !== "user" && src !== "generated") {
+      throw new Error(`shot.lines[${index}].src must be "user" or "generated".`);
+    }
+    const speaker = typeof raw.speaker === "string" ? raw.speaker.trim() : "";
+    // speaker 对不上角色表就丢掉该字段而不是丢整句：对白比音色重要（与 normalizeLines 同口径）。
+    return {
+      ...(speaker && roleIds.has(speaker) ? { speaker } : {}),
+      text: raw.text,
+      src
+    };
+  });
+}
+
+/**
+ * @author zhangbaohong  @date 2026-10-30  @see https://github.com/1241751430/AIVideo.git
+ * 功能：校验逐镜音色覆盖：必须是字符串，去首尾空白；空串表示清除覆盖（回到「角色音色 → provider 默认」）。
+ * @param voice 请求体里的音色（类型未知）
+ * @returns 归一化后的音色；空串代表清除
+ */
+function normalizeVoiceOverride(voice: unknown): string {
+  if (typeof voice !== "string") {
+    throw new Error("shot.voice must be a string.");
+  }
+  return voice.trim();
+}
+
+/**
+ * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+ * 功能：当项目存在 script.json 时，把编辑后的镜头字段（含台词）镜像回对应 scene 并重写 script.json 与 script.md。
+ * script 由调用方传入（updateShot 已经为校验 speaker 读过一次），避免同一份文件在一处编辑里解析两遍。
+ * @param script 已加载的脚本包；null 表示该项目没有 script.json，直接跳过
+ */
+function syncScriptPackageWithShot(
+  projectDir: string,
+  shotId: string,
+  shot: Storyboard["shots"][number],
+  script: ScriptPackage | null
+): void {
   if (!script) {
     return;
   }
@@ -304,6 +392,13 @@ function syncScriptPackageWithShot(projectDir: string, shotId: string, shot: Sto
     scene.caption = shot.caption;
     scene.visualPrompt = shot.visualPrompt;
     scene.durationSeconds = shot.durationSeconds;
+    // 台词镜像回 scene：script.md 的「台词/对白」段落由 scene.lines 渲染，不镜像就会与配音对不上。
+    // 空台词同样不落键，保持无台词项目的 script.json 形状不变。
+    if (shot.lines && shot.lines.length > 0) {
+      scene.lines = shot.lines;
+    } else {
+      delete scene.lines;
+    }
     writeJsonFile(join(projectDir, "script.json"), script);
     writeFileSync(join(projectDir, "script.md"), toScriptMarkdown(script), "utf8");
   }

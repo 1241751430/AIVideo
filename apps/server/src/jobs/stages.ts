@@ -5,6 +5,7 @@
  * @description 流水线四阶段对 @aivideo/core 的薄封装：脚本生成落盘、付费素材、旁白合成、ffmpeg 渲染；统一注入进度日志与取消信号，复用判据一律为「输入指纹未变且产物仍在磁盘」。
  * @see https://github.com/1241751430/AIVideo.git
  */
+import { writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {
   AppConfig,
@@ -13,12 +14,15 @@ import {
   RenderManifest,
   compareStageFingerprint,
   ensureRenderEnvironmentReady,
+  findProjectBgm,
   generateArtifacts,
   getSkillById,
   loadAssetArtifacts,
+  loadScriptPackage,
   materializeProject,
   nonEmptyFileExists,
   prepareGeneratedAssets,
+  projectBgmPath,
   readRenderManifestFile,
   readStageFingerprints,
   recordStageFingerprints,
@@ -26,9 +30,13 @@ import {
   renderStageFingerprint,
   scriptStageFingerprint,
   selectSkill,
-  synthesizeNarration
+  synthesizeNarration,
+  toScriptMarkdown,
+  writeJsonFile
 } from "@aivideo/core";
+import type { AssetArtifacts, AssetProvenance } from "@aivideo/core";
 import type { Job } from "../types.js";
+import { probeAudioDuration } from "./bgm-store.js";
 
 /** 构造阶段上下文所需的服务端依赖。 */
 export interface StageDeps {
@@ -74,6 +82,7 @@ export function toGenerateRequest(job: Job): GenerateRequest {
     durationSeconds: request.durationSeconds,
     language: request.language,
     platform: request.platform,
+    ...(request.dialogue ? { dialogue: request.dialogue } : {}),
     persistArtifacts: true
   };
 }
@@ -134,8 +143,13 @@ export const defaultStages: StageRunner = {
     });
     if (prep.attempted > 0) {
       ctx.log(`素材阶段完成：尝试 ${prep.attempted}，复用 ${prep.reused}，新视频 ${prep.videoSucceeded}，新图片 ${prep.imageSucceeded}，失败回退 ${prep.failed}`);
-    } else {
-      ctx.log("本地提供者可出片：素材阶段无需调用远端");
+    } else if (prep.skippedReason === "no-remote-provider") {
+      // 空转必须说清楚原因：用户以为自己在等 AI 画图，实际在等一组标题卡。
+      ctx.log("未配置图片/视频模型，本片将由标题卡构成。要生成画面请在配置档中启用 image 或 video 提供者。");
+    } else if (prep.skippedReason === "all-shots-bound-to-reference") {
+      ctx.log("全部镜头都已绑定参考图，素材阶段无需调用远端；参考图本身不会额外计费。");
+    } else if (prep.skippedReason === "no-shots") {
+      ctx.log("分镜为空，素材阶段没有可处理的镜头——请检查脚本阶段产物。");
     }
   },
 
@@ -153,12 +167,15 @@ export const defaultStages: StageRunner = {
     const narration = await synthesizeNarration({
       projectDir: ctx.projectDir,
       shots: artifacts.storyboard.shots,
+      // 角色表决定每句台词用哪副嗓子；缺 script.json 时只是不解析角色音色，不影响旁白合成。
+      roles: loadScriptPackage(ctx.projectDir)?.roles,
       speechProvider: providers.speech,
       force: ctx.job.force === "audio",
       language: artifacts.brief.language,
       reportProgress: ctx.log
     });
     ctx.log(`旁白阶段完成：合成 ${narration.synthesized}，复用 ${narration.reused}，失败 ${narration.failed}`);
+    await resolveBackgroundMusic(ctx, artifacts);
   },
 
   /**
@@ -193,7 +210,14 @@ export const defaultStages: StageRunner = {
         // （python 与它派生的 ffmpeg 一起收掉）。CLI 不走这条路——那里要靠终端把 SIGINT 直接发给前台进程组。
         killProcessGroup: true,
         onStdoutLine: (line) => {
-          if (line.startsWith("Clip ")) {
+          // 只转存有信息量的行：ffmpeg 的错误输出走 stderr，这里的 stdout 正常只有进度与阶段提示。
+          // WARNING 必须透传：降级（标题卡、静音、字幕烧录失败）全是靠它告诉用户的，
+          // 吞掉就等于让「片子出了但不对劲」变成无迹可查。Mixing BGM 让「BGM 到底进去没有」可见。
+          if (
+            line.startsWith("Clip ") ||
+            line.startsWith("Mixing BGM:") ||
+            line.startsWith("WARNING:")
+          ) {
             ctx.log(line);
           }
         }
@@ -212,6 +236,125 @@ export const defaultStages: StageRunner = {
     );
   }
 };
+
+/**
+ * @author zhangbaohong  @date 2026-10-30  @see https://github.com/1241751430/AIVideo.git
+ * 功能：解析本片 BGM 的来源并落盘到 audio/bgm.<ext>（render.py 只认这个位置，不认 bgmStyle）。
+ * 优先级：用户上传 > 音乐提供者按 bgmStyle 取。用户上传永远优先，force 也不覆盖它——那是用户的显式选择。
+ * 「拿不到 BGM」不是错误：日志明示「本片无 BGM」，渲染照常进行（render.py 见不到 bgm 文件就是静音成片）。
+ * 无论走哪条路都把「本片实际的曲子来源」落到 script.bgmProvenance（见 persistBgmProvenance）：它是交付物的一部分。
+ * @param ctx 阶段上下文
+ * @param artifacts 已落盘的素材产物（取 renderManifest 里的 bgmStyle 与成片时长）
+ */
+async function resolveBackgroundMusic(ctx: StageContext, artifacts: AssetArtifacts): Promise<void> {
+  ctx.signal.throwIfAborted();
+
+  // 用户上传的曲子优先级最高：它已在项目里，直接用它，不再向任何提供者要曲。
+  const existing = findProjectBgm(ctx.projectDir);
+  if (existing) {
+    ctx.log(`使用项目自带背景音乐：${existing}`);
+    await persistBgmProvenance(ctx, { kind: "user_uploaded", license: "user-provided" });
+    reportBgmLength(ctx, existing, artifacts.renderManifest.durationSeconds);
+    return;
+  }
+
+  const providers = ctx.deps.providersFor(ctx.job.request.providerProfile);
+  const music = providers.music;
+  const style = artifacts.renderManifest.bgmStyle;
+  if (!music || !style) {
+    ctx.log("本片无 BGM（未配置音乐来源）");
+    await persistBgmProvenance(ctx, null);
+    return;
+  }
+
+  // 目标扩展名先按 mp3 给：多数音乐提供者会遵守；本地曲库会保留素材自身的扩展名并返回实际路径。
+  const requestedPath = projectBgmPath(ctx.projectDir, "mp3");
+  let result: { outputPath: string } | null = null;
+  try {
+    result = await music.synthesizeMusic({
+      prompt: style,
+      outputPath: requestedPath,
+      durationSeconds: artifacts.renderManifest.durationSeconds,
+      style
+    });
+  } catch (error) {
+    // 配乐失败不该让整片失败：BGM 是加分项，旁白与画面才是主体。
+    ctx.log(`BGM 获取失败（${music.id}）：${error instanceof Error ? error.message : String(error)}；本片无 BGM`);
+    await persistBgmProvenance(ctx, null);
+    return;
+  }
+
+  // noop-music 会回显路径却不产文件：不复核就会把「没配乐」记成「已配乐」，用户听着没声音还查不到原因。
+  if (!result || !nonEmptyFileExists(result.outputPath)) {
+    ctx.log(`本片无 BGM（音乐提供者 ${music.id} 未产出可用曲目，风格「${style}」）`);
+    await persistBgmProvenance(ctx, null);
+    return;
+  }
+
+  // 打实际落盘路径而非假设的 .mp3：本地曲库保留素材自身扩展名（如 bgm.wav），说错扩展名会误导排查。
+  ctx.log(`已配置背景音乐：${result.outputPath}（来源 ${music.id}，风格「${style}」）`);
+  // 曲库复制来的记 library、模型现生成的记 ai_generated：由提供者自陈，缺省按 AI 生成——
+  // 把一首模型生成的曲子标成「素材库」会让用户误以为它来自某个有明确许可的曲库。
+  await persistBgmProvenance(ctx, { kind: music.provenanceKind ?? "ai_generated", provider: music.id });
+  reportBgmLength(ctx, result.outputPath, artifacts.renderManifest.durationSeconds);
+}
+
+/**
+ * @author zhangbaohong  @date 2026-10-30  @see https://github.com/1241751430/AIVideo.git
+ * 功能：把本片 BGM 的来源声明写进 script.json 并同步重写 script.md；传 null 表示本次没拿到曲子，删除旧声明。
+ * 一律以「本次实际结果」为准而不是只增不减：用户删掉或换掉曲子后若不清掉旧声明，
+ * 交付面板与 script.md 会继续宣称「已配乐」，与实际静音成片对不上——版权标注说错比缺失更伤信任。
+ * 写盘失败只记日志不抛：它是附加信息，不该让整片生成失败（与 reportBgmLength 同一基调）。
+ * @param ctx 阶段上下文
+ * @param provenance 本次实际来源；null 表示本次无 BGM
+ */
+async function persistBgmProvenance(ctx: StageContext, provenance: AssetProvenance | null): Promise<void> {
+  // AssetArtifacts 不含 script（BGM 解析发生在 audio 阶段，产物里只带了 brief/storyboard/renderManifest），
+  // 因此这里读回磁盘再写回，和 updateScriptMeta 走同一条落盘路径（script.json + script.md 两写齐）。
+  const script = loadScriptPackage(ctx.projectDir);
+  if (!script) {
+    return;   // 无 script.json 的旧项目：不凭空造一份出来
+  }
+  if (provenance) {
+    script.bgmProvenance = provenance;
+  } else if (!script.bgmProvenance) {
+    return;   // 本来没有、现在也没有：不白写一次盘，落盘与升级前逐字节相同
+  } else {
+    delete script.bgmProvenance;
+  }
+  try {
+    writeJsonFile(join(ctx.projectDir, "script.json"), script);
+    writeFileSync(join(ctx.projectDir, "script.md"), toScriptMarkdown(script), "utf8");
+  } catch (error) {
+    ctx.log(`BGM 来源声明未能写入 script：${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+/**
+ * @author zhangbaohong  @date 2026-10-30  @see https://github.com/1241751430/AIVideo.git
+ * 功能：曲子明显短于成片时把这件事说出来，而不是让用户听着循环两三遍自己去猜。
+ * 刻意只告警不拒绝：render.py 用 `-stream_loop -1` 无限循环 BGM，短曲在功能上是成立的，
+ * 上传时就 400 会把「10 秒的片头音效配 30 秒短片」这种合理需求也挡掉；何况创建卡片上传时还没有成片，时长根本无从比对。
+ * 探测不到时长（本机没装 ffprobe）就静默跳过——环境缺失不该变成一条看不懂的告警。
+ * @param ctx 阶段上下文
+ * @param bgmPath BGM 绝对路径（可能是 audio/bgm.mp3 也可能是曲库复制来的其他扩展名）
+ * @param filmSeconds 成片时长（秒），来自 render-manifest
+ */
+async function reportBgmLength(ctx: StageContext, bgmPath: string, filmSeconds: number): Promise<void> {
+  let seconds: number | null;
+  try {
+    seconds = await probeAudioDuration(bgmPath);
+  } catch {
+    // 探测失败只说明这首曲子读不出时长，不影响它被 render.py 拿去混音；渲染阶段会给出真正的解码错误。
+    return;
+  }
+  if (seconds === null || !Number.isFinite(filmSeconds) || filmSeconds <= 0) {
+    return;
+  }
+  if (seconds < filmSeconds / 2) {
+    ctx.log(`注意：背景音乐 ${seconds.toFixed(1)}s，短于成片 ${filmSeconds.toFixed(1)}s 的一半，渲染时会循环播放`);
+  }
+}
 
 /**
  * @author zhangbaohong  @date 2026-10-27  @see https://github.com/1241751430/AIVideo.git

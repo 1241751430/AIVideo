@@ -1734,6 +1734,104 @@ input[type="range"]:focus {
   color: var(--accent-violet);
 }
 
+/* 背景音乐一条：试听器与下载口同行，窄屏自动换行；无 BGM 时只有一行灰字说明 */
+.bgm-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: var(--sp-3);
+  font-size: 12px;
+}
+
+.bgm-row svg {
+  color: var(--accent-violet);
+  flex: none;
+}
+
+.bgm-row audio {
+  height: 30px;
+  max-width: 100%;
+}
+
+.bgm-file {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+/* 素材来源与版权一栏：对外交付物的凭证，所以给边框而不是只做灰字——
+   它要在视觉上「像一份清单」，而不是一句附注。 */
+.credits-block {
+  margin-top: var(--sp-3);
+  padding: var(--sp-3);
+  border-radius: var(--r-md);
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.015);
+  font-size: 12px;
+}
+
+.credits-block h3 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 var(--sp-2);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-dim);
+}
+
+.credits-block h3 svg {
+  color: var(--c-ok);
+  flex: none;
+}
+
+.credits-block ul {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.credits-block li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+/* 位置列定宽下限：逐镜的「镜头 3（标题）」长短不一，不对齐会让右侧声明参差难扫。 */
+.credits-where {
+  flex: none;
+  min-width: 7em;
+  color: var(--text-dim);
+}
+
+.credits-what {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.credits-license {
+  flex: none;
+  padding: 1px 7px;
+  border-radius: var(--r-full);
+  border: 1px solid var(--line);
+  font-size: 11px;
+}
+
+.credits-note {
+  margin-top: var(--sp-2);
+  font-size: 12px;
+  color: var(--muted);
+}
+
 /* ===== §phase-c 交互增强：镜头墙头 / 批量重试 / 灯箱 / 速查表 / 参考图条 / 旧项目只读 / 侧栏快捷键提示 ===== */
 .shot-wall-head {
   display: flex;
@@ -2063,6 +2161,132 @@ kbd {
 .ref-remove:hover {
   color: var(--c-danger);
   border-color: rgba(239, 68, 68, 0.5);
+}
+
+/* 上传计量条：复用 .prog-track/.prog-fill 的视觉语言（同一套进度语义不该有两种长相），
+   只补齐头部那一行「x/y 张 · MB」与取消按钮的排布。 */
+.upload-meter {
+  margin-top: var(--sp-2);
+  padding-top: var(--sp-2);
+  border-top: 1px dashed var(--line);
+}
+
+.upload-meter-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  margin-bottom: 6px;
+}
+
+.upload-meter .prog-track {
+  max-width: none;
+}
+
+.upload-meter-note {
+  font-size: 12px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 上传进行中禁止改选图：面板再亮一点、虚线再淡一点，让「暂时不能动」看得出来。 */
+.ref-dropzone.busy {
+  opacity: 0.75;
+}
+
+.ref-dropzone.busy .ref-drop-label {
+  cursor: not-allowed;
+}
+
+/* ===== §phase-d 创建页背景音乐选曲区 =====
+   与参考图区同一套视觉语言（虚线面板 + 左侧图标 + 进度条），但更扁：一首曲子只有一行，
+   不值得占掉一块和参考图等高的面板——用户的重心在 brief 和图上，配乐是补充项。 */
+.bgm-pick {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2) var(--sp-3);
+  border: 1.5px dashed var(--line-strong);
+  border-radius: var(--r-md);
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--bg-raised);
+  transition: border-color var(--t-fast) var(--ease), opacity var(--t-fast) var(--ease);
+}
+
+.bgm-pick.busy {
+  opacity: 0.75;
+}
+
+.bgm-pick-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12.5px;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.bgm-pick-label:hover {
+  color: var(--text);
+}
+
+.bgm-pick-label svg {
+  color: var(--accent-violet, var(--accent-cyan));
+}
+
+.bgm-pick-label input[type="file"] {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  overflow: hidden;
+}
+
+/* 上传中不能再换曲：面板整体变暗，标签也换成 not-allowed，别让人以为点了会有反应。 */
+.bgm-pick.busy .bgm-pick-label {
+  cursor: not-allowed;
+}
+
+/* 已选曲：名字会被截断（长文件名不该把这一行撑破），时长与体积永远完整可见——
+   那才是用户确认「选对了没有」的依据。 */
+.bgm-file {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+  padding: 3px 6px 3px 10px;
+  border-radius: var(--r-full);
+  background: var(--bg-deep);
+  border: 1px solid var(--line);
+}
+
+.bgm-name {
+  max-width: 42vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  color: var(--text);
+}
+
+.bgm-meta {
+  font-size: 12px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* 计量条在这个 flex 行里独占一整行：和文件名挤在一起会把它压成一条看不见的缝。 */
+.bgm-pick .upload-meter {
+  flex-basis: 100%;
+  margin-top: 0;
+}
+
+.bgm-error {
+  flex-basis: 100%;
+  margin: 0;
+  font-size: 12px;
+  color: var(--c-danger);
 }
 
 /* ===== §overlay 通知浮层（玻璃，只给悬浮物） ===== */

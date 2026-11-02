@@ -9,14 +9,19 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
+import { MAX_INPUT_IMAGES } from "@aivideo/shared";
 import {
+  AssetProvenance,
   BriefDocument,
   CaptionCue,
   GenerateRequest,
   ProjectArtifacts,
   ProviderSelection,
   RenderManifest,
+  ScriptLine,
   ScriptPackage,
+  ScriptRole,
+  ScriptScene,
   SkillDefinition,
   Storyboard,
   StoryboardShot,
@@ -25,7 +30,14 @@ import {
 import { autoSelectSkill, getSkillById } from "./skills.js";
 import { isWithinBase, nonEmptyFileExists, runConcurrent, writeJsonFile } from "./utils.js";
 import { readRenderManifestFile, writeRenderManifestFile } from "./renderManifest.js";
-import { shotImageRelative, shotImagePath, shotVideoRelative, shotVideoPath } from "./shotFiles.js";
+import {
+  PROJECT_BGM_BASENAME,
+  PROJECT_BGM_EXTS,
+  shotImageRelative,
+  shotImagePath,
+  shotVideoRelative,
+  shotVideoPath
+} from "./shotFiles.js";
 import {
   assetsShotFingerprint,
   compareStageFingerprint,
@@ -41,10 +53,17 @@ const ASPECT_SIZES: Record<string, { width: number; height: number }> = {
 };
 export const SUPPORTED_ASPECT_RATIOS: readonly string[] = Object.keys(ASPECT_SIZES);
 export const MAX_DURATION_SECONDS = 600;
-/** 参考图数量上限：服务端落盘时的校验与这里的生成前校验共用同一个数字。 */
-export const MAX_INPUT_IMAGES = 20;
+// 参考图上限来自 @aivideo/shared：服务端落盘校验、前端选图预校验、这里的生成前校验必须读同一个数字。
+// 常量放在 shared 而不是本包，是因为 apps/web 只依赖 shared、够不到 core；此处只做转发以保持 core 的既有导出面。
+export { MAX_INPUT_IMAGES } from "@aivideo/shared";
 const MAX_SCENES = 24;
 export const MIN_SHOT_DURATION_SECONDS = 1;
+/** 角色表上限：超过四个声部，短视频里观众已经分不清谁在说话。 */
+const MAX_ROLES = 4;
+/** 单镜台词条数上限：再多就念不完这一镜的时长。编辑校验也读这个数（避免界面允许、保存时又拒绝）。 */
+export const MAX_LINES_PER_SCENE = 3;
+/** 角色 id 允许的字符：字母（含中日韩）、数字、下划线、连字符；与 shotFiles 的镜头 id 同一口径。 */
+const ROLE_ID_PATTERN = /^[\p{L}\p{N}_-]+$/u;
 
 /**
  * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
@@ -141,7 +160,14 @@ export async function generateArtifacts(input: {
   validateGenerateRequest(input.request);
   const brief = buildBrief(input.request, input.skill);
   const script = await buildScriptPackage(brief, input.providers.text, input.skill);
-  const storyboard = buildStoryboard(input.request, script);
+  // 分镜的 assetSource 描述的是「这一镜的画面最终会怎么来」，不是「这一镜想要什么」。
+  // 没有远端图/视频能力时，素材阶段根本不会调用任何模型（见 prepareGeneratedAssets 的早退），
+  // 所以这里必须问一遍能力再落盘，否则 storyboard.json 会写着 generated_image 而实际出一张标题卡。
+  const hasRemoteVisual = Boolean(
+    (input.providers.video && input.providers.video.isRemote) ||
+      (input.providers.image && input.providers.image.isRemote)
+  );
+  const storyboard = buildStoryboard(input.request, script, hasRemoteVisual);
   const captions = buildCaptions(storyboard);
   const renderManifest = buildRenderManifest({
     request: input.request,
@@ -239,6 +265,16 @@ export interface AssetPrepResult {
   reused: number;
   videoSucceeded: number;
   imageSucceeded: number;
+  /**
+   * Why this pass generated nothing, when it generated nothing.
+   *
+   * The three early returns used to be indistinguishable from "ran and did
+   * nothing", so callers could only report a vague "no remote providers" even
+   * when the real cause was that every shot was already bound to a user image.
+   * Naming the reason lets the UI say what this film will actually look like
+   * instead of guessing.
+   */
+  skippedReason?: "no-remote-provider" | "all-shots-bound-to-reference" | "no-shots";
 }
 
 /**
@@ -266,12 +302,15 @@ function reusableAssetExists(projectDir: string, filePath: string): boolean {
  */
 /**
  * Generate the scene assets promised by the storyboard. Shots with
- * `assetSource: "generated_image"` get a paid asset: when the selected video
- * provider is remote, each shot becomes a real motion clip ("video");
- * otherwise a remote image provider produces scene images ("image"). Shots
- * with `assetSource: "reference_image"` keep their user image as the manifest
- * asset — and when a remote video provider exists, it animates that image
- * (image-to-video) instead of spending a second call on a fresh scene image.
+ * `assetSource: "generated_image"` or `"title_card"` get a paid asset: when the
+ * selected video provider is remote, each shot becomes a real motion clip
+ * ("video"); otherwise a remote image provider produces scene images ("image").
+ * `title_card` counts because it is a placeholder for "no picture yet", not a
+ * verdict — a project scripted under a config with no visual provider records
+ * title cards, and adding a provider before resuming must still animate it.
+ * Shots with `assetSource: "reference_image"` keep their user image as the
+ * manifest asset — and when a remote video provider exists, it animates that
+ * image (image-to-video) instead of spending a second call on a fresh scene image.
  * Failures degrade gracefully: a failed video falls back to the image flow
  * when available and then to the manifest's existing asset (scene image or
  * user reference image), or a title card if neither exists.
@@ -308,15 +347,30 @@ export async function prepareGeneratedAssets(input: {
   const useVideo = Boolean(videoProvider && videoProvider.isRemote);
   const useImage = Boolean(imageProvider && imageProvider.isRemote);
   if (!useVideo && !useImage) {
+    // No paid capability at all: every shot renders as its title card. This is
+    // the common path on a stock config, so the reason has to survive to the
+    // caller — an empty counter set alone reads like a silent no-op.
+    result.skippedReason = "no-remote-provider";
     return result;
   }
 
+  // `title_card` is a placeholder, not a verdict: a project whose script stage ran
+  // on a config without any visual provider records title cards, and the user may
+  // add an image/video provider before resuming. Prep is the stage that turns
+  // pictures into reality, so any shot that is not pinned to a user image (and is
+  // not a reference shot we cannot animate) is fair game. This mirrors the
+  // manifest, which already writes `generated-card` as a to-be-replaced placeholder.
   const generatedShots = artifacts.storyboard.shots.filter(
     (shot) =>
       shot.assetSource === "generated_image" ||
+      shot.assetSource === "title_card" ||
       (shot.assetSource === "reference_image" && useVideo)
   );
   if (generatedShots.length === 0) {
+    // Distinguish "there was nothing to draw" from "every shot is already a
+    // real picture": the first means the run is broken, the second means the
+    // film is fully illustrated without spending anything.
+    result.skippedReason = artifacts.storyboard.shots.length === 0 ? "no-shots" : "all-shots-bound-to-reference";
     return result;
   }
 
@@ -574,14 +628,28 @@ export function trimProjectArtifacts(projectDir: string): void {
 
 /**
  * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
- * 功能：递归删除项目内的 audio、captions、.render_tmp 渲染工作目录。
+ * 功能：清空渲染工作目录 captions、.render_tmp，并清掉 audio 下全部可再生中间产物。
+ * `audio/bgm.*` 是用户上传或外部来源的**资产**，不是可再生的中间物——清理阶段无权删除它，
+ * 否则用户勾上「渲染后清理」就会连同自己选的背景音乐一起丢掉。
  */
 export function cleanupRenderWorkspace(projectDir: string): void {
-  for (const name of ["audio", "captions", ".render_tmp"]) {
+  for (const name of ["captions", ".render_tmp"]) {
     const target = join(projectDir, name);
     if (existsSync(target)) {
       rmSync(target, { recursive: true, force: true });
     }
+  }
+  const audioDir = join(projectDir, "audio");
+  if (!existsSync(audioDir)) {
+    return;
+  }
+  for (const entry of readdirSync(audioDir, { withFileTypes: true })) {
+    // 只认 `bgm.<扩展名>` 这一种保留，其余（逐镜 wav、.segments/ 临时分段）一律清掉；
+    // 用 basename 精确比对而非前缀匹配，避免把 `bgm-v2.mp3` 这类同前缀文件也当成资产保留。
+    if (entry.isFile() && PROJECT_BGM_EXTS.some((ext) => entry.name === `${PROJECT_BGM_BASENAME}.${ext}`)) {
+      continue;
+    }
+    rmSync(join(audioDir, entry.name), { recursive: true, force: true });
   }
 }
 
@@ -660,6 +728,7 @@ function buildBrief(request: GenerateRequest, skill: SkillDefinition): BriefDocu
     theme: request.theme,
     content: request.content,
     inputImages: request.images ?? [],
+    ...(request.dialogue ? { dialogue: request.dialogue } : {}),
     selectedSkillId: skill.id,
     selectedSkillName: skill.name,
     language,
@@ -682,7 +751,7 @@ async function buildScriptPackage(
   if (textProvider) {
     try {
       const raw = await textProvider.generateText({
-        systemPrompt: buildScriptSystemPrompt(skill, brief.platform),
+        systemPrompt: buildScriptSystemPrompt(skill, brief),
         userPrompt: buildScriptUserPrompt(brief)
       });
       const parsed = safeParseJson<ScriptPackage>(raw);
@@ -700,10 +769,13 @@ async function buildScriptPackage(
 /**
  * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
  * 功能：拼装脚本生成的系统提示词：注入技能的语气/文案规则/镜头规则与该技能为当前平台准备的平台规则，并声明必须返回的 JSON 字段结构。
+ * 用户给了台词时额外声明 roles/lines 的形状与「逐字使用、不得改写」的硬约束；没给台词时提示词与引入台词之前完全一致，
+ * 模型不会凭空编出对白（那会把一个纯旁白片变成对不上嘴型的「对话片」）。
  * @param skill 选中的技能
- * @param platform 发布平台；该技能没有为它写规则时不注入平台段，提示词与加入平台前完全一致
+ * @param brief 创作简报；只有 brief.dialogue 存在时才追加台词段
  */
-function buildScriptSystemPrompt(skill: SkillDefinition, platform: string): string {
+function buildScriptSystemPrompt(skill: SkillDefinition, brief: BriefDocument): string {
+  const platform = brief.platform;
   const platformRules = skill.platformRules[platform] ?? [];
   return [
     "你是一名短视频编导。",
@@ -713,19 +785,38 @@ function buildScriptSystemPrompt(skill: SkillDefinition, platform: string): stri
     `镜头规则：${skill.shotRules.join("；")}`,
     ...(platformRules.length > 0 ? [`发布平台：${platform}`, `平台规则：${platformRules.join("；")}`] : []),
     "返回 JSON，字段必须包含：title, summary, openingHook, voiceover, scenes, bgmStyle, cta, hashtags。",
-    "scenes 是数组；每个元素必须包含 id, heading, narration, visualPrompt, shotType, durationSeconds, caption。"
+    "scenes 是数组；每个元素必须包含 id, heading, narration, visualPrompt, shotType, durationSeconds, caption。",
+    ...(brief.dialogue ? DIALOGUE_PROMPT_RULES : [])
   ].join("\n");
 }
 
 /**
+ * 用户提供了台词时才追加的提示词段落。三条都写死成硬约束：
+ * 1. 台词逐字进 lines 且 src="user"——这是用户在界面上的原始说法，改写一句都算违约；
+ * 2. roles 是可选的角色表，最多 4 个，id 由你自己定但要与 lines[].speaker 对得上；
+ * 3. 没台词的镜头也允许有 lines（你新写的对白），必须标 src="generated"。
+ * 刻意不含「平台规则：」四字：既有单测用它判定平台段有没有被注入。
+ */
+const DIALOGUE_PROMPT_RULES = [
+  "本片有用户提供的台词（dialogue）。用户台词是最强约束：必须原样放进对应镜头的 scenes[].lines[].text，",
+  "标 src=\"user\"，一个字、一个标点、一个空格都不许改，不许润色、缩写、扩写或换语序。",
+  "可以新增角色对话（src=\"generated\"），但不得改动用户台词本身。",
+  "可选 roles 字段：数组，最多 4 个，元素为 { id, name, voice?, appearance? }；id 只用字母、数字、下划线或连字符。",
+  "scenes[].lines 是数组，元素为 { speaker?, text, src }；speaker 必须是 roles 里出现过的 id；一镜最多 3 条，单条不超过 30 字。",
+  "lines 与 narration 并存：lines 是镜内对白，narration 是旁白/画外音；不要为了写对白而把旁白清空。"
+];
+
+/**
  * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
  * 功能：把 brief 的关键字段序列化为 JSON 作为脚本生成的用户提示词（图片只传文件名）。
+ * 台词原样带进提示词；没有台词时 JSON.stringify 会略去该键，提示词形状与引入台词之前逐字节一致。
  */
 function buildScriptUserPrompt(brief: BriefDocument): string {
   return JSON.stringify(
     {
       theme: brief.theme,
       content: brief.content,
+      dialogue: brief.dialogue,
       skill: brief.selectedSkillId,
       language: brief.language,
       platform: brief.platform,
@@ -739,9 +830,11 @@ function buildScriptUserPrompt(brief: BriefDocument): string {
 }
 
 /**
- * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
+ * @author zhangbaohong  @date 2026-10-30  @see https://github.com/1241751430/AIVideo.git
  * 功能：离线规则生成脚本包：按时长选择镜头数并均分时长，套用技能的 hooks/ctas/文案与镜头规则逐镜拼出旁白、字幕与提示词。
  * 平台规则并入文案规则轮转：平台差异不再只体现为一个 hashtag，而是真的改变旁白写法；该技能没为当前平台写规则时行为与加入前一致。
+ * 用户给了台词时，把台词按行铺到各镜的 lines 上（src="user"）：没有远端模型时台词同样不能丢，
+ * 否则「我给的台词」在离线路径上会被整段静默丢弃——这比生成得不好更不可接受。
  */
 function buildLocalScriptPackage(brief: BriefDocument, skill: SkillDefinition): ScriptPackage {
   const shotCount = computeShotCount(brief.durationSeconds);
@@ -751,6 +844,7 @@ function buildLocalScriptPackage(brief: BriefDocument, skill: SkillDefinition): 
   const cta = pickByIndex(skill.ctas, 0);
   const focus = brief.content ?? brief.theme ?? "核心卖点";
   const copyRules = [...skill.copyRules, ...(skill.platformRules[brief.platform] ?? [])];
+  const dialogueLines = splitDialogueIntoLines(brief.dialogue);
 
   const scenes = durations.map((durationSeconds, index) => {
     const step = index + 1;
@@ -761,6 +855,8 @@ function buildLocalScriptPackage(brief: BriefDocument, skill: SkillDefinition): 
       `画面呈现建议：${pickByIndex(skill.shotRules, index)}。`
     ].join("，");
     const caption = index === shotCount - 1 ? cta : `重点 ${step}`;
+    // 台词逐句均分到各镜（末镜收余数）：均分而不是全塞第一镜，是为了让每段画面都有话说。
+    const lines = collectSceneDialogue(dialogueLines, index, shotCount);
     return {
       id: `scene-${step}`,
       heading,
@@ -768,7 +864,8 @@ function buildLocalScriptPackage(brief: BriefDocument, skill: SkillDefinition): 
       visualPrompt: `${skill.name} 风格，${heading}，${pickByIndex(skill.shotRules, index)}，突出 ${titleCore}`,
       shotType: index % 2 === 0 ? "medium" : "close-up",
       durationSeconds,
-      caption
+      caption,
+      ...(lines.length > 0 ? { lines } : {})
     };
   });
 
@@ -785,24 +882,199 @@ function buildLocalScriptPackage(brief: BriefDocument, skill: SkillDefinition): 
 }
 
 /**
+ * @author zhangbaohong  @date 2026-10-30  @see https://github.com/1241751430/AIVideo.git
+ * 功能：把用户台词切成一句一条：只按换行与句末标点切（标点留在句内），切完去掉首尾空白，内容一个字不改。
+ * 不切分的话整段台词会挤进一个镜头，30 秒的片子配 200 字台词根本念不完；过度切分则会把一句话拆成两段半句。
+ * @param dialogue 用户提供的整段台词；缺省时返回空数组
+ * @returns 逐句台词原文（已去首尾空白，内部字符原样）
+ */
+function splitDialogueIntoLines(dialogue: string | undefined): string[] {
+  if (!dialogue || !dialogue.trim()) {
+    return [];
+  }
+  return dialogue
+    .split(/(?<=[。！？!?…；;])|\n+/u)
+    .map((piece) => piece.trim())
+    .filter(Boolean);
+}
+
+/**
+ * @author zhangbaohong  @date 2026-10-30  @see https://github.com/1241751430/AIVideo.git
+ * 功能：按「第几个镜头 / 总共几个镜头」取出该镜应说的台词，逐句均分，末镜收下所有余数。
+ * 均分**不受单镜上限约束**：台词是用户给的，宁可一镜多念两句，也不能因为镜头不够多就把后面的话丢掉。
+ * @param all 逐句台词
+ * @param sceneIndex 镜头下标（0 起）
+ * @param sceneCount 镜头总数
+ * @returns 该镜的台词（src 一律为 "user"）
+ */
+function collectSceneDialogue(all: string[], sceneIndex: number, sceneCount: number): ScriptLine[] {
+  if (all.length === 0) {
+    return [];
+  }
+  const count = Math.max(1, sceneCount);
+  const perScene = Math.ceil(all.length / count);
+  const start = sceneIndex * perScene;
+  const end = sceneIndex >= count - 1 ? all.length : start + perScene;
+  return all.slice(start, end).map((text) => ({ text, src: "user" as const }));
+}
+
+/**
+ * @author zhangbaohong  @date 2026-10-30  @see https://github.com/1241751430/AIVideo.git
+ * 功能：归一化角色表：丢弃非对象与 id 不合法的项、按 id 去重、截断到 MAX_ROLES 个；name 缺省回落到 id。
+ * id 单独校验而不走 slugify——它是 lines[].speaker 的引用键，改写 id 会让台词与角色对不上。
+ * @param roles 模型返回的原始 roles（类型未知，可能是任何 JSON）
+ * @returns 清洗后的角色表（可能为空，调用方据此决定是否落字段）
+ */
+function normalizeRoles(roles: unknown): ScriptRole[] {
+  if (!Array.isArray(roles)) {
+    return [];
+  }
+  const seen = new Set<string>();
+  const result: ScriptRole[] = [];
+  for (const item of roles) {
+    if (!item || typeof item !== "object") {
+      continue;
+    }
+    const raw = item as Partial<ScriptRole>;
+    const id = typeof raw.id === "string" ? raw.id.trim() : "";
+    if (!id || !ROLE_ID_PATTERN.test(id) || seen.has(id)) {
+      continue;
+    }
+    seen.add(id);
+    const voice = typeof raw.voice === "string" ? raw.voice.trim() : "";
+    const appearance = typeof raw.appearance === "string" ? raw.appearance.trim() : "";
+    result.push({
+      id,
+      name: sanitizeText(raw.name, id),
+      ...(voice ? { voice } : {}),
+      ...(appearance ? { appearance } : {})
+    });
+    if (result.length >= MAX_ROLES) {
+      break;
+    }
+  }
+  return result;
+}
+
+/**
+ * @author zhangbaohong  @date 2026-10-30  @see https://github.com/1241751430/AIVideo.git
+ * 功能：归一化单镜台词：非数组一律视为没有台词（不构造空数组字段，保证无台词项目产物逐字节不变）；
+ * 文本只去首尾空白、内部原样保留（src="user" 是用户原话，改一个标点都算违约）；
+ * speaker 必须能在角色表里找到，否则丢掉该字段而不是丢掉整句——对白比音色重要。
+ * @param lines 模型返回的原始 lines
+ * @param roleIds 已归一化角色表的 id 集合
+ * @returns 清洗后的台词（超出一镜上限的部分丢弃）
+ */
+function normalizeLines(lines: unknown, roleIds: Set<string>): ScriptLine[] {
+  if (!Array.isArray(lines)) {
+    return [];
+  }
+  const result: ScriptLine[] = [];
+  for (const item of lines) {
+    if (!item || typeof item !== "object") {
+      continue;
+    }
+    const raw = item as Partial<ScriptLine>;
+    if (typeof raw.text !== "string" || !raw.text.trim()) {
+      continue;
+    }
+    const text = raw.text.trim();
+    const speaker = typeof raw.speaker === "string" ? raw.speaker.trim() : "";
+    result.push({
+      ...(speaker && roleIds.has(speaker) ? { speaker } : {}),
+      text,
+      src: raw.src === "user" ? "user" : "generated"
+    });
+    if (result.length >= MAX_LINES_PER_SCENE) {
+      break;
+    }
+  }
+  return result;
+}
+
+/**
+ * @author zhangbaohong  @date 2026-10-30  @see https://github.com/1241751430/AIVideo.git
+ * 功能：归一化并校验一份素材来源声明：不是对象、或 kind 不在四种来源内时视为「未声明」（返回 undefined，调用方不落字段）。
+ * `stock` 缺 `sourceUrl` 或 `license`、`ai_generated` 缺 `provider` 时抛出明确错误，而不是静默降级成标题卡——
+ * 一片没有标注出处的素材，用户会以为是自己可以随便用的（误导比缺失更伤信任）；错误信息带上定位文案，便于指出是哪一镜。
+ * `user_uploaded` 的 `license` 缺省记 "user-provided"；其余字段去首尾空白后按需展开，空值不落键。
+ * @param raw 模型或调用方给出的原始声明（类型未知，可能是任何 JSON）
+ * @param where 出错时的定位文案，如「镜头 2」「全片 BGM」
+ * @returns 清洗后的声明；没有声明时返回 undefined
+ */
+function normalizeProvenance(raw: unknown, where: string): AssetProvenance | undefined {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return undefined;
+  }
+  const item = raw as Partial<AssetProvenance>;
+  const { kind } = item;
+  if (kind !== "user_uploaded" && kind !== "ai_generated" && kind !== "stock" && kind !== "library") {
+    return undefined;
+  }
+  const text = (value: unknown): string | undefined =>
+    typeof value === "string" && value.trim() ? value.trim() : undefined;
+  const provider = text(item.provider);
+  const license = text(item.license);
+  const sourceUrl = text(item.sourceUrl);
+  const attribution = text(item.attribution);
+  const retrievedAt = text(item.retrievedAt);
+  if (kind === "stock" && (!sourceUrl || !license)) {
+    throw new Error(`${where} 的素材声明不合法：kind="stock" 必须同时给出 sourceUrl 与 license（无出处或无许可的素材不进分镜）。`);
+  }
+  if (kind === "ai_generated" && !provider) {
+    throw new Error(`${where} 的素材声明不合法：kind="ai_generated" 必须给出 provider。`);
+  }
+  const resolvedLicense = license ?? (kind === "user_uploaded" ? "user-provided" : undefined);
+  return {
+    kind,
+    ...(provider ? { provider } : {}),
+    ...(resolvedLicense ? { license: resolvedLicense } : {}),
+    ...(sourceUrl ? { sourceUrl } : {}),
+    ...(attribution ? { attribution } : {}),
+    ...(retrievedAt ? { retrievedAt } : {})
+  };
+}
+
+/**
  * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
  * 功能：归一化模型返回的脚本：逐字段清洗兜底（空值用本地脚本补齐）、裁剪场景数上限，并把各镜时长缩放至总和等于请求时长。
+ * 台词在这里过两道关：角色表先归一化（后面校验 speaker 要用），每镜 lines 显式覆盖——不清洗就会被 `...scene` 原样透传落盘；
+ * 用户台词再按「逐字节比对 + 缺失补回」收口，模型改写或漏掉的那一句会被换成用户原文，而不是照单全收。
+ * 素材来源声明也在这里收口（镜级与全片 BGM 各一道）：它是对外交付物的一部分，不合规就如实抛错。
  */
 function normalizeScriptPackage(script: ScriptPackage, brief: BriefDocument): ScriptPackage {
   const fallback = buildLocalScriptPackage(brief, getSkillById(brief.selectedSkillId)!);
+  const roles = normalizeRoles((script as { roles?: unknown }).roles);
+  const roleIds = new Set(roles.map((role) => role.id));
+  const authenticDialogue = new Set(splitDialogueIntoLines(brief.dialogue));
+  // 模型几乎不会主动给 bgmProvenance（提示词里没有这个字段），但真给了就必须过同一道校验，
+  // 不能让它带着「stock 却没有 license」的声明落进 script.json。
+  const bgmProvenance = normalizeProvenance(script.bgmProvenance, "全片 BGM");
+
   const rawScenes = Array.isArray(script.scenes) ? script.scenes.slice(0, MAX_SCENES) : [];
   const scenes = rawScenes.map((scene, index) => {
     const heading = sanitizeText(scene.heading, `镜头 ${index + 1}`);
     const narration = sanitizeText(scene.narration, heading);
+    // 把模型给的 lines 从透传字段里摘出来：只保留与用户原话逐字节相等的那几句 src="user"，
+    // 其余交给经典清洗。这样模型若悄悄润色了台词，成品里出现的一定是用户自己写的版本。
+    // 反过来，模型把用户原话标成了 generated 的，就地改回 user——那句话本来就是用户说的，
+    // 不认回来补句阶段还会再补一遍，同一句台词在片子里念两次。
+    const { lines: rawLines, provenance: rawProvenance, ...rest } = scene;
+    const lines = normalizeLines(rawLines, roleIds)
+      .filter((line) => line.src !== "user" || authenticDialogue.has(line.text))
+      .map((line) => (authenticDialogue.has(line.text) ? { ...line, src: "user" as const } : line));
+    const provenance = normalizeProvenance(rawProvenance, `镜头 ${index + 1}`);
     return {
-      ...scene,
+      ...rest,
       id: sanitizeId(scene.id, index + 1),
       heading,
       narration,
       visualPrompt: sanitizeText(scene.visualPrompt, heading),
       caption: sanitizeText(scene.caption, heading),
       shotType: sanitizeText(scene.shotType, "medium"),
-      durationSeconds: normalizeDurationValue(scene.durationSeconds)
+      durationSeconds: normalizeDurationValue(scene.durationSeconds),
+      ...(lines.length > 0 ? { lines } : {}),
+      ...(provenance ? { provenance } : {})
     };
   });
 
@@ -814,6 +1086,7 @@ function normalizeScriptPackage(script: ScriptPackage, brief: BriefDocument): Sc
   usableScenes.forEach((scene, index) => {
     scene.durationSeconds = durations[index] ?? MIN_SHOT_DURATION_SECONDS;
   });
+  restoreUserDialogue(usableScenes, authenticDialogue);
 
   return {
     title: sanitizeText(script.title, fallback.title),
@@ -823,8 +1096,40 @@ function normalizeScriptPackage(script: ScriptPackage, brief: BriefDocument): Sc
     scenes: usableScenes,
     bgmStyle: sanitizeText(script.bgmStyle, fallback.bgmStyle),
     cta: sanitizeText(script.cta, fallback.cta),
-    hashtags: Array.isArray(script.hashtags) && script.hashtags.length > 0 ? script.hashtags : fallback.hashtags
+    hashtags: Array.isArray(script.hashtags) && script.hashtags.length > 0 ? script.hashtags : fallback.hashtags,
+    ...(roles.length > 0 ? { roles } : {}),
+    ...(bgmProvenance ? { bgmProvenance } : {})
   };
+}
+
+/**
+ * @author zhangbaohong  @date 2026-10-30  @see https://github.com/1241751430/AIVideo.git
+ * 功能：把用户台词里「没有出现在任何一镜 lines 中」的句子补回去（src="user"），保证给定的每一句都真的进了成片。
+ * 先放还有余量的镜头，全都满了再从台词最少的那镜插队——宁可一镜多一句，也不能让用户的话凭空消失。
+ * @param scenes 已归一化的镜头（就地修改）
+ * @param authentic 用户台词全集（逐句原文）
+ */
+function restoreUserDialogue(scenes: ScriptScene[], authentic: Set<string>): void {
+  if (authentic.size === 0 || scenes.length === 0) {
+    return;
+  }
+  const present = new Set<string>();
+  for (const scene of scenes) {
+    for (const line of scene.lines ?? []) {
+      if (line.src === "user") {
+        present.add(line.text);
+      }
+    }
+  }
+  const missing = [...authentic].filter((text) => !present.has(text));
+  for (const text of missing) {
+    const target =
+      scenes.find((scene) => (scene.lines?.length ?? 0) < MAX_LINES_PER_SCENE) ??
+      scenes.reduce((fewest, scene) =>
+        (scene.lines?.length ?? 0) < (fewest.lines?.length ?? 0) ? scene : fewest
+      );
+    target.lines = [...(target.lines ?? []), { text, src: "user" }];
+  }
 }
 
 /**
@@ -844,8 +1149,11 @@ export function resolveInputImageIndex(
 /**
  * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
  * 功能：由脚本 scenes 构建分镜：首镜 cut 其余 fade；按「每张用户图只喂一个镜头」规则分配 reference_image/generated_image/title_card 资产来源。
+ * @param request 归一化后的生成请求
+ * @param script 脚本包
+ * @param hasRemoteVisual 是否存在远端图片/视频能力；为 false 时 video 模式也不标 generated_image
  */
-function buildStoryboard(request: GenerateRequest, script: ScriptPackage): Storyboard {
+function buildStoryboard(request: GenerateRequest, script: ScriptPackage, hasRemoteVisual: boolean): Storyboard {
   const shots: StoryboardShot[] = script.scenes.map((scene, index) => {
     // Per-shot mixing: each user image is spent on exactly one shot (shot i
     // takes images[i]); once they run out, later shots fall back to generated
@@ -860,16 +1168,25 @@ function buildStoryboard(request: GenerateRequest, script: ScriptPackage): Story
       shotType: scene.shotType,
       durationSeconds: scene.durationSeconds,
       transition: index === 0 ? "cut" : "fade",
+      // `generated_image` 只在真有能力生成时才写：没有远端图/视频能力时，
+      // 这一镜最终一定是一张标题卡，标成「生成图」会让界面显示「AI 生成」而实际什么都没有。
+      // 这是刻意的语义修正，会改变 storyboard.json 的内容——误导比缺失更伤信任。
       assetSource: ownsImage
         ? "reference_image"
-        : request.mode === "video"
+        : request.mode === "video" && hasRemoteVisual
           ? "generated_image"
           : "title_card",
       // The binding is recorded once, by id, at build time: reordering shots
       // later must not move the user's photo to a different shot. Only
       // reference shots carry the key, so the in-memory storyboard stays
       // byte-identical to what storyboard.json round-trips back.
-      ...(ownsImage ? { inputImageIndex: index } : {})
+      ...(ownsImage ? { inputImageIndex: index } : {}),
+      // Dialogue rides along only when the scene actually has some: a project
+      // without lines must keep producing a byte-identical storyboard.json,
+      // and the audio stage treats a missing `lines` as "speak narration only".
+      ...(scene.lines && scene.lines.length > 0 ? { lines: scene.lines } : {}),
+      // 来源声明同理按需展开：没有声明的项目，storyboard.json 与引入该字段前逐字节相同。
+      ...(scene.provenance ? { provenance: scene.provenance } : {})
     };
   });
 
@@ -917,6 +1234,10 @@ function buildRenderManifest(input: {
         ? input.images[resolveInputImageIndex(shot, index)]
         : undefined;
     const hasReference = Boolean(referencedImage);
+    // 第二道关：分镜可能来自落盘的 storyboard.json（不是刚归一化的脚本），
+    // 所以在写进清单之前再过一次同一套校验——不合规的声明宁可让这一整次生成失败，
+    // 也不能悄悄写进对外交付的 render-manifest.json。
+    const provenance = normalizeProvenance(shot.provenance, `镜头 ${index + 1}`);
     return {
       shotId: shot.id,
       title: shot.title,
@@ -926,7 +1247,9 @@ function buildRenderManifest(input: {
       audioPath: `audio/${shot.id}.wav`,
       overlayText: shot.title,
       caption: shot.caption,
-      visualPrompt: shot.visualPrompt
+      visualPrompt: shot.visualPrompt,
+      // 同样条件展开：没有来源声明的清单与升级前逐字节相同。
+      ...(provenance ? { provenance } : {})
     };
   });
 
@@ -962,14 +1285,54 @@ export function toSrt(captions: CaptionCue[]): string {
 /**
  * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
  * 功能：把脚本包渲染为 Markdown 文稿：摘要/开头钩子/旁白总稿/分镜/BGM/CTA/Hashtags 各成小节。
+ * 镜头有台词时在「旁白」后补台词行（用户台词标「台词」、模型写的标「对白」）；没有台词时输出与引入台词前逐字节相同。
+ * 有任何来源声明（镜级或全片 BGM）时，末尾再补一节「素材与版权清单」——script.md 是对外交付物，
+ * 版权标注必须跟着它走；一条声明都没有时整节不出现，输出与升级前逐字节相同。
  */
 export function toScriptMarkdown(script: ScriptPackage): string {
   const scenes = script.scenes
-    .map(
-      (scene, index) =>
-        `## 镜头 ${index + 1}: ${scene.heading}\n- 时长: ${scene.durationSeconds}s\n- 旁白: ${scene.narration}\n- 字幕: ${scene.caption}\n- 提示词: ${scene.visualPrompt}`
-    )
+    .map((scene, index) => {
+      const base = `## 镜头 ${index + 1}: ${scene.heading}\n- 时长: ${scene.durationSeconds}s\n- 旁白: ${scene.narration}`;
+      const lines = (scene.lines ?? []).map(
+        (line) => `\n- ${line.src === "user" ? "台词" : "对白"}${line.speaker ? `(${line.speaker})` : ""}: ${line.text}`
+      );
+      return `${base}${lines.join("")}\n- 字幕: ${scene.caption}\n- 提示词: ${scene.visualPrompt}`;
+    })
     .join("\n\n");
+
+  const kindLabels: Record<AssetProvenance["kind"], string> = {
+    user_uploaded: "用户上传",
+    ai_generated: "AI 生成",
+    stock: "网络素材",
+    library: "素材库"
+  };
+  // 表格单元格里的竖线会把列切断（标题是自由文本），转义后再落。
+  const cell = (value: string): string => value.replace(/\|/g, "\\|");
+  const rows: string[] = [];
+  script.scenes.forEach((scene, index) => {
+    if (!scene.provenance) {
+      return;
+    }
+    const p = scene.provenance;
+    rows.push(
+      `| ${cell(`镜头 ${index + 1}（${scene.heading}）`)} | ${kindLabels[p.kind]} | ${cell(p.provider ?? "—")} | ${cell(p.license ?? "—")} | ${cell(p.sourceUrl ?? "—")} | ${cell(p.attribution ?? "—")} | ${cell(p.retrievedAt ?? "—")} |`
+    );
+  });
+  if (script.bgmProvenance) {
+    const p = script.bgmProvenance;
+    rows.push(
+      `| 全片 BGM | ${kindLabels[p.kind]} | ${cell(p.provider ?? "—")} | ${cell(p.license ?? "—")} | ${cell(p.sourceUrl ?? "—")} | ${cell(p.attribution ?? "—")} | ${cell(p.retrievedAt ?? "—")} |`
+    );
+  }
+  const credits =
+    rows.length > 0
+      ? [
+          "## 素材与版权清单",
+          "| 位置 | 来源 | 提供方 | 许可 | 出处 | 署名 | 获取时间 |",
+          "| --- | --- | --- | --- | --- | --- | --- |",
+          ...rows
+        ].join("\n")
+      : null;
 
   return [
     `# ${script.title}`,
@@ -993,7 +1356,8 @@ export function toScriptMarkdown(script: ScriptPackage): string {
     script.cta,
     "",
     "## Hashtags",
-    script.hashtags.map((tag) => `#${tag}`).join(" ")
+    script.hashtags.map((tag) => `#${tag}`).join(" "),
+    ...(credits ? ["", credits] : [])
   ].join("\n");
 }
 

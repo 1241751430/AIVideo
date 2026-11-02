@@ -217,7 +217,7 @@ export function audioShotFingerprint(input: {
 
 /**
  * @author zhangbaohong  @date 2026-10-27  @see https://github.com/1241751430/AIVideo.git
- * 功能：render 阶段指纹：清单里的全部渲染入参（尺寸/时长/BGM + 每镜标题、字幕、时长、画面素材与配音文件的 size/mtime）。
+ * 功能：render 阶段指纹：清单里的全部渲染入参（尺寸/时长/BGM + 每镜标题、字幕、时长、转场、画面素材与配音文件的 size/mtime）。
  * 素材被重新生成或删除都会改变指纹，因此「素材更新后成片未重渲」可以被精确识别。
  * BGM 除 `bgmStyle` 字符串外还必须带上**文件本身**：换曲/删曲/静默替换都是成片内容的变化，
  * 只哈希风格名会让「换了背景音乐但成片没变」看起来像缓存命中。
@@ -243,6 +243,10 @@ export function renderStageFingerprint(input: {
       caption: shot.caption,
       durationSeconds: shot.durationSeconds,
       assetKind: shot.assetKind,
+      // 恒展开成固定形状：老清单没有该字段时按渲染器的兜底值 fade 参与哈希。
+      // 这样升级本身不会让已有项目被判成「渲染过期」而白白重渲一遍；
+      // 而一旦有人把某镜改成 cut，指纹必须跟着变——「改了剪点却复用旧成片」正是这条链路要防的事。
+      transition: shot.transition ?? "fade",
       asset: describeRenderInput(input.projectDir, shot.assetPath),
       audio: describeRenderInput(input.projectDir, shot.audioPath)
     }))

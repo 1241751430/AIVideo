@@ -131,10 +131,15 @@ providers:
     apiKeyEnv: ARK_API_KEY
     modelEnv: ARK_VIDEO_MODEL
     model: doubao-seedance-1-0-pro-250528
+    # 分辨率写死在 extraBody 里，请求体里就一定有值，不依赖模型的默认档。
+    # 注意：字段会原样并入建任务请求体，改模型时必须同步改这里——
+    # 2.0 fast/mini 只接受 480p/720p，写 1080p 会被 API 直接拒绝（不是静默降级）。
+    extraBody:
+      resolution: "1080p"
     description: 火山引擎 Ark Seedance 视频模型（异步任务）
 
   # 火山引擎语音合成：需在「语音技术」控制台单独开通，appid/access token 与 Ark 密钥不通用。
-  # 开通后把下方 volcengine profile 的 speech 改为 volcengine-speech 即可启用；未配置密钥时保持 local-say 本地配音。
+  # volcengine profile 默认已选中它；缺这两个凭据时提供者自动降级回本地 say 配音（不会静默静音）。
   volcengine-speech:
     type: ark-tts-speech
     capability: speech
@@ -173,5 +178,7 @@ profiles:
     text: volcengine-text
     image: volcengine-image
     video: volcengine-video
-    speech: local-say
+    # 默认就走火山语音；没配 ARK_TTS_APP_ID / ARK_TTS_ACCESS_KEY 时提供者会自己降级到本地 say，
+    # 所以这里不需要按「有没有开通」来回切换——开通后配好密钥即自动生效。
+    speech: volcengine-speech
     music: local-library-music

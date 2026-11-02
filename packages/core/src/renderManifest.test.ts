@@ -99,6 +99,22 @@ test("renderManifest: reordering input.shots remaps state by id, not by slot", (
   assert.equal(read.shots[0]!.assetPath, undefined);
 });
 
+test("renderManifest: transition is an input field, not execution state", () => {
+  const dir = tempProject();
+  const manifest = sampleManifest();
+  manifest.shots[0]!.transition = "cut";
+  writeRenderManifestFile(dir, manifest);
+
+  const onDisk = JSON.parse(readFileSync(join(dir, "render-manifest.json"), "utf8")) as Record<string, any>;
+  // 写盘是白名单式的：漏进 input.shots 的映射就会静默丢字段，这里锁住它落在哪一节。
+  assert.equal(onDisk.input.shots[0].transition, "cut", "转场属于声明的输入");
+  assert.ok(!("transition" in onDisk.state.shots.s1), "执行状态里不重复存转场");
+  // 没有转场的镜头仍然逐字段与升级前相同：这个键按需展开，不落 undefined。
+  assert.ok(!("transition" in onDisk.input.shots[1]));
+
+  assert.deepEqual(readRenderManifestFile(dir), manifest, "读回与写前完全等值");
+});
+
 test("renderManifest: legacy flat manifests pass through untouched", () => {
   const dir = tempProject();
   // 老项目的形状：顶层直接是 shots，还带着非枚举的 assetKind 与未知字段。

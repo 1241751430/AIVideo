@@ -164,6 +164,51 @@ class TestBuildClipCommand(unittest.TestCase):
         self.assertIn("fade=t=in", cmd[filter_index + 1])
         self.assertIn("fade=t=out", cmd[filter_index + 1])
 
+    @patch("os.path.exists", return_value=True)
+    def test_cut_shot_skips_fades(self, _mock):
+        """
+        功能：验证硬切镜（transition=cut）不叠淡入淡出，否则每个切点前后会黑 0.35 秒
+        @author zhangbaohong  @date 2026-11-02  @see https://github.com/1241751430/AIVideo.git
+        """
+        cmd = build_clip_command(
+            Path("/tmp/clip.mp4"), 1080, 1920, "5", "Hello", "/tmp/img.png", None,
+            "libx264", "image", "cut",
+        )
+        filters = cmd[cmd.index("-vf") + 1]
+        self.assertNotIn("fade=", filters)
+        self.assertIn("zoompan", filters)
+        self.assertIn("format=yuv420p", filters)
+
+    @patch("os.path.exists", return_value=True)
+    def test_video_asset_cut_skips_fades(self, _mock):
+        """
+        功能：验证视频素材的硬切镜同样不叠淡入淡出
+        @author zhangbaohong  @date 2026-11-02  @see https://github.com/1241751430/AIVideo.git
+        """
+        cmd = build_clip_command(
+            Path("/tmp/clip.mp4"), 1080, 1920, "5", "Hello", "/tmp/scene.mp4", None,
+            "libx264", "video", "cut",
+        )
+        filters = cmd[cmd.index("-vf") + 1]
+        self.assertNotIn("fade=", filters)
+        self.assertIn("fps=30", filters)
+
+    @patch("os.path.exists", return_value=True)
+    def test_fade_and_unknown_transition_keep_fades(self, _mock):
+        """
+        功能：验证 fade 与未知转场值都按淡入淡出处理——老清单没有该字段时成片必须与升级前一致
+        @author zhangbaohong  @date 2026-11-02  @see https://github.com/1241751430/AIVideo.git
+        """
+        for transition in ("fade", "cross-dissolve"):
+            with self.subTest(transition=transition):
+                cmd = build_clip_command(
+                    Path("/tmp/clip.mp4"), 1080, 1920, "5", "Hello", "/tmp/img.png", None,
+                    "libx264", "image", transition,
+                )
+                filters = cmd[cmd.index("-vf") + 1]
+                self.assertIn("fade=t=in", filters)
+                self.assertIn("fade=t=out", filters)
+
     def test_clip_command_uses_stable_audio_and_faststart_settings(self):
         """
         功能：验证片段命令固定采样率、码率并启用 faststart
@@ -401,6 +446,37 @@ class TestFallbacks(unittest.TestCase):
         self.assertNotIn("drawtext", fallback_command)
         self.assertNotIn("bad.aiff", fallback_command)
         self.assertIn("anullsrc", fallback_command)
+
+    @patch("render.os.path.exists", return_value=True)
+    @patch("render.run")
+    def test_make_clip_forwards_transition_to_filter(self, run_mock, _exists_mock):
+        """
+        功能：验证 make_clip 把镜头声明的 transition 透传到滤镜——cut 硬切、缺省按 fade
+        @author zhangbaohong  @date 2026-11-02  @see https://github.com/1241751430/AIVideo.git
+        """
+        run_mock.return_value = None
+        make_clip(
+            Path("/project"),
+            Path("/work"),
+            {"durationSeconds": 5, "assetPath": "assets/a.png", "transition": "cut"},
+            1080,
+            1920,
+            0,
+        )
+        cut_command = run_mock.call_args_list[0].args[0]
+        self.assertNotIn("fade=", cut_command[cut_command.index("-vf") + 1])
+
+        run_mock.reset_mock()
+        make_clip(
+            Path("/project"),
+            Path("/work"),
+            {"durationSeconds": 5, "assetPath": "assets/a.png"},
+            1080,
+            1920,
+            0,
+        )
+        legacy_command = run_mock.call_args_list[0].args[0]
+        self.assertIn("fade=t=out", legacy_command[legacy_command.index("-vf") + 1])
 
     @patch("render.run")
     @patch("render.has_audio_stream", return_value=False)

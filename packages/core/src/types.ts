@@ -188,6 +188,12 @@ export interface RenderShot {
   overlayText: string;
   caption: string;
   visualPrompt: string;
+  /**
+   * 本镜与下一镜之间的转场：`cut` 为硬切，其余（含缺省）按 `fade` 淡出。
+   * 由分镜的 `transition` 直接带下来，渲染器据此决定是否在镜尾叠淡出；
+   * 老清单没有该字段 ⇒ 恒按 `fade`，成片与升级前逐帧一致。
+   */
+  transition?: string;
   /** 该镜画面的来源声明，随清单落盘，交付面板与导出文稿据此展示版权信息。 */
   provenance?: AssetProvenance;
 }
@@ -216,6 +222,11 @@ export interface RenderShotInput {
   overlayText: string;
   caption: string;
   visualPrompt: string;
+  /**
+   * 转场（`cut` / `fade`）。它决定成片怎么剪，属于「声明的输入」而非执行结果，
+   * 与 visualPrompt 同处 input 分节，素材阶段重写清单时必须原样带回去。
+   */
+  transition?: string;
   /**
    * 该镜画面的来源声明（来自分镜）。它是「声明的输入」而非执行结果，因此与 visualPrompt 同处 input 分节——
    * 素材阶段重写清单时必须原样带回去，否则来源信息会在第一次跑素材时凭空消失。

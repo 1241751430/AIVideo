@@ -137,8 +137,8 @@ test("custom baseURL is rejected unless explicitly allowed", async () => {
  */
 function speechTestConfig(): AppConfig {
   const config = loadConfig(process.cwd());
-  // A synthetic profile that selects the remote speech provider without
-  // touching the shipped profiles (they stay on local-say).
+  // A synthetic profile that selects the remote speech provider on its own, so
+  // these cases do not depend on what the shipped profiles point at.
   config.profiles["tts-test"] = { speech: "volcengine-speech" };
   return config;
 }

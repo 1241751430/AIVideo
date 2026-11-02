@@ -1248,6 +1248,9 @@ function buildRenderManifest(input: {
       overlayText: shot.title,
       caption: shot.caption,
       visualPrompt: shot.visualPrompt,
+      // 转场是渲染器真正会读的输入（cut 硬切 / 其余淡出）。老 storyboard.json 没有该字段时
+      // 不落键，清单与升级前逐字节相同，渲染器那边按 fade 兜底。
+      ...(shot.transition ? { transition: shot.transition } : {}),
       // 同样条件展开：没有来源声明的清单与升级前逐字节相同。
       ...(provenance ? { provenance } : {})
     };

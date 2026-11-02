@@ -299,6 +299,18 @@ test("fingerprints: render fingerprint tracks manifest inputs and asset file sta
     shots: [{ ...renderManifest.shots[0]!, assetKind: "video" }]
   });
   assert.notEqual(renderStageFingerprint({ projectDir: dir, manifest: withKind }), stable);
+  // 转场决定镜尾是否淡出，必须参与指纹——否则改了剪点还会复用旧成片。
+  // 恒展开成固定形状：缺省与显式 fade 同值，升级本身不会让老项目白白重渲。
+  const withCut = manifest({
+    ...renderManifest,
+    shots: [{ ...renderManifest.shots[0]!, transition: "cut" }]
+  });
+  assert.notEqual(renderStageFingerprint({ projectDir: dir, manifest: withCut }), stable);
+  const withExplicitFade = manifest({
+    ...renderManifest,
+    shots: [{ ...renderManifest.shots[0]!, transition: "fade" }]
+  });
+  assert.equal(renderStageFingerprint({ projectDir: dir, manifest: withExplicitFade }), stable, "缺省转场就是 fade");
 });
 
 test("fingerprints: readStageFingerprints reports unknown for missing, corrupt or version-mismatched files", () => {

@@ -159,6 +159,9 @@ const DEFAULT_CONFIG: AppConfig = {
       apiKeyEnv: "ARK_API_KEY",
       modelEnv: "ARK_VIDEO_MODEL",
       model: "doubao-seedance-1-0-pro-250528",
+      // 与 aivideo.config.yaml 保持同一份默认：分辨率随请求体显式下发，不吃模型默认档。
+      // 换 2.0 fast/mini 时这里要一起改成 480p/720p，否则 API 会拒绝而不是降级。
+      extraBody: { resolution: "1080p" },
       description: "火山引擎 Ark Seedance 视频模型（异步任务）"
     },
     "volcengine-speech": {
@@ -200,7 +203,9 @@ const DEFAULT_CONFIG: AppConfig = {
       text: "volcengine-text",
       image: "volcengine-image",
       video: "volcengine-video",
-      speech: "local-say",
+      // 默认走火山语音：缺 ARK_TTS_* 凭据时 ArkTTSSpeechProvider 会自己降级到本地 say，
+      // 所以不必等用户「开通后再改配置」——配好密钥即自动生效。
+      speech: "volcengine-speech",
       music: "local-library-music"
     }
   }

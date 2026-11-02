@@ -233,32 +233,50 @@ def resolve_caption_font_family() -> str:
     return _CAPTION_FONT_FAMILY or "Arial"
 
 
-def build_image_filter(width: int, height: int, duration: str) -> str:
+def is_hard_cut(transition: str | None) -> bool:
     """
-    功能：构建图片的放大缩放（zoompan）动效与淡入淡出滤镜链
+    功能：判断该镜是否为硬切——只有显式的 cut 才算，缺省与未知值一律按 fade（老清单没有该字段，成片保持不变）
+    @author zhangbaohong  @date 2026-11-02  @see https://github.com/1241751430/AIVideo.git
+    """
+    return (transition or "").strip().lower() == "cut"
+
+
+def build_image_filter(width: int, height: int, duration: str, transition: str = "fade") -> str:
+    """
+    功能：构建图片的放大缩放（zoompan）动效与转场滤镜链；硬切镜不叠淡入淡出，避免切点前后黑 0.35s
     @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
     """
     frames = max(1, int(round(float(duration) * int(OUTPUT_FPS))))
     fade_out_start = max(0.0, float(duration) - 0.35)
-    return (
+    motion = (
         f"scale={width * 2}:{height * 2}:force_original_aspect_ratio=increase,"
         f"crop={width}:{height},"
         f"zoompan=z='min(zoom+0.0008,1.08)':d={frames}:s={width}x{height}:fps={OUTPUT_FPS},"
-        f"fade=t=in:st=0:d=0.25,fade=t=out:st={fade_out_start:.3f}:d=0.35,"
+    )
+    if is_hard_cut(transition):
+        return motion + "format=yuv420p"
+    return (
+        motion
+        + f"fade=t=in:st=0:d=0.25,fade=t=out:st={fade_out_start:.3f}:d=0.35,"
         "format=yuv420p"
     )
 
 
-def build_video_filter(width: int, height: int, duration: str) -> str:
+def build_video_filter(width: int, height: int, duration: str, transition: str = "fade") -> str:
     """
-    功能：构建视频的缩放裁切、统一帧率与淡入淡出滤镜链
+    功能：构建视频的缩放裁切、统一帧率与转场滤镜链；硬切镜同样不叠淡入淡出
     @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
     """
-    return (
+    motion = (
         f"scale={width}:{height}:force_original_aspect_ratio=increase,"
         f"crop={width}:{height},"
         f"fps={OUTPUT_FPS},"
-        f"fade=t=in:st=0:d=0.25,fade=t=out:st={max(0.0, float(duration) - 0.35):.3f}:d=0.35,"
+    )
+    if is_hard_cut(transition):
+        return motion + "format=yuv420p"
+    return (
+        motion
+        + f"fade=t=in:st=0:d=0.25,fade=t=out:st={max(0.0, float(duration) - 0.35):.3f}:d=0.35,"
         "format=yuv420p"
     )
 
@@ -371,9 +389,10 @@ def build_clip_command(
     audio_path: str | None,
     video_encoder: str = "libx264",
     asset_kind: str = "image",
+    transition: str = "fade",
 ) -> list[str]:
     """
-    功能：根据素材类型（视频/图片/标题卡）构建单个分镜片段的渲染 ffmpeg 命令
+    功能：根据素材类型（视频/图片/标题卡）构建单个分镜片段的渲染 ffmpeg 命令；transition 决定镜尾是否淡出
     @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
     """
     has_video_asset = asset_kind == "video" and bool(image_path and os.path.exists(image_path))
@@ -442,14 +461,14 @@ def build_clip_command(
         command.extend(
             [
                 "-vf",
-                build_video_filter(width, height, duration),
+                build_video_filter(width, height, duration, transition),
             ]
         )
     elif has_image:
         command.extend(
             [
                 "-vf",
-                build_image_filter(width, height, duration),
+                build_image_filter(width, height, duration, transition),
             ]
         )
     else:
@@ -648,15 +667,17 @@ def make_clip(project_dir: Path, work_dir: Path, shot: dict, width: int, height:
     audio_path = resolve_media_path(project_dir, shot.get("audioPath"))
     title = escape_drawtext(shot.get("overlayText") or shot.get("title") or "AI Video")
     asset_kind = shot.get("assetKind") or "image"
+    # 缺省按 fade：老清单没有 transition 字段，成片必须与升级前逐帧一致。
+    transition = shot.get("transition") or "fade"
     errors: list[str] = []
     try:
-        run(build_clip_command(clip_path, width, height, duration, title, image_path, audio_path, video_encoder, asset_kind))
+        run(build_clip_command(clip_path, width, height, duration, title, image_path, audio_path, video_encoder, asset_kind, transition))
         return clip_path
     except RuntimeError as exc:
         errors.append(str(exc))
     if video_encoder != "libx264":
         try:
-            run(build_clip_command(clip_path, width, height, duration, title, image_path, audio_path, "libx264", asset_kind))
+            run(build_clip_command(clip_path, width, height, duration, title, image_path, audio_path, "libx264", asset_kind, transition))
             return clip_path
         except RuntimeError as exc:
             errors.append(str(exc))

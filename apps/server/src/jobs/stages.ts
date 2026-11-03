@@ -13,6 +13,7 @@ import {
   ProviderSelection,
   RenderManifest,
   compareStageFingerprint,
+  describeAssetPrepSkip,
   ensureRenderEnvironmentReady,
   findProjectBgm,
   generateArtifacts,
@@ -143,13 +144,10 @@ export const defaultStages: StageRunner = {
     });
     if (prep.attempted > 0) {
       ctx.log(`素材阶段完成：尝试 ${prep.attempted}，复用 ${prep.reused}，新视频 ${prep.videoSucceeded}，新图片 ${prep.imageSucceeded}，失败回退 ${prep.failed}`);
-    } else if (prep.skippedReason === "no-remote-provider") {
+    } else {
       // 空转必须说清楚原因：用户以为自己在等 AI 画图，实际在等一组标题卡。
-      ctx.log("未配置图片/视频模型，本片将由标题卡构成。要生成画面请在配置档中启用 image 或 video 提供者。");
-    } else if (prep.skippedReason === "all-shots-bound-to-reference") {
-      ctx.log("全部镜头都已绑定参考图，素材阶段无需调用远端；参考图本身不会额外计费。");
-    } else if (prep.skippedReason === "no-shots") {
-      ctx.log("分镜为空，素材阶段没有可处理的镜头——请检查脚本阶段产物。");
+      // 文案与 CLI 终端共用 core 的同一份，避免同一次空转给出两种解释。
+      ctx.log(describeAssetPrepSkip(prep.skippedReason));
     }
   },
 

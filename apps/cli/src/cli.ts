@@ -18,6 +18,7 @@ import {
   cleanupExpiredProjects,
   cleanupRenderWorkspace,
   createProjectId,
+  describeAssetPrepSkip,
   generateArtifacts,
   getConfigTemplate,
   getEnvTemplate,
@@ -375,6 +376,10 @@ async function runVideoPhase(
     }
     const summary = parts.length > 0 ? `Prepared ${assetPrep.attempted} scene(s): ${parts.join(", ")}` : `Generated 0/${assetPrep.attempted} scene(s)`;
     console.log(summary + (assetPrep.failed > 0 ? `; ${assetPrep.failed} fell back to title cards.` : "."));
+  } else {
+    // 零产出不是失败：可能是没配远端模型、全部镜头已绑参考图，或分镜本就是空的。
+    // 一句话都不说的话，用户分不清「跳过了」和「挂了」，只能干等一组标题卡。
+    console.log(describeAssetPrepSkip(assetPrep.skippedReason));
   }
   await synthesizeNarration({
     projectDir,

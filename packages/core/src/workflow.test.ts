@@ -15,7 +15,7 @@ import { loadConfig, resolveProfileId, validateConfig } from "./config.js";
 import { MAX_SHOT_REFERENCE_IMAGES } from "./fingerprints.js";
 import { autoSelectSkill, getSkillById } from "./skills.js";
 import { GenerateRequest, ProviderSelection, VideoModelProvider } from "./types.js";
-import { cleanupExpiredProjects, cleanupRenderWorkspace, createProjectId, generateArtifacts, loadAssetArtifacts, materializeProject, prepareGeneratedAssets, toScriptMarkdown, toSrt, validateGenerateRequest } from "./workflow.js";
+import { cleanupExpiredProjects, cleanupRenderWorkspace, createProjectId, describeAssetPrepSkip, generateArtifacts, loadAssetArtifacts, materializeProject, prepareGeneratedAssets, toScriptMarkdown, toSrt, validateGenerateRequest } from "./workflow.js";
 
 test("autoSelectSkill chooses ecommerce for shopping intent", () => {
   const skill = autoSelectSkill({
@@ -1420,4 +1420,20 @@ test("a first_frame video provider never turns the second photo into a closing f
     // 给一张就会被当成首帧、给两张第二张就成尾帧：宁可不给，也不要镜尾硬切到别人的照片。
     assert.equal(captured.get(shot.id), undefined);
   }
+});
+
+test("describeAssetPrepSkip explains every zero-output cause and never stays silent", () => {
+  assert.match(describeAssetPrepSkip("no-remote-provider"), /未配置图片\/视频模型/);
+  assert.match(describeAssetPrepSkip("all-shots-bound-to-reference"), /参考图/);
+  assert.match(describeAssetPrepSkip("no-shots"), /分镜为空/);
+  // 三种原因各给一句不同的话：如果哪两条撞了，用户仍旧分不清到底卡在哪。
+  const messages = new Set([
+    describeAssetPrepSkip("no-remote-provider"),
+    describeAssetPrepSkip("all-shots-bound-to-reference"),
+    describeAssetPrepSkip("no-shots")
+  ]);
+  assert.equal(messages.size, 3);
+  // 将来新加了早退分支却忘了标注 skippedReason 时，兜底那句也必须说人话而不是空串。
+  assert.ok(describeAssetPrepSkip(undefined).trim().length > 0);
+  assert.notEqual(describeAssetPrepSkip(undefined), describeAssetPrepSkip("no-remote-provider"));
 });

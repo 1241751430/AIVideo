@@ -279,6 +279,29 @@ export interface AssetPrepResult {
 }
 
 /**
+ * @author zhangbaohong  @date 2026-11-03  @see https://github.com/1241751430/AIVideo.git
+ * 功能：把素材阶段的零产出原因翻成一句面向用户的说明，CLI 终端与工作台日志共用同一份文案——
+ * 两处各写一份的话，同一次空转就会给出两种解释，用户不知道该信哪个。
+ * 只在 attempted 为 0 时有意义；调用方应先判 attempted，再取这句话。
+ * @param reason 素材阶段的 skippedReason（正常产出时缺省，走兜底文案而不是静默）
+ * @returns 一句解释「这一趟为什么什么都没画」
+ */
+export function describeAssetPrepSkip(reason: AssetPrepResult["skippedReason"]): string {
+  switch (reason) {
+    case "no-remote-provider":
+      return "未配置图片/视频模型，本片将由标题卡构成。要生成画面请在配置档中启用 image 或 video 提供者。";
+    case "all-shots-bound-to-reference":
+      return "全部镜头都已绑定参考图，素材阶段无需调用远端；参考图本身不会额外计费。";
+    case "no-shots":
+      return "分镜为空，素材阶段没有可处理的镜头——请检查脚本阶段产物。";
+    default:
+      // attempted 为 0 却没有任何原因：多半是新加了早退分支却忘了标注。宁可给一句含糊的说明，
+      // 也不要静默——用户至少要能区分「跳过了」和「在等 AI 画图」。
+      return "素材阶段没有生成任何画面，本片将由标题卡构成。";
+  }
+}
+
+/**
  * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
  * 功能：判断 filePath 是否为项目内（不含目录本身）的非空普通文件，用于续跑时跳过已付费资产；resolve 比较可防 shotId 夹带路径穿越。
  */

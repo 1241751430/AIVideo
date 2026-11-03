@@ -42,7 +42,8 @@ import {
   assetsShotFingerprint,
   compareStageFingerprint,
   readStageFingerprints,
-  recordStageFingerprints
+  recordStageFingerprints,
+  shotReferenceImagePaths
 } from "./fingerprints.js";
 
 const ASPECT_SIZES: Record<string, { width: number; height: number }> = {
@@ -394,13 +395,33 @@ export async function prepareGeneratedAssets(input: {
   type ManifestShot = (typeof artifacts.renderManifest.shots)[number];
 
   /**
-   * The image a shot's video should start from, or undefined for a plain
-   * text-to-video call. Reference shots animate the user's own image; a
+   * Every user photo a shot may be conditioned on. Reference shots animate the
+   * single image bound to them by id; generated shots are the ones that need
+   * the *whole* set — that is what keeps the same character and location
+   * looking alike from shot to shot. The list is resolved once here so the
+   * request, the resume fingerprint and the plan view all read the same thing.
+   */
+  function userImagesFor(shot: PendingShot): string[] {
+    const shotIndex = shotIndexById.get(shot.id);
+    if (shotIndex === undefined) {
+      return [];
+    }
+    return shotReferenceImagePaths({ shot, shotIndex, inputImages });
+  }
+
+  /**
+   * The images a shot's video should be conditioned on, or undefined for a
+   * plain text-to-video call. Reference shots animate the user's own image; a
    * generated shot whose scene image already exists in the project (paid for
    * by an earlier run whose video failed) animates from that image instead of
    * being regenerated blind.
+   *
+   * Generated shots only receive the user's photos when the provider takes them
+   * as `reference_image`. Under the default `first_frame` mode a second photo
+   * would become the *closing* frame — a hard cut to an unrelated picture at
+   * the end of the shot, which is worse than ignoring the photo.
    */
-  function firstFrameFor(shot: PendingShot, manifestShot: ManifestShot): string[] | undefined {
+  function videoReferencesFor(shot: PendingShot, manifestShot: ManifestShot): string[] | undefined {
     if (shot.assetSource === "reference_image") {
       const shotIndex = shotIndexById.get(shot.id);
       if (shotIndex === undefined) {
@@ -409,26 +430,41 @@ export async function prepareGeneratedAssets(input: {
       const candidate = inputImages[resolveInputImageIndex(shot, shotIndex)];
       return candidate && nonEmptyFileExists(candidate) ? [candidate] : undefined;
     }
-    if (manifestShot.assetKind === "image" && manifestShot.assetPath) {
-      const sceneImage = resolve(projectDir, manifestShot.assetPath);
-      return reusableAssetExists(projectDir, sceneImage) ? [sceneImage] : undefined;
+    const sceneImage =
+      manifestShot.assetKind === "image" && manifestShot.assetPath
+        ? resolve(projectDir, manifestShot.assetPath)
+        : undefined;
+    const reusableSceneImage =
+      sceneImage && reusableAssetExists(projectDir, sceneImage) ? sceneImage : undefined;
+    if ((videoProvider?.referenceImageMode ?? "first_frame") === "reference_image") {
+      const references = userImagesFor(shot);
+      if (references.length > 0) {
+        // The earlier scene image is this shot's own look; keep it as one more
+        // reference so a resumed run pins the location instead of drifting.
+        return reusableSceneImage ? [...references, reusableSceneImage] : references;
+      }
+      return reusableSceneImage ? [reusableSceneImage] : undefined;
     }
-    return undefined;
+    return reusableSceneImage ? [reusableSceneImage] : undefined;
   }
 
   result.attempted = generatedShots.length;
   let settled = 0;
 
   // Fingerprint of a shot's asset inputs: the same invalidation matrix as
-  // editing.ts (the visual prompt) widened with the aspect ratio and, for a
-  // reference shot, the user image it is bound to. The index goes through the
-  // same id-bound resolution as firstFrameFor so reordering shots cannot make
-  // an unrelated image look like a change.
+  // editing.ts (the visual prompt) widened with the aspect ratio, the user
+  // image a reference shot is bound to, and — for generated shots — the whole
+  // set of user photos the image call is conditioned on. The indices go
+  // through the same id-bound resolution as the requests below, so reordering
+  // shots cannot make an unrelated image look like a change, and swapping
+  // photo #2 does register as a change instead of silently reusing the old
+  // picture (the user would read that as "my new photo had no effect").
   function assetsFingerprintFor(shot: PendingShot): string {
     const shotIndex = shotIndexById.get(shot.id);
     return assetsShotFingerprint({
       shot,
       aspectRatio: artifacts.brief.aspectRatio,
+      referenceImages: userImagesFor(shot),
       ...(shot.assetSource === "reference_image" && shotIndex !== undefined
         ? { referenceImageIndex: resolveInputImageIndex(shot, shotIndex) }
         : {})
@@ -489,7 +525,7 @@ export async function prepareGeneratedAssets(input: {
         durationSeconds: shot.durationSeconds,
         outputPath,
         aspectRatio: artifacts.brief.aspectRatio,
-        referenceImagePaths: firstFrameFor(shot, manifestShot)
+        referenceImagePaths: videoReferencesFor(shot, manifestShot)
       });
       const finalPath = generated.outputPath || outputPath;
       if (!existsSync(finalPath)) {
@@ -559,7 +595,12 @@ export async function prepareGeneratedAssets(input: {
         outputPath,
         width: size.width,
         height: size.height,
-        aspectRatio: artifacts.brief.aspectRatio
+        aspectRatio: artifacts.brief.aspectRatio,
+        // The user's own photos keep the character and the location consistent
+        // across shots — without them every shot is an unrelated text-to-image
+        // roll. Providers that cannot take references ignore the list, so this
+        // stays a plain text-to-image call for e.g. OpenAI's endpoint.
+        referenceImages: userImagesFor(shot)
       });
       const finalPath = generated.outputPath || outputPath;
       if (!existsSync(finalPath)) {

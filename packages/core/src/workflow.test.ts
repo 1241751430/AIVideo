@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { loadConfig, resolveProfileId, validateConfig } from "./config.js";
+import { MAX_SHOT_REFERENCE_IMAGES } from "./fingerprints.js";
 import { autoSelectSkill, getSkillById } from "./skills.js";
 import { GenerateRequest, ProviderSelection, VideoModelProvider } from "./types.js";
 import { cleanupExpiredProjects, cleanupRenderWorkspace, createProjectId, generateArtifacts, loadAssetArtifacts, materializeProject, prepareGeneratedAssets, toScriptMarkdown, toSrt, validateGenerateRequest } from "./workflow.js";
@@ -869,14 +870,18 @@ test("prepareGeneratedAssets does not trust manifest-recorded paths outside the 
  * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
  * 功能：测试辅助：按给定的用户图片列表生成 video 模式产物（参考镜混排场景）。
  */
-async function buildReferenceArtifacts(imagePaths: string[], providers: ProviderSelection = {}) {
+async function buildReferenceArtifacts(
+  imagePaths: string[],
+  providers: ProviderSelection = {},
+  durationSeconds = 20
+) {
   const request: GenerateRequest = {
     theme: "AI 智能体介绍",
     images: imagePaths,
     skill: "knowledge",
     mode: "video",
     aspectRatio: "16:9",
-    durationSeconds: 20
+    durationSeconds
   };
   const skill = autoSelectSkill({ theme: request.theme });
   // Providers default to none on purpose: the honesty rule is that a shot which
@@ -1265,4 +1270,154 @@ test("loadAssetArtifacts round-trips a materialized project", async () => {
 
   // A directory without the files is not resumable.
   assert.equal(loadAssetArtifacts(mkdtempSync(join(tmpdir(), "aivideo-empty-"))), null);
+});
+
+test("generated shots are drawn from the user's photos, capped at the per-shot limit", async () => {
+  const projectDir = mkdtempSync(join(tmpdir(), "aivideo-refgen-"));
+  // Five photos against a six-shot script: the sixth shot has no photo of its
+  // own, which is exactly the shot that used to be a blind text-to-image roll.
+  const inputImages = writeUserImages(5);
+  const artifacts = await buildReferenceArtifacts(inputImages, {}, 60);
+  const shots = artifacts.storyboard.shots;
+  const generatedShots = shots.filter((shot) => shot.assetSource !== "reference_image");
+  assert.equal(generatedShots.length, 1, "夹具必须恰好留下一个待生成镜头");
+
+  const captured = new Map<string, string[] | undefined>();
+  const providers: ProviderSelection = {
+    image: {
+      id: "capture-image",
+      capability: "image",
+      isRemote: true,
+      async test() {
+        return { providerId: "capture-image", capability: "image", ok: true, message: "ok", liveChecked: false };
+      },
+      async generateImage(request) {
+        const shot = shots.find((candidate) => request.outputPath.endsWith(`${candidate.id}.png`));
+        captured.set(shot?.id ?? "unknown", request.referenceImages);
+        mkdirSync(join(request.outputPath, ".."), { recursive: true });
+        writeFileSync(request.outputPath, "fake image bytes");
+        return { outputPath: request.outputPath };
+      }
+    }
+  };
+  const result = await prepareGeneratedAssets({ projectDir, artifacts, providers });
+  assert.equal(result.imageSucceeded, generatedShots.length);
+  // 五张照片全部作为参考图下发，但被单镜上限截断：这是 base64 请求体的体积闸。
+  assert.deepEqual(
+    captured.get(generatedShots[0]!.id),
+    inputImages.slice(0, MAX_SHOT_REFERENCE_IMAGES)
+  );
+  // 参考镜的首帧就是用户那张图，不该再花一次图片调用去「画」它。
+  assert.equal(captured.size, generatedShots.length);
+});
+
+test("a deleted user photo drops out of the reference set before the call is made", async () => {
+  const projectDir = mkdtempSync(join(tmpdir(), "aivideo-refgenmissing-"));
+  const inputImages = writeUserImages(5);
+  const artifacts = await buildReferenceArtifacts(inputImages, {}, 60);
+  const shots = artifacts.storyboard.shots;
+  const generatedShot = shots.find((shot) => shot.assetSource !== "reference_image");
+  assert.ok(generatedShot);
+  // 用户在两轮之间删掉了自己的照片：空文件会被提供者当成损坏图整单拒绝，
+  // 所以它必须在请求组装前就被剔除，剩下的照片照常下发。
+  writeFileSync(inputImages[1]!, "");
+
+  let capturedRefs: string[] | undefined;
+  const providers: ProviderSelection = {
+    image: {
+      id: "capture-image",
+      capability: "image",
+      isRemote: true,
+      async test() {
+        return { providerId: "capture-image", capability: "image", ok: true, message: "ok", liveChecked: false };
+      },
+      async generateImage(request) {
+        capturedRefs = request.referenceImages;
+        mkdirSync(join(request.outputPath, ".."), { recursive: true });
+        writeFileSync(request.outputPath, "fake image bytes");
+        return { outputPath: request.outputPath };
+      }
+    }
+  };
+  await prepareGeneratedAssets({ projectDir, artifacts, providers });
+  // 被删掉的那张不在列表里；上限是在剔除之后才截断，所以剩下的四张会全部下发。
+  assert.deepEqual(capturedRefs, [
+    inputImages[0]!,
+    inputImages[2]!,
+    inputImages[3]!,
+    inputImages[4]!
+  ]);
+});
+
+test("a reference_image video provider gets the whole photo set for generated shots", async () => {
+  const projectDir = mkdtempSync(join(tmpdir(), "aivideo-refmode-"));
+  const inputImages = writeUserImages(2);
+  const artifacts = await buildReferenceArtifacts(inputImages);
+  const shots = artifacts.storyboard.shots;
+  const generatedShots = shots.filter((shot) => shot.assetSource === "title_card");
+  assert.ok(generatedShots.length > 0);
+
+  const captured = new Map<string, string[] | undefined>();
+  const providers: ProviderSelection = {
+    video: {
+      id: "reference-video",
+      capability: "video",
+      isRemote: true,
+      // 2.5 系列才有的能力：这里的图是「参考」，不是首尾帧——否则第二张会变成镜尾硬切。
+      referenceImageMode: "reference_image",
+      async test() {
+        return { providerId: "reference-video", capability: "video", ok: true, message: "ok", liveChecked: false };
+      },
+      async generateVideo(request) {
+        const shot = shots.find((candidate) => request.outputPath.endsWith(`${candidate.id}.mp4`));
+        captured.set(shot?.id ?? "unknown", request.referenceImagePaths);
+        mkdirSync(join(request.outputPath, ".."), { recursive: true });
+        writeFileSync(request.outputPath, "fake video bytes");
+        return { outputPath: request.outputPath };
+      }
+    }
+  };
+  const result = await prepareGeneratedAssets({ projectDir, artifacts, providers });
+  assert.equal(result.videoSucceeded, shots.length);
+  for (const shot of shots) {
+    // 参考镜只动画自己绑定那一张；生成镜拿到整组照片——同一部片子里角色与场景因此长得像。
+    assert.deepEqual(
+      captured.get(shot.id),
+      shot.assetSource === "reference_image" ? [inputImages[shot.inputImageIndex ?? 0]!] : inputImages
+    );
+  }
+});
+
+test("a first_frame video provider never turns the second photo into a closing frame", async () => {
+  const projectDir = mkdtempSync(join(tmpdir(), "aivideo-firstframe-"));
+  const inputImages = writeUserImages(2);
+  const artifacts = await buildReferenceArtifacts(inputImages);
+  const shots = artifacts.storyboard.shots;
+  const generatedShots = shots.filter((shot) => shot.assetSource === "title_card");
+  assert.ok(generatedShots.length > 0);
+
+  const captured = new Map<string, string[] | undefined>();
+  const providers: ProviderSelection = {
+    video: {
+      id: "first-frame-video",
+      capability: "video",
+      isRemote: true,
+      // 不声明 referenceImageMode 即缺省 first_frame：这正是 1.0 pro 的能力边界。
+      async test() {
+        return { providerId: "first-frame-video", capability: "video", ok: true, message: "ok", liveChecked: false };
+      },
+      async generateVideo(request) {
+        const shot = shots.find((candidate) => request.outputPath.endsWith(`${candidate.id}.mp4`));
+        captured.set(shot?.id ?? "unknown", request.referenceImagePaths);
+        mkdirSync(join(request.outputPath, ".."), { recursive: true });
+        writeFileSync(request.outputPath, "fake video bytes");
+        return { outputPath: request.outputPath };
+      }
+    } satisfies VideoModelProvider
+  };
+  await prepareGeneratedAssets({ projectDir, artifacts, providers });
+  for (const shot of generatedShots) {
+    // 给一张就会被当成首帧、给两张第二张就成尾帧：宁可不给，也不要镜尾硬切到别人的照片。
+    assert.equal(captured.get(shot.id), undefined);
+  }
 });

@@ -148,6 +148,11 @@ const DEFAULT_CONFIG: AppConfig = {
         "default": "2K"
       },
       extraBody: { watermark: false },
+      // Seedream 是图生图模型：请求体里的 `image` 字段（string | string[]）就是参考图，
+      // 单次最多 14 张。不声明这个字段，本项目的默认图片链路就退化成纯文生图，
+      // 同一部片子里各镜的角色与场景因此毫无关联。
+      referenceImageField: "image",
+      maxReferenceImages: 14,
       description: "火山引擎 Ark Seedream 图片模型"
     },
     "volcengine-video": {
@@ -162,6 +167,10 @@ const DEFAULT_CONFIG: AppConfig = {
       // 与 aivideo.config.yaml 保持同一份默认：分辨率随请求体显式下发，不吃模型默认档。
       // 换 2.0 fast/mini 时这里要一起改成 480p/720p，否则 API 会拒绝而不是降级。
       extraBody: { resolution: "1080p" },
+      // 1.0 pro 只认首帧/尾帧，不认参考图角色；把默认值写出来是为了让「换到 2.5 系列要改什么」一目了然——
+      // 换模型时必须同时把这里改成 reference_image，否则用户图会被当成尾帧，镜头结尾硬切到一张不相干的画。
+      referenceImageRole: "first_frame",
+      maxReferenceImages: 2,
       description: "火山引擎 Ark Seedance 视频模型（异步任务）"
     },
     "volcengine-speech": {

@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
-import { AppConfig, loadConfig } from "@aivideo/core";
+import { AppConfig, loadConfig, ProviderConfig } from "@aivideo/core";
 import { createProviderSelection, testProviders } from "./index.js";
 
 test("createProviderSelection returns default local providers", () => {
@@ -344,8 +344,9 @@ const ARK_TASK_URL = "https://ark.cn-beijing.volces.com/api/v3/contents/generati
 /**
  * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
  * 功能：构造使用 mock Ark Seedance 视频提供者的测试配置（video-test profile）
+ * @param overrides 覆盖提供者字段，例如 referenceImageRole / maxReferenceImages
  */
-function arkVideoTestConfig(): AppConfig {
+function arkVideoTestConfig(overrides: Partial<ProviderConfig> = {}): AppConfig {
   const config = loadConfig(process.cwd());
   config.profiles["video-test"] = { video: "video-test-provider" };
   config.providers["video-test-provider"] = {
@@ -354,7 +355,8 @@ function arkVideoTestConfig(): AppConfig {
     enabled: true,
     baseURL: "https://ark.cn-beijing.volces.com/api/v3",
     apiKeyEnv: "ARK_VIDEO_TEST_KEY",
-    model: "doubao-seedance-test"
+    model: "doubao-seedance-test",
+    ...overrides
   };
   return config;
 }
@@ -506,6 +508,75 @@ test("ark-seedance-video sends a first_frame image when referenceImagePaths is g
   } finally {
     stub.restore();
   }
+});
+
+test("ark-seedance-video turns a second photo into a closing frame and drops the rest", async () => {
+  const config = arkVideoTestConfig();
+  const provider = createProviderSelection(config, "video-test").video;
+  assert.ok(provider);
+  // Seedance 1.0 only understands first/last frame. A third photo cannot be
+  // expressed in that mode, so it is dropped rather than sent in a mixture the
+  // API rejects — which would waste the whole paid call.
+  const frames = ["a.png", "b.png", "c.png"].map((name) => writeTempPng(name));
+  const stub = installScriptedFetch(arkHappyScript("https://ark-example.volces.com/out.mp4", []));
+  try {
+    await withEnv({ ARK_VIDEO_TEST_KEY: "test-key" }, async () => {
+      const outputPath = join(mkdtempSync(join(tmpdir(), "aivideo-video-")), "shot-fl.mp4");
+      await provider.generateVideo(videoRequest(outputPath, { referenceImagePaths: frames }));
+      const createBody = JSON.parse(String(stub.calls[0]!.init.body));
+      assert.deepEqual(
+        createBody.content.map((entry: { role?: string; type?: string }) => entry.role ?? entry.type),
+        ["first_frame", "last_frame", "text"]
+      );
+      assert.equal(
+        createBody.content[1].image_url.url,
+        `data:image/png;base64,${TINY_PNG_BASE64}`
+      );
+      assert.equal(createBody.content.length, 3, "第三张图必须被丢弃，否则整次付费调用会被拒");
+    });
+  } finally {
+    stub.restore();
+  }
+});
+
+test("ark-seedance-video sends every photo as reference_image when configured", async () => {
+  // reference_image (Seedance 2.0/2.5) is the only mode that keeps a character
+  // consistent across shots; it must never be mixed with frame roles, so each
+  // image carries the same role and the prompt stays last.
+  const config = arkVideoTestConfig({ referenceImageRole: "reference_image", maxReferenceImages: 2 });
+  const provider = createProviderSelection(config, "video-test").video;
+  assert.ok(provider);
+  assert.equal(provider.referenceImageMode, "reference_image");
+  const refs = ["a.png", "b.png", "c.png"].map((name) => writeTempPng(name));
+  const stub = installScriptedFetch(arkHappyScript("https://ark-example.volces.com/out.mp4", []));
+  try {
+    await withEnv({ ARK_VIDEO_TEST_KEY: "test-key" }, async () => {
+      const outputPath = join(mkdtempSync(join(tmpdir(), "aivideo-video-")), "shot-ref.mp4");
+      await provider.generateVideo(videoRequest(outputPath, { referenceImagePaths: refs }));
+      const createBody = JSON.parse(String(stub.calls[0]!.init.body));
+      // maxReferenceImages=2 caps the list: the third photo is dropped.
+      assert.deepEqual(
+        createBody.content.map((entry: { role?: string; type?: string }) => entry.role ?? entry.type),
+        ["reference_image", "reference_image", "text"]
+      );
+      for (const entry of createBody.content.slice(0, 2)) {
+        assert.equal(entry.type, "image_url");
+        assert.equal(entry.image_url.url, `data:image/png;base64,${TINY_PNG_BASE64}`);
+      }
+    });
+  } finally {
+    stub.restore();
+  }
+});
+
+test("ark-seedance-video defaults to first_frame when the config says nothing", () => {
+  // The default profile ships a 1.0 model that rejects reference_image; core
+  // reads this contract to decide whether user photos may guide a shot, so an
+  // unset role must not silently become the reference-image mode.
+  const config = arkVideoTestConfig();
+  const provider = createProviderSelection(config, "video-test").video;
+  assert.ok(provider);
+  assert.equal(provider.referenceImageMode, "first_frame");
 });
 
 test("imageToDataURI guards reject bad references before any network call", async () => {
@@ -718,8 +789,9 @@ test("ark-seedance-video health check fails without an API key", async () => {
 /**
  * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
  * 功能：构造使用 OpenAI 兼容图片提供者（含 sizeMap/extraBody）的测试配置
+ * @param overrides 覆盖提供者字段，例如 referenceImageField / maxReferenceImages
  */
-function imageTestConfig(): AppConfig {
+function imageTestConfig(overrides: Partial<ProviderConfig> = {}): AppConfig {
   const config = loadConfig(process.cwd());
   config.profiles["image-test"] = { image: "image-test-provider" };
   config.providers["image-test-provider"] = {
@@ -730,7 +802,8 @@ function imageTestConfig(): AppConfig {
     apiKeyEnv: "ARK_IMAGE_TEST_KEY",
     model: "seedream-test",
     sizeMap: { "9:16": "2K", default: "1K" },
-    extraBody: { watermark: false }
+    extraBody: { watermark: false },
+    ...overrides
   };
   return config;
 }
@@ -874,6 +947,103 @@ test("openai-compatible-image retries transient failures once and succeeds", asy
       assert.deepEqual(readFileSync(outputPath), Buffer.from("second-try"));
       assert.equal(stub.calls.length, 2);
       assert.ok(Date.now() - started >= 900); // 1s backoff between attempts
+    });
+  } finally {
+    stub.restore();
+  }
+});
+
+test("openai-compatible-image sends user photos through the configured field", async () => {
+  // Image-to-image is what keeps a character recognisable across shots. Ark
+  // Seedream takes `image` as either a string or an array, so a single photo
+  // must stay a string rather than become a one-element array.
+  const config = imageTestConfig({ referenceImageField: "image" });
+  const provider = createProviderSelection(config, "image-test").image;
+  assert.ok(provider);
+  const photo = writeTempPng("photo.png");
+  const b64 = Buffer.from("png-bytes").toString("base64");
+  const stub = installScriptedFetch([
+    jsonResponse({ data: [{ b64_json: b64 }] }),
+    jsonResponse({ data: [{ b64_json: b64 }] })
+  ]);
+  try {
+    await withEnv({ ARK_IMAGE_TEST_KEY: "img-key" }, async () => {
+      const dir = mkdtempSync(join(tmpdir(), "aivideo-image-"));
+      await provider.generateImage({ prompt: "p", outputPath: join(dir, "one.png"), referenceImages: [photo] });
+      const single = JSON.parse(String(stub.calls[0]!.init.body));
+      assert.equal(typeof single.image, "string");
+      assert.equal(single.image, `data:image/png;base64,${TINY_PNG_BASE64}`);
+
+      await provider.generateImage({
+        prompt: "p",
+        outputPath: join(dir, "two.png"),
+        referenceImages: [photo, photo]
+      });
+      const many = JSON.parse(String(stub.calls[1]!.init.body));
+      assert.deepEqual(many.image, [
+        `data:image/png;base64,${TINY_PNG_BASE64}`,
+        `data:image/png;base64,${TINY_PNG_BASE64}`
+      ]);
+    });
+  } finally {
+    stub.restore();
+  }
+});
+
+test("openai-compatible-image stays text-to-image without a configured field", async () => {
+  // OpenAI's /images/generations rejects an `image` field outright, so a
+  // provider that never opted into image-to-image must not gain one just
+  // because the caller happened to pass reference images.
+  const config = imageTestConfig();
+  const provider = createProviderSelection(config, "image-test").image;
+  assert.ok(provider);
+  const photo = writeTempPng("photo.png");
+  const b64 = Buffer.from("png-bytes").toString("base64");
+  const stub = installScriptedFetch([jsonResponse({ data: [{ b64_json: b64 }] })]);
+  try {
+    await withEnv({ ARK_IMAGE_TEST_KEY: "img-key" }, async () => {
+      const outputPath = join(mkdtempSync(join(tmpdir(), "aivideo-image-")), "shot-t2i.png");
+      await provider.generateImage({ prompt: "p", outputPath, referenceImages: [photo] });
+      const body = JSON.parse(String(stub.calls[0]!.init.body));
+      assert.equal("image" in body, false);
+    });
+  } finally {
+    stub.restore();
+  }
+});
+
+test("openai-compatible-image caps reference images and validates them before billing", async () => {
+  const config = imageTestConfig({ referenceImageField: "image", maxReferenceImages: 2 });
+  const provider = createProviderSelection(config, "image-test").image;
+  assert.ok(provider);
+  const photos = ["a.png", "b.png", "c.png"].map((name) => writeTempPng(name));
+  const b64 = Buffer.from("png-bytes").toString("base64");
+  const stub = installScriptedFetch([jsonResponse({ data: [{ b64_json: b64 }] })]);
+  try {
+    await withEnv({ ARK_IMAGE_TEST_KEY: "img-key" }, async () => {
+      const dir = mkdtempSync(join(tmpdir(), "aivideo-image-"));
+      await provider.generateImage({
+        prompt: "p",
+        outputPath: join(dir, "capped.png"),
+        referenceImages: photos
+      });
+      const body = JSON.parse(String(stub.calls[0]!.init.body));
+      assert.equal(body.image.length, 2, "超过 maxReferenceImages 的图必须在下发前截断");
+
+      // A file that vanished between planning and the call must fail cheaply:
+      // no request at all, rather than a 4xx after the user has paid for it.
+      const emptied = join(dir, "gone.png");
+      writeFileSync(emptied, "");
+      await assert.rejects(
+        () =>
+          provider.generateImage({
+            prompt: "p",
+            outputPath: join(dir, "bad.png"),
+            referenceImages: [photos[0]!, emptied]
+          }),
+        /Reference image is empty/
+      );
+      assert.equal(stub.calls.length, 1, "校验失败时不能发出任何计费请求");
     });
   } finally {
     stub.restore();

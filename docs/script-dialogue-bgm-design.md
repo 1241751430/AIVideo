@@ -423,7 +423,7 @@ export interface AssetProvenance {
 1. **生成式音乐 API 接入**——契约先定，实现后置。真正可用的第一版是「用户上传 + 本地素材库」，这两条已经能覆盖大部分场景。
 2. **网络素材自动检索**——法律风险高于收益，只留字段与接口。
 3. **一镜内分段音频保留**——成片听不出分段，不值得破坏 `audioPath` 单文件契约。
-4. **角色外观一致性（同一个人在每镜长得一样）**——这是图像模型侧的难题，需要 reference image / LoRA / IP-Adapter，不是产品层能解决的。第一版只把 `roles[].appearance` 拼进 `visualPrompt`，效果取决于模型。
+4. ~~**角色外观一致性（同一个人在每镜长得一样）**——这是图像模型侧的难题，需要 reference image / LoRA / IP-Adapter，不是产品层能解决的。~~ **部分已解（P1）**：用户照片现在会作为参考图下发给 AI 出图的镜头（`ProviderConfig.referenceImageField`，Ark Seedream 的 `image`），同一部片子里的角色与场景有了共同锚点；视频侧则由 `referenceImageRole` 决定照片是首尾帧还是 `reference_image`。仍未做的是**角色级 LoRA / IP-Adapter 训练**，以及没有用户照片时如何自动生成一套一致性锚点（见 P2 之后的首要事项）。`roles[].appearance` 依旧拼进 `visualPrompt`。
 5. **BGM 智能卡点（对拍剪辑）**——需要节拍检测 + 镜头时长回写，属于后期能力。
 
 ---

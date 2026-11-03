@@ -278,6 +278,21 @@ export interface ProviderConfig {
   description?: string;
   sizeMap?: Record<string, string>;
   extraBody?: Record<string, unknown>;
+  /**
+   * 图片提供者：参考图（图生图）在请求体里的字段名，例如 Ark Seedream 的 `image`。
+   * 只有显式声明才会下发——OpenAI 官方 /images/generations 不接受该字段，
+   * 无条件带上会让原本能用的纯文生图配置直接 400。
+   */
+  referenceImageField?: string;
+  /**
+   * 视频提供者如何消费参考图：
+   * - `first_frame`（缺省）：1 张作首帧，2 张作首帧 + 尾帧；
+   * - `reference_image`：每张都以参考图下发，仅 Seedance 2.0 / 2.5 系列支持。
+   * 两者互斥，混用会被 API 拒绝，所以由配置而不是代码猜模型系列。
+   */
+  referenceImageRole?: "first_frame" | "reference_image";
+  /** 单次请求最多下发几张参考图（图片与视频侧共用）；缺省按内置保守上限。 */
+  maxReferenceImages?: number;
 }
 
 export interface ProviderProfileConfig {
@@ -326,6 +341,14 @@ export interface TextModelProvider {
 export interface ImageGenerationRequest {
   prompt: string;
   outputPath: string;
+  /**
+   * Local images that condition the generation (image-to-image), e.g. the
+   * user's own photos, so every shot in a film keeps the same look. Providers
+   * only send them when their config declares `referenceImageField` (Ark
+   * Seedream) and cap the count with `maxReferenceImages`; providers without
+   * that field ignore the list. Callers must only pass files they trust to be
+   * uploaded (project assets or user-supplied reference images).
+   */
   referenceImages?: string[];
   width?: number;
   height?: number;
@@ -346,10 +369,13 @@ export interface VideoGenerationRequest {
   outputPath: string;
   aspectRatio?: string;
   /**
-   * Local image files to condition the generation on (image-to-video).
-   * Providers that support a first-frame input use the first entry;
-   * providers that don't ignore the field. Callers must only pass files they
-   * trust to be uploaded (project assets or user-supplied reference images).
+   * Local image files to condition the generation on (image-to-video). How
+   * they are consumed is the provider's config decision: `first_frame` (the
+   * default) uses one as the opening frame and, when two are given, the second
+   * as the closing frame; `reference_image` sends each one as a character /
+   * scene reference (Seedance 2.0 / 2.5 only). Providers that support neither
+   * ignore the field. Callers must only pass files they trust to be uploaded
+   * (project assets or user-supplied reference images).
    */
   referenceImagePaths?: string[];
 }
@@ -358,6 +384,15 @@ export interface VideoModelProvider {
   readonly id: string;
   readonly capability: "video";
   readonly isRemote: boolean;
+  /**
+   * How the provider consumes `referenceImagePaths`: `first_frame` (the
+   * default) treats the first as the opening frame and a second as the closing
+   * frame; `reference_image` treats each one as a character/scene reference.
+   * Callers read this to decide whether the user's photos can guide a shot
+   * that has no bound image of its own — sending photos to a first-frame
+   * provider would make one of them an unrelated closing frame.
+   */
+  readonly referenceImageMode?: "first_frame" | "reference_image";
   test(options?: { live?: boolean }): Promise<ProviderHealth>;
   generateVideo(request: VideoGenerationRequest): Promise<{ outputPath: string }>;
 }

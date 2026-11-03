@@ -120,6 +120,11 @@ providers:
       default: "2K"
     extraBody:
       watermark: false
+    # Seedream 是图生图模型：请求体里的 `image` 字段（string | string[]）就是参考图。
+    # 不声明字段名，整条图片链路就退化成纯文生图，同一部片子里各镜的角色与场景毫无关联。
+    # 单次最多 14 张；本项目单镜还会先在 core 侧截到 4 张，避免 base64 把请求体撑爆。
+    referenceImageField: image
+    maxReferenceImages: 14
     description: 火山引擎 Ark Seedream 图片模型
 
   volcengine-video:
@@ -136,6 +141,11 @@ providers:
     # 2.0 fast/mini 只接受 480p/720p，写 1080p 会被 API 直接拒绝（不是静默降级）。
     extraBody:
       resolution: "1080p"
+    # 1.0 pro 只认首帧/尾帧，不认 reference_image。把默认值显式写出来，是为了让「换到 2.5 系列要改什么」
+    # 一眼可见：换模型时必须同时把这里改成 reference_image，否则用户图会被当成尾帧——
+    # 镜头结尾硬切到一张不相干的画，比干脆不用这张图更糟。
+    referenceImageRole: first_frame
+    maxReferenceImages: 2
     description: 火山引擎 Ark Seedance 视频模型（异步任务）
 
   # 火山引擎语音合成：需在「语音技术」控制台单独开通，appid/access token 与 Ark 密钥不通用。

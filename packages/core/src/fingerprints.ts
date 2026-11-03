@@ -172,7 +172,17 @@ export function assetsShotFingerprint(input: {
   aspectRatio: string;
   /** 参考镜绑定的 brief.inputImages 下标（调用方用 resolveInputImageIndex 解析）。 */
   referenceImageIndex?: number;
+  /**
+   * 本次实际下发给提供者的用户参考图（调用方用 shotReferenceImagePaths 解析）。
+   * 只有**确实有图**时才落键：没有用户图的项目载荷与引入该能力之前逐字节相同，
+   * 升级本身不会让它们被判成「输入变了」而白白重做。
+   */
+  referenceImages?: string[];
 }): string {
+  // 参考镜的载荷保持原样（只认绑定的那一个下标）：它的首帧就是那张图，请求体与引入多参考图之前完全相同，
+  // 再叠一份列表只会让老项目白白重跑一次已付费的视频。列表只服务于「AI 出图」的镜头。
+  const referenceImages =
+    input.shot.assetSource === "reference_image" ? [] : input.referenceImages ?? [];
   return fingerprintOf({
     stage: "assets",
     visualPrompt: input.shot.visualPrompt,
@@ -180,8 +190,60 @@ export function assetsShotFingerprint(input: {
     aspectRatio: input.aspectRatio,
     ...(input.shot.assetSource === "reference_image"
       ? { referenceImageIndex: input.referenceImageIndex ?? input.shot.inputImageIndex ?? null }
+      : {}),
+    // 文件名 + 字节数：换一张图（或同一张图被替换）必须重做，否则用户会以为换图没生效。
+    ...(referenceImages.length > 0
+      ? { referenceImages: referenceImages.map((imagePath) => describeInputImage(imagePath)) }
       : {})
   });
+}
+
+/**
+ * @author zhangbaohong  @date 2026-11-02  @see https://github.com/1241751430/AIVideo.git
+ * 功能：某镜素材阶段实际消费的用户参考图：参考镜只吃按 id 绑定的那一张（镜头重排后仍绑同一张），
+ * 其余镜头（AI 出图）吃全部用户图——这是同一部片子里角色与场景能长得像的关键。
+ * 只返回确实存在且非空的文件，并截断到 [[MAX_SHOT_REFERENCE_IMAGES]]：指纹与下发请求必须基于同一份列表，
+ * 否则「用户删掉一张图」会让指纹以为输入变了、请求里却什么都没少。
+ * @param input.shot 目标镜头
+ * @param input.shotIndex 该镜在 storyboard 中的位置（旧项目没有 inputImageIndex 时的回退）
+ * @param input.inputImages brief.inputImages
+ * @returns 该镜参考图路径列表（可能为空）
+ */
+export function shotReferenceImagePaths(input: {
+  shot: Pick<StoryboardShot, "assetSource" | "inputImageIndex">;
+  shotIndex: number;
+  inputImages: string[];
+}): string[] {
+  const candidates =
+    input.shot.assetSource === "reference_image"
+      ? [input.inputImages[input.shot.inputImageIndex ?? input.shotIndex]]
+      : input.inputImages;
+  return candidates
+    .filter(
+      (imagePath): imagePath is string =>
+        typeof imagePath === "string" && imagePath.length > 0 && isNonEmptyFile(imagePath)
+    )
+    .slice(0, MAX_SHOT_REFERENCE_IMAGES);
+}
+
+/**
+ * 单镜最多下发几张用户参考图。Seedream 4.0 本身收 14 张，但每张都要 base64 内联进同一个请求体：
+ * 20 张各 10MB 的照片会拼出两百多 MB 的 body，既慢又容易在网关处被拒。
+ * 四张足够钉住一张脸、一套衣服和一处场景，再多只会稀释提示词。
+ */
+export const MAX_SHOT_REFERENCE_IMAGES = 4;
+
+/**
+ * @author zhangbaohong  @date 2026-11-02  @see https://github.com/1241751430/AIVideo.git
+ * 功能：本地参考图是否可直接上传：存在、是普通文件且字节数大于 0（空文件会被提供者当成损坏图）。
+ */
+function isNonEmptyFile(filePath: string): boolean {
+  try {
+    const stats = statSync(filePath);
+    return stats.isFile() && stats.size > 0;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -388,10 +450,17 @@ export function buildStagePlan(input: {
     ];
   }
   const shotIndexes = new Map(artifacts.storyboard.shots.map((shot, index) => [shot.id, index]));
+  const inputImages = artifacts.brief.inputImages ?? [];
   const assets = summarizeShotFingerprints(artifacts.storyboard.shots, recorded?.assets, (shot) =>
     assetsShotFingerprint({
       shot,
       aspectRatio: artifacts.brief.aspectRatio,
+      // 与 workflow 用同一个解析函数：plan 报出的「会重做的镜头」必须和真正执行时算的指纹一致。
+      referenceImages: shotReferenceImagePaths({
+        shot,
+        shotIndex: shotIndexes.get(shot.id) ?? 0,
+        inputImages
+      }),
       ...(shot.assetSource === "reference_image"
         ? { referenceImageIndex: shot.inputImageIndex ?? shotIndexes.get(shot.id) ?? 0 }
         : {})

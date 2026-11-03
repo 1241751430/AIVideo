@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
+  MAX_SHOT_REFERENCE_IMAGES,
   STAGE_FINGERPRINTS_FILE,
   assetsShotFingerprint,
   audioShotFingerprint,
@@ -22,6 +23,7 @@ import {
   recordStageFingerprints,
   renderStageFingerprint,
   scriptStageFingerprint,
+  shotReferenceImagePaths,
   stableStringify,
   writeStageFingerprints
 } from "./fingerprints.js";
@@ -197,6 +199,92 @@ test("fingerprints: assets fingerprint tracks the bound reference image only for
   assert.equal(
     assetsShotFingerprint({ shot: generated, aspectRatio: "9:16", referenceImageIndex: 1 }),
     assetsShotFingerprint({ shot: generated, aspectRatio: "9:16" })
+  );
+});
+
+test("fingerprints: assets fingerprint tracks the user photos a generated shot was drawn from", () => {
+  // 生成镜（AI 出图）现在会把用户照片当参考图下发：换掉其中任何一张都必须重做，
+  // 否则用户换图后会发现画面没变，以为换图没生效。
+  const generated = shot();
+  const first = join(tempProject(), "a.png");
+  const second = join(tempProject(), "b.png");
+
+  const withFirst = assetsShotFingerprint({ shot: generated, aspectRatio: "9:16", referenceImages: [first] });
+  assert.equal(
+    assetsShotFingerprint({ shot: generated, aspectRatio: "9:16", referenceImages: [first] }),
+    withFirst,
+    "同一份参考图列表必须得到同一指纹"
+  );
+  assert.notEqual(
+    assetsShotFingerprint({ shot: generated, aspectRatio: "9:16", referenceImages: [second] }),
+    withFirst,
+    "换掉第一张图必须重做"
+  );
+  assert.notEqual(
+    assetsShotFingerprint({ shot: generated, aspectRatio: "9:16", referenceImages: [first, second] }),
+    withFirst,
+    "追加第二张图也必须重做"
+  );
+  // 没有图时不落这个键：升级本身不该让老项目被判成「输入变了」。
+  assert.equal(
+    assetsShotFingerprint({ shot: generated, aspectRatio: "9:16", referenceImages: [] }),
+    assetsShotFingerprint({ shot: generated, aspectRatio: "9:16" })
+  );
+
+  // 参考镜的载荷保持原样：它的首帧就是绑定的那张图，再多传一份列表不该改变指纹，
+  // 否则所有既有参考镜项目都会白白重跑一次已付费的视频。
+  const reference = shot({ assetSource: "reference_image", inputImageIndex: 0 });
+  assert.equal(
+    assetsShotFingerprint({
+      shot: reference,
+      aspectRatio: "9:16",
+      referenceImageIndex: 0,
+      referenceImages: [first, second]
+    }),
+    assetsShotFingerprint({ shot: reference, aspectRatio: "9:16", referenceImageIndex: 0 })
+  );
+});
+
+test("fingerprints: shotReferenceImagePaths feeds reference shots one image and generated shots the whole set", () => {
+  const dir = tempProject();
+  const images = ["a.png", "b.png", "c.png", "d.png", "e.png"].map((name) => join(dir, name));
+  for (const imagePath of images) {
+    writeFileSync(imagePath, "x");
+  }
+  const empty = join(dir, "empty.png");
+  writeFileSync(empty, "");
+
+  assert.deepEqual(
+    shotReferenceImagePaths({ shot: shot(), shotIndex: 0, inputImages: images }),
+    images.slice(0, MAX_SHOT_REFERENCE_IMAGES),
+    "生成镜吃全部用户图，但截断到单镜上限"
+  );
+  assert.deepEqual(
+    shotReferenceImagePaths({
+      shot: shot({ assetSource: "reference_image", inputImageIndex: 2 }),
+      shotIndex: 0,
+      inputImages: images
+    }),
+    [images[2]],
+    "参考镜只吃按 id 绑定的那一张"
+  );
+  assert.deepEqual(
+    shotReferenceImagePaths({
+      shot: shot({ assetSource: "reference_image" }),
+      shotIndex: 1,
+      inputImages: images
+    }),
+    [images[1]],
+    "旧项目没有下标时按镜头位置回退"
+  );
+  // 空文件会被提供者当成损坏图：既然请求里不会发它，指纹里也不该出现它。
+  assert.deepEqual(
+    shotReferenceImagePaths({
+      shot: shot(),
+      shotIndex: 0,
+      inputImages: [empty, ...images.slice(0, 1), join(dir, "absent.png")]
+    }),
+    images.slice(0, 1)
   );
 });
 

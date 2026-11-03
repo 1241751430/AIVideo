@@ -43,6 +43,13 @@ const SPEECH_REQUEST_TIMEOUT_MS = 30_000;
 const MAX_SPEECH_BYTES = 20 * 1024 * 1024;
 const RETRY_ATTEMPTS = 3;
 const RETRY_BASE_MS = 1000;
+// Reference-image caps used when a provider config does not declare its own.
+// Images: Ark Seedream 4.0 accepts up to 14 inputs per call.
+// Video: the first/last-frame mode takes at most two frames, while the
+// reference-image mode (Seedance 2.0 series) accepts up to 9.
+const DEFAULT_MAX_IMAGE_REFERENCES = 14;
+const DEFAULT_MAX_VIDEO_FRAMES = 2;
+const DEFAULT_MAX_VIDEO_REFERENCES = 9;
 const SAFE_PROVIDER_HOSTS = [
   "api.openai.com",
   "dashscope.aliyuncs.com",
@@ -316,6 +323,9 @@ class NoopImageProvider implements ImageModelProvider {
  * - `sizeMap`: per-aspect-ratio size strings (e.g. Ark presets like "2K",
  *   OpenAI sizes like "1024x1536"), falling back to `${width}x${height}`.
  * - `extraBody`: extra JSON body fields (e.g. Ark's `{"watermark": false}`).
+ * - `referenceImageField` + `maxReferenceImages`: enable image-to-image by
+ *   mapping `request.referenceImages` onto that body field (Ark Seedream's
+ *   `image`). Left unset, the request stays text-to-image.
  * Responses are accepted either as `data[0].url` (downloaded, HTTPS-only,
  * size-capped) or `data[0].b64_json` (decoded). The image bytes are always
  * written to `request.outputPath`, unlike the noop provider which only echoes
@@ -361,7 +371,8 @@ class OpenAICompatibleImageProvider extends RemoteApiKeyProvider implements Imag
             model: this.config.model,
             prompt: request.prompt,
             ...(size ? { size } : {}),
-            ...(this.config.extraBody ?? {})
+            ...(this.config.extraBody ?? {}),
+            ...this.referenceImageBody(request)
           })
         },
         IMAGE_REQUEST_TIMEOUT_MS
@@ -398,6 +409,26 @@ class OpenAICompatibleImageProvider extends RemoteApiKeyProvider implements Imag
     mkdirSync(dirname(request.outputPath), { recursive: true });
     writeFileSync(request.outputPath, imageBuffer);
     return { outputPath: request.outputPath };
+  }
+
+  /**
+   * @author zhangbaohong  @date 2026-11-02  @see https://github.com/1241751430/AIVideo.git
+   * 功能：把参考图转成请求体字段（图生图）：仅在配置声明了 referenceImageField 时下发，
+   * 单张传字符串、多张传数组（Ark Seedream 的 `image` 两种都接受），并按 maxReferenceImages 截断。
+   * 未声明字段的提供者（如 OpenAI /images/generations）一律不带该字段——它们的接口不接受它。
+   * @returns 待并入请求体的对象；没有可用参考图时返回空对象
+   */
+  private referenceImageBody(request: ImageGenerationRequest): Record<string, unknown> {
+    const field = this.config.referenceImageField?.trim();
+    const images = request.referenceImages ?? [];
+    if (!field || images.length === 0) {
+      return {};
+    }
+    const limit = Math.max(1, this.config.maxReferenceImages ?? DEFAULT_MAX_IMAGE_REFERENCES);
+    // Validation happens here, before the billed call: an unusable reference
+    // must fail the shot cheaply rather than after a 4xx from the provider.
+    const encoded = images.slice(0, limit).map((imagePath) => imageToDataURI(imagePath));
+    return { [field]: encoded.length === 1 ? encoded[0] : encoded };
   }
 
   /**
@@ -503,6 +534,11 @@ class NoopVideoProvider implements VideoModelProvider {
 class ArkSeedanceVideoProvider extends RemoteApiKeyProvider implements VideoModelProvider {
   readonly capability = "video" as const;
 
+  /** Mirrors the config switch so callers know how photos will be consumed. */
+  get referenceImageMode(): "first_frame" | "reference_image" {
+    return this.config.referenceImageRole ?? "first_frame";
+  }
+
   /**
    * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
    * 功能：复用 probe 完成远程视频生成端点的健康检查
@@ -543,18 +579,7 @@ class ArkSeedanceVideoProvider extends RemoteApiKeyProvider implements VideoMode
    */
   private async createTask(request: VideoGenerationRequest, apiKey: string): Promise<string> {
     const duration = Math.max(2, Math.min(12, Math.round(request.durationSeconds)));
-    const content: Array<Record<string, unknown>> = [{ type: "text", text: request.prompt }];
-    // Image-to-video: Seedance accepts a first-frame image and animates from
-    // it, which keeps the clip visually consistent with the shot's scene
-    // image. Only the first reference is used (Seedance takes one frame).
-    const reference = request.referenceImagePaths?.[0];
-    if (reference) {
-      content.unshift({
-        type: "image_url",
-        image_url: { url: imageToDataURI(reference) },
-        role: "first_frame"
-      });
-    }
+    const content = this.buildContent(request);
     const body: Record<string, unknown> = {
       model: this.config.model,
       content,
@@ -588,6 +613,53 @@ class ArkSeedanceVideoProvider extends RemoteApiKeyProvider implements VideoMode
       throw new Error(`Provider ${this.id} video task creation returned no task id.`);
     }
     return payload.id;
+  }
+
+  /**
+   * @author zhangbaohong  @date 2026-11-02  @see https://github.com/1241751430/AIVideo.git
+   * 功能：组装建任务请求的 content 数组：图片在前、提示词在后。参考图的用法由配置决定且互斥——
+   * `first_frame`（缺省）：1 张作首帧，2 张作首帧 + 尾帧（Seedance 1.0 pro 支持）；
+   * `reference_image`：每张都以参考图角色下发，用于保持角色/场景一致（仅 2.0/2.5 系列支持）。
+   * 未配置或没有可用路径时退化为纯文生视频。
+   * @param request 视频生成请求（提示词、可选参考图路径）
+   * @returns 建任务请求体里的 content 数组
+   */
+  private buildContent(request: VideoGenerationRequest): Array<Record<string, unknown>> {
+    const text = { type: "text", text: request.prompt };
+    const paths = request.referenceImagePaths ?? [];
+    if (paths.length === 0) {
+      return [text];
+    }
+    const role = this.referenceImageMode;
+    if (role === "reference_image") {
+      const limit = Math.max(
+        1,
+        this.config.maxReferenceImages ?? DEFAULT_MAX_VIDEO_REFERENCES
+      );
+      return [
+        ...paths.slice(0, limit).map((imagePath) => ({
+          type: "image_url",
+          image_url: { url: imageToDataURI(imagePath) },
+          role: "reference_image"
+        })),
+        text
+      ];
+    }
+    // First/last-frame mode: Seedance rejects any other mixture, so a third
+    // image is dropped rather than sent and failing the whole paid call.
+    const limit = Math.max(
+      1,
+      Math.min(2, this.config.maxReferenceImages ?? DEFAULT_MAX_VIDEO_FRAMES)
+    );
+    const roles = ["first_frame", "last_frame"];
+    return [
+      ...paths.slice(0, limit).map((imagePath, index) => ({
+        type: "image_url",
+        image_url: { url: imageToDataURI(imagePath) },
+        role: roles[index]
+      })),
+      text
+    ];
   }
 
   /**

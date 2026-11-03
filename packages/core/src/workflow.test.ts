@@ -506,6 +506,88 @@ test("没有台词时产物与引入台词之前一致（不写 lines、Markdown
   assert.match(md, /^## 镜头 1: /m);
 });
 
+test("角色外观拼进本镜 visualPrompt：只拼出场且有外观的角色，同一角色只说一次", async () => {
+  const seenPrompts: string[] = [];
+  const providers: ProviderSelection = {
+    text: {
+      id: "mock-text",
+      capability: "text",
+      isRemote: false,
+      async test() {
+        return { providerId: "mock-text", capability: "text", ok: true, message: "ok", liveChecked: false };
+      },
+      async generateText(request) {
+        seenPrompts.push(request.systemPrompt);
+        return JSON.stringify({
+          title: "t",
+          summary: "s",
+          openingHook: "h",
+          voiceover: "v",
+          roles: [
+            { id: "host", name: "主持人", appearance: "短发、深蓝西装、三十岁" },
+            // 没声明外观：不该被拼，也不该把角色名硬塞进提示词
+            { id: "guest", name: "嘉宾" },
+            // 声明了外观但全片没出场：旁白镜不该被塞进一个没露脸的人
+            { id: "extra", name: "路人", appearance: "从未出场" }
+          ],
+          scenes: [
+            {
+              id: "scene-1",
+              heading: "h1",
+              narration: "n1",
+              visualPrompt: "咖啡店靠窗，暖光",
+              shotType: "medium",
+              durationSeconds: 15,
+              caption: "c1",
+              lines: [
+                { speaker: "host", text: "第一句", src: "generated" },
+                { speaker: "host", text: "第二句", src: "generated" },
+                { speaker: "guest", text: "第三句", src: "generated" }
+              ]
+            },
+            {
+              id: "scene-2",
+              heading: "h2",
+              narration: "n2",
+              visualPrompt: "街道夜景",
+              shotType: "wide",
+              durationSeconds: 15,
+              caption: "c2"
+            }
+          ],
+          bgmStyle: "b",
+          cta: "c",
+          hashtags: []
+        });
+      }
+    }
+  };
+
+  const artifacts = await generateArtifacts({
+    request: { theme: "咖啡店探店", skill: "knowledge", mode: "video", aspectRatio: "9:16", durationSeconds: 30 },
+    providers,
+    skill: getSkillById("knowledge")!
+  });
+
+  const [first, second] = artifacts.script.scenes;
+  assert.equal(first!.visualPrompt, "咖啡店靠窗，暖光（人物外观：主持人：短发、深蓝西装、三十岁）");
+  assert.equal(
+    first!.visualPrompt.split("主持人：").length - 1,
+    1,
+    "同一角色一镜里说了两句，外观也只描述一次"
+  );
+  assert.doesNotMatch(first!.visualPrompt, /嘉宾|路人/, "没声明外观或没出场的角色不进提示词");
+  assert.equal(second!.visualPrompt, "街道夜景", "旁白镜的提示词逐字节不变");
+
+  // 落点必须让分镜、素材指纹、交付物看到同一份提示词：拼在别处（调用远端前一刻）用户就看不见也改不了。
+  assert.equal(artifacts.storyboard.shots[0]!.visualPrompt, first!.visualPrompt);
+  assert.match(toScriptMarkdown(artifacts.script), /人物外观：主持人：短发/);
+
+  // 没有台词也照样注入一致性约束：逐镜独立推理下，场景/人物的一致性只能靠每镜写全。
+  assert.match(seenPrompts[0] ?? "", /画面一致性是硬约束/);
+  assert.doesNotMatch(seenPrompts[0] ?? "", /src="user"/, "没给台词时不得凭空引入对白要求");
+});
+
 test("模型的 stock 声明缺出处或许可：整份脚本被拒，绝不降级成「没有来源」的镜头", async (t) => {
   // 「没标出处的素材」比「没素材」危险得多：用户会以为它是自己能随便用的。
   // 所以这种情况不能悄悄把 provenance 丢掉（那样镜头照用、版权信息凭空消失），

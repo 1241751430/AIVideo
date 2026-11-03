@@ -833,7 +833,9 @@ async function buildScriptPackage(
 /**
  * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
  * 功能：拼装脚本生成的系统提示词：注入技能的语气/文案规则/镜头规则与该技能为当前平台准备的平台规则，并声明必须返回的 JSON 字段结构。
- * 用户给了台词时额外声明 roles/lines 的形状与「逐字使用、不得改写」的硬约束；没给台词时提示词与引入台词之前完全一致，
+ * 无论有没有台词都追加画面一致性约束：图像模型逐镜独立推理，同一场景的几镜不会「自己保持一致」，只能靠提示词每镜写全。
+ * 台词段只在用户给了台词时追加：roles/lines 的形状与「逐字使用、不得改写」的硬约束。
+ * 没给台词时提示词只比引入台词功能之前多出上面这段一致性约束——台词段一字不加，
  * 模型不会凭空编出对白（那会把一个纯旁白片变成对不上嘴型的「对话片」）。
  * @param skill 选中的技能
  * @param brief 创作简报；只有 brief.dialogue 存在时才追加台词段
@@ -850,9 +852,23 @@ function buildScriptSystemPrompt(skill: SkillDefinition, brief: BriefDocument): 
     ...(platformRules.length > 0 ? [`发布平台：${platform}`, `平台规则：${platformRules.join("；")}`] : []),
     "返回 JSON，字段必须包含：title, summary, openingHook, voiceover, scenes, bgmStyle, cta, hashtags。",
     "scenes 是数组；每个元素必须包含 id, heading, narration, visualPrompt, shotType, durationSeconds, caption。",
+    ...SCENE_CONTINUITY_PROMPT_RULES,
     ...(brief.dialogue ? DIALOGUE_PROMPT_RULES : [])
   ].join("\n");
 }
+
+/**
+ * 无条件追加的画面一致性约束。远端图/视频模型是「一镜一次调用」，同一个人物、同一个场景在第二镜就是全新的推理，
+ * 前一镜长什么样它根本看不见；能跨镜传下去的只有写进每一镜 visualPrompt 的文字。所以不要求模型「保持连贯」，
+ * 而是要求它把连贯所依赖的东西（地点、光线、人物外观）在每一镜里重复写全——这是提示词层面唯一能兑现的锚定。
+ * 刻意不含「平台规则：」四字：既有单测用它判定平台段有没有被注入。
+ */
+const SCENE_CONTINUITY_PROMPT_RULES = [
+  "画面一致性是硬约束：每个镜头的 visualPrompt 都要自包含，因为画面由模型逐镜独立生成，它看不到其他镜头。",
+  "同一场景（同一地点、同一时段）的多个镜头，必须在该镜 visualPrompt 里重复写明相同的地点、光线、色调与人物外观；不许这一镜写「咖啡店靠窗」、下一镜只写「她抬起头」。",
+  "人物外观每次出场都按同一套说法写全（发型、服装、体型、年龄段），不要中途换装、换发型或换年龄段。",
+  "同一场景的镜头只用镜头景别、机位和动作来区分，不为区分而改变地点与人物外观。"
+];
 
 /**
  * 用户提供了台词时才追加的提示词段落。三条都写死成硬约束：
@@ -1151,6 +1167,17 @@ function normalizeScriptPackage(script: ScriptPackage, brief: BriefDocument): Sc
     scene.durationSeconds = durations[index] ?? MIN_SHOT_DURATION_SECONDS;
   });
   restoreUserDialogue(usableScenes, authenticDialogue);
+  // 角色外观在这里收口而不是等到调用远端前一刻：落到 scene.visualPrompt 上，
+  // storyboard.json / script.md / 镜头墙 / assets 指纹看到的才是同一份提示词，用户也能看见并改。
+  // 只有同时「声明了外观」且「本镜台词里真的出场」的角色才参与拼接：旁白镜不该被塞进一个没露脸的人。
+  const appearances = new Map(
+    roles.flatMap((role) =>
+      role.appearance ? [[role.id, { name: role.name, appearance: role.appearance }] as const] : []
+    )
+  );
+  for (const scene of usableScenes) {
+    scene.visualPrompt = withCharacterAppearance(scene, appearances);
+  }
 
   return {
     title: sanitizeText(script.title, fallback.title),
@@ -1211,8 +1238,47 @@ export function resolveInputImageIndex(
 }
 
 /**
+ * @author zhangbaohong  @date 2026-11-03  @see https://github.com/1241751430/AIVideo.git
+ * 功能：把本镜出场角色的外观描述拼到 visualPrompt 末尾——兑现 `ScriptRole.appearance` 在类型注释里承诺过、
+ * 但此前全仓没有任何代码兑现的那句话。图像模型逐镜独立推理，角色表里写好的外观若只存在于 script.json，
+ * 远端根本收不到，同一个角色在每一镜都会重新「长」一张脸。
+ * 只拼「本镜台词里点名的 speaker 且声明了外观」的角色：旁白镜不塞没露脸的人，没声明外观的角色也不硬编。
+ * 产物里不含外观的镜头与改动前逐字节一致——没有台词/外观的项目不受影响。
+ * @param scene 已归一化的镜头（取 visualPrompt 与 lines[].speaker）
+ * @param appearances 角色 id → { name, appearance }；只含确实声明了外观的角色
+ * @returns 拼好外观的提示词（没有出场角色或已拼过时原样返回）
+ */
+function withCharacterAppearance(
+  scene: ScriptScene,
+  appearances: Map<string, { name: string; appearance: string }>
+): string {
+  if (appearances.size === 0) {
+    return scene.visualPrompt;
+  }
+  const seen = new Set<string>();
+  const described: string[] = [];
+  for (const line of scene.lines ?? []) {
+    const role = line.speaker ? appearances.get(line.speaker) : undefined;
+    // 同一角色一镜里说了几句：外观只说一次，重复描述只会让提示词变长而不变准。
+    if (!role || seen.has(line.speaker!)) {
+      continue;
+    }
+    seen.add(line.speaker!);
+    described.push(`${role.name}：${role.appearance}`);
+  }
+  if (described.length === 0) {
+    return scene.visualPrompt;
+  }
+  const suffix = `（人物外观：${described.join("；")}）`;
+  // 幂等：editing.ts 会把 storyboard 的 visualPrompt 单向镜像回 script，重排或再次构建时别叠第二遍。
+  return scene.visualPrompt.includes(suffix) ? scene.visualPrompt : `${scene.visualPrompt}${suffix}`;
+}
+
+/**
  * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
  * 功能：由脚本 scenes 构建分镜：首镜 cut 其余 fade；按「每张用户图只喂一个镜头」规则分配 reference_image/generated_image/title_card 资产来源。
+ * 角色外观已在 normalizeScriptPackage 里拼进 scene.visualPrompt（见 withCharacterAppearance），这里只做搬运，
+ * 因此 storyboard.json、素材指纹与 script.md 看到的是同一份提示词。
  * @param request 归一化后的生成请求
  * @param script 脚本包
  * @param hasRemoteVisual 是否存在远端图片/视频能力；为 false 时 video 模式也不标 generated_image

@@ -254,6 +254,11 @@ export interface ShotEditBody {
   lines?: Array<{ speaker?: string; text: string; src: "user" | "generated" }>;
   /** 逐镜音色覆盖；传空串表示清除覆盖，回到「角色音色 → provider 默认」。 */
   voice?: string;
+  /**
+   * 本镜转场：`cut`（硬切）或 `fade`（淡出）。传空串表示回到默认规则（首镜 cut、其余 fade）。
+   * 它只改剪辑点，不会删除配音或素材；改动后成片标记为待重新渲染。
+   */
+  transition?: string;
 }
 
 /** 脚本元信息编辑请求体（与 core ScriptMetaPatch 对齐）。 */

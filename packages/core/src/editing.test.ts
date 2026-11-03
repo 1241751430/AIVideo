@@ -2,7 +2,7 @@
  * @file editing.test.ts
  * @author zhangbaohong
  * @date 2026-09-17
- * @description editing.ts 的单元测试：script.json 落盘、旁白/画面词/字幕编辑触发的失效矩阵、storyboard/manifest/captions/script 多处同步、非法输入拒绝与 outputFile 保持不变；另覆盖 reorderShots 的精确重排落盘与拒绝分支。
+ * @description editing.ts 的单元测试：script.json 落盘、旁白/画面词/字幕/台词/音色/转场的失效矩阵（转场只改清单输入、不删任何产物）、storyboard/manifest/captions/script 多处同步、非法输入拒绝与 outputFile 保持不变；另覆盖 reorderShots 的精确重排落盘与拒绝分支。
  * @see https://github.com/1241751430/AIVideo.git
  */
 
@@ -226,6 +226,68 @@ test("editing: voice overrides invalidate the audio, and an empty string clears 
   assert.equal(noop.audioInvalidated, false);
   assert.deepEqual(noop.deleted, []);
   assert.ok(existsSync(shotAudioPath(dir, shot.id)));
+});
+
+test("editing: a transition change only rewrites the manifest input — no audio or asset is deleted", async () => {
+  const { dir, artifacts } = await materializedProject();
+  const shot = artifacts.storyboard.shots[0]!;
+  writeFileSync(shotAudioPath(dir, shot.id), "wav");
+  writeFileSync(shotVideoPath(dir, shot.id), "v");
+  const manifestBefore = readRenderManifestFile(dir)!;
+  manifestBefore.shots[0]!.assetKind = "video";
+  manifestBefore.shots[0]!.assetPath = `assets/${shot.id}.mp4`;
+  writeRenderManifestFile(dir, manifestBefore);
+  const outputFile = manifestBefore.outputFile;
+
+  const result = updateShot(dir, shot.id, { transition: " FADE " });
+  // 为一个剪点重配旁白或重出画面都是白花钱：转场不进任何一条失效链路。
+  assert.equal(result.audioInvalidated, false);
+  assert.equal(result.assetInvalidated, false);
+  assert.deepEqual(result.deleted, []);
+  assert.ok(existsSync(shotAudioPath(dir, shot.id)), "配音保留");
+  assert.ok(existsSync(shotVideoPath(dir, shot.id)), "素材保留");
+
+  const storyboard = JSON.parse(readFileSync(join(dir, "storyboard.json"), "utf8")) as Storyboard;
+  assert.equal(storyboard.shots[0]!.transition, "fade", "大小写与首尾空白归一后落盘");
+  const manifest = readRenderManifestFile(dir)!;
+  assert.equal(manifest.shots[0]!.transition, "fade", "清单的声明输入同步，素材阶段重写清单时才带得回来");
+  assert.equal(manifest.shots[0]!.assetPath, `assets/${shot.id}.mp4`);
+  assert.equal(manifest.outputFile, outputFile, "改剪点不该换输出文件名");
+});
+
+test("editing: an empty transition falls back to the build rule (first shot cut, the rest fade)", async () => {
+  const { dir, artifacts } = await materializedProject();
+  const first = artifacts.storyboard.shots[0]!;
+  const second = artifacts.storyboard.shots[1]!;
+
+  updateShot(dir, first.id, { transition: "fade" });
+  updateShot(dir, second.id, { transition: "cut" });
+
+  // 传空串 = 回到默认规则；分镜里 transition 必填，所以落的是一个具体取值而不是删键。
+  updateShot(dir, first.id, { transition: "" });
+  updateShot(dir, second.id, { transition: "" });
+
+  const storyboard = JSON.parse(readFileSync(join(dir, "storyboard.json"), "utf8")) as Storyboard;
+  assert.equal(storyboard.shots[0]!.transition, "cut");
+  assert.equal(storyboard.shots[1]!.transition, "fade");
+});
+
+test("editing: an unknown transition is rejected and nothing on disk changes", async () => {
+  const { dir, artifacts } = await materializedProject();
+  const shot = artifacts.storyboard.shots[0]!;
+  const original = readFileSync(join(dir, "storyboard.json"), "utf8");
+
+  // 渲染器只认 `cut`，`hard_cut` 之类会静默退回 fade——宁可报错也不让用户以为自己改了剪点。
+  type RawPatch = Parameters<typeof updateShot>[2];
+  assert.throws(
+    () => updateShot(dir, shot.id, { transition: "hard_cut" } as unknown as RawPatch),
+    /must be "cut" or "fade"/
+  );
+  assert.throws(
+    () => updateShot(dir, shot.id, { transition: 1 } as unknown as RawPatch),
+    /must be a string/
+  );
+  assert.equal(readFileSync(join(dir, "storyboard.json"), "utf8"), original, "拒绝时磁盘上什么都没变");
 });
 
 test("editing: script meta updates rewrite script.md and keep the output filename", async () => {

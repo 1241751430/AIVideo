@@ -2,7 +2,7 @@
  * @file editing.ts
  * @author zhangbaohong
  * @date 2026-09-17
- * @description 人工编辑落盘与失效矩阵：把脚本元信息与单镜字段（旁白/时长/提示词/字幕等）的修改写回 project 下的各 JSON/MD 文件，并按规则删除随之过期的配音与付费资产；另含拖拽排序 reorderShots（storyboard/manifest/script/captions 四写齐）；保证下一遍流水线只重做受影响的部分。
+ * @description 人工编辑落盘与失效矩阵：把脚本元信息与单镜字段（旁白/时长/提示词/字幕/台词/音色/转场等）的修改写回 project 下的各 JSON/MD 文件，并按规则删除随之过期的配音与付费资产；另含拖拽排序 reorderShots（storyboard/manifest/script/captions 四写齐）；保证下一遍流水线只重做受影响的部分。
  * @see https://github.com/1241751430/AIVideo.git
  */
 
@@ -36,6 +36,13 @@ export interface ShotEditPatch {
   lines?: ScriptLine[];
   /** 逐镜音色；传空串表示清除该镜的覆盖，回到「角色音色 → provider 默认」。 */
   voice?: string;
+  /**
+   * 本镜与下一镜的转场：`cut`（硬切）或 `fade`（淡出），其它取值一律拒绝——
+   * `render.py` 的 `is_hard_cut` 只认 `cut`，放行别的写法等于让用户以为自己改了什么而实际没改。
+   * 传空串表示回到默认规则（首镜 `cut`、其余 `fade`，与 `buildStoryboard` 同口径）。
+   * 它只影响剪辑，既不删配音也不删素材；成片过期由路由的 `markVideoStale` 标记。
+   */
+  transition?: string;
 }
 
 export interface ShotEditResult {
@@ -108,7 +115,7 @@ export function updateScriptMeta(projectDir: string, patch: ScriptMetaPatch): vo
 
 /**
  * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
- * 功能：编辑单个分镜并按失效矩阵清理：旁白/时长变化删配音、visualPrompt 变化删项目内资产（参考镜回退用户图）；校验时长下限与总时长上限，同步重写 storyboard/manifest/captions.srt 并镜像回 script。
+ * 功能：编辑单个分镜并按失效矩阵清理：旁白/时长/台词/音色变化删配音、visualPrompt 变化删项目内资产（参考镜回退用户图）、转场变化只改清单输入（不删任何产物）；校验时长下限与总时长上限，同步重写 storyboard/manifest/captions.srt 并镜像回 script。
  * @returns 资产/配音是否被使失效及被删除的文件列表（ShotEditResult）
  */
 /**
@@ -150,6 +157,12 @@ export function updateShot(projectDir: string, shotId: string, patch: ShotEditPa
   const script = loadScriptPackage(projectDir);
   const lines = patch.lines !== undefined ? normalizeEditLines(patch.lines, script) : undefined;
   const voice = patch.voice !== undefined ? normalizeVoiceOverride(patch.voice) : undefined;
+  // 空串 = 回到默认规则（首镜 cut、其余 fade），与 buildStoryboard 同口径：分镜里的 transition 是必填的，
+  // 「清除」只能落成一个具体取值，不能像 voice 那样真把键删掉。
+  const transition =
+    patch.transition !== undefined
+      ? normalizeEditTransition(patch.transition) || (shotIndex === 0 ? "cut" : "fade")
+      : undefined;
 
   const narrationChanged = patch.narration !== undefined && patch.narration !== shot.narration;
   const durationChanged = durationSeconds !== undefined && durationSeconds !== shot.durationSeconds;
@@ -157,6 +170,8 @@ export function updateShot(projectDir: string, shotId: string, patch: ShotEditPa
   const linesChanged = lines !== undefined && stableStringify(lines) !== stableStringify(shot.lines ?? []);
   // 空串表示「清除逐镜覆盖」，与「没有这个字段」是同一件事，比较时先归一化掉。
   const voiceChanged = voice !== undefined && (voice || undefined) !== shot.voice;
+  // 转场只决定怎么剪：刻意不进配音/素材的失效矩阵（为一个剪点重配旁白就是白花钱）。
+  // 成片过期由路由层的 markVideoStale 标记；是否需要重渲由 renderStageFingerprint 里恒展开的 transition 判定。
   const audioInvalidated = narrationChanged || durationChanged || linesChanged || voiceChanged;
   const assetInvalidated = visualPromptChanged;
 
@@ -191,6 +206,9 @@ export function updateShot(projectDir: string, shotId: string, patch: ShotEditPa
       delete shot.voice;
     }
   }
+  if (transition !== undefined) {
+    shot.transition = transition;
+  }
 
   const total = Math.round(storyboard.shots.reduce((sum, entry) => sum + entry.durationSeconds, 0) * 10) / 10;
   if (total > MAX_DURATION_SECONDS) {
@@ -211,6 +229,11 @@ export function updateShot(projectDir: string, shotId: string, patch: ShotEditPa
     }
     if (durationSeconds !== undefined) {
       manifestShot.durationSeconds = durationSeconds;
+    }
+    // 转场属于清单的「声明的输入」：素材阶段重写清单时会原样带回（见 renderManifest.writeRenderManifestFile），
+    // 这里同步一份，删资产那条分支（deleteShotGeneratedAssets 内部重写清单）也不会把它丢掉。
+    if (transition !== undefined) {
+      manifestShot.transition = transition;
     }
   }
   manifest.durationSeconds = total;
@@ -368,6 +391,28 @@ function normalizeVoiceOverride(voice: unknown): string {
     throw new Error("shot.voice must be a string.");
   }
   return voice.trim();
+}
+
+/**
+ * @author zhangbaohong  @date 2026-11-03  @see https://github.com/1241751430/AIVideo.git
+ * 功能：校验转场取值：只接受 `cut` / `fade`（大小写与首尾空白归一），空串表示回到默认规则。
+ * 不在白名单内的写法直接拒绝而不是落盘——渲染器只认 `cut`，放行 `hard_cut` 之类的写法会让用户
+ * 以为自己改了剪点，成片却悄悄按 fade 走。
+ * @param transition 请求体里的转场（类型未知）
+ * @returns 归一化后的转场；空串代表「回到默认规则」，由调用方补成首镜 cut / 其余 fade
+ */
+function normalizeEditTransition(transition: unknown): string {
+  if (typeof transition !== "string") {
+    throw new Error("shot.transition must be a string.");
+  }
+  const value = transition.trim().toLowerCase();
+  if (!value) {
+    return "";
+  }
+  if (value !== "cut" && value !== "fade") {
+    throw new Error('shot.transition must be "cut" or "fade".');
+  }
+  return value;
 }
 
 /**

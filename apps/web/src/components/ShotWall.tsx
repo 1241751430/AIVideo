@@ -2,7 +2,7 @@
  * @file ShotWall.tsx
  * @author zhangbaohong
  * @date 2026-09-17
- * @description 镜头墙：缩略图优先的镜头卡网格——角标（时长/景别/转场/素材来源声明/画面来源，悬停可见许可与出处）、产物齐备小灯与拖拽排序把手（调 PUT /:id/shots/order，失败即回滚）；标题/旁白/字幕/提示词/时长编辑收进折叠抽屉，保存与单镜重试以 toast 反馈；缩略区可点开灯箱（←/→ 跨镜、Esc），顶部提供「重试失败镜头」批量入口；core 失效矩阵自动删除过期产物。
+ * @description 镜头墙：缩略图优先的镜头卡网格——角标（时长/景别/转场/素材来源声明/画面来源，悬停可见许可与出处）、产物齐备小灯与拖拽排序把手（调 PUT /:id/shots/order，失败即回滚）；标题/旁白/字幕/提示词/时长/转场编辑收进折叠抽屉（转场只改剪点、不删配音与素材），保存与单镜重试以 toast 反馈；缩略区可点开灯箱（←/→ 跨镜、Esc），顶部提供「重试失败镜头」批量入口；core 失效矩阵自动删除过期产物。
  * @see https://github.com/1241751430/AIVideo.git
  */
 import { useEffect, useMemo, useState } from "react";
@@ -42,13 +42,32 @@ interface ShotForm {
   caption: string;
   visualPrompt: string;
   durationSeconds: string;
+  /** 转场：`cut` / `fade`。分镜里是必填字段，缺省时按首镜 cut、其余 fade 展示。 */
+  transition: string;
+}
+
+/** 转场下拉的选项；未知取值（老项目或将来新增的类型）会额外补一个只读项，不让界面把现值抹掉。 */
+const TRANSITION_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: "cut", label: "硬切（cut）" },
+  { value: "fade", label: "淡出（fade）" }
+];
+
+/**
+ * @author zhangbaohong  @date 2026-11-03  @see https://github.com/1241751430/AIVideo.git
+ * 功能：把现存转场值补进下拉选项：值不在内置两项里时追加一项原样展示，避免 select 静默显示成第一项。
+ */
+function transitionOptions(current: string): Array<{ value: string; label: string }> {
+  if (!current || TRANSITION_OPTIONS.some((option) => option.value === current)) {
+    return TRANSITION_OPTIONS;
+  }
+  return [...TRANSITION_OPTIONS, { value: current, label: `${current}（未知取值）` }];
 }
 
 /**
  * @author zhangbaohong  @date 2026-09-17  @see https://github.com/1241751430/AIVideo.git
  * 功能：从工件条目（storyboard 优先、manifest 兜底）提取表单初始值。
  */
-function formOf(entry: ShotArtifactEntry): ShotForm {
+function formOf(entry: ShotArtifactEntry, index = 0): ShotForm {
   const sb = (entry.storyboard ?? {}) as Record<string, unknown>;
   const pick = (key: string): string | undefined => {
     const fromSb = sb[key];
@@ -66,7 +85,9 @@ function formOf(entry: ShotArtifactEntry): ShotForm {
     narration: pick("narration") ?? "",
     caption: pick("caption") ?? "",
     visualPrompt: pick("visualPrompt") ?? "",
-    durationSeconds: pick("durationSeconds") ?? ""
+    durationSeconds: pick("durationSeconds") ?? "",
+    // 分镜里 transition 必填，但老工件可能只有清单那份；都没有时按构建规则回落（首镜 cut、其余 fade）。
+    transition: pick("transition") ?? (index === 0 ? "cut" : "fade")
   };
 }
 
@@ -315,22 +336,23 @@ function ShotCard({
 }: CardProps) {
   const toast = useToast();
   const shotId = String(entry.shotId ?? `shot-${index + 1}`);
-  const [form, setForm] = useState<ShotForm>(() => formOf(entry));
+  const [form, setForm] = useState<ShotForm>(() => formOf(entry, index));
   const [saving, setSaving] = useState(false);
   const [open, setOpen] = useState(false);
   /** 待确认的重试目标：两个重试按钮都会删产物并重排任务，和删除同级，不能一点就走。 */
   const [confirmRetry, setConfirmRetry] = useState<"asset" | "audio" | null>(null);
+  const base = formOf(entry, index);
   const dirty = (): boolean =>
-    form.title !== formOf(entry).title ||
-    form.narration !== formOf(entry).narration ||
-    form.caption !== formOf(entry).caption ||
-    form.visualPrompt !== formOf(entry).visualPrompt ||
-    form.durationSeconds !== formOf(entry).durationSeconds;
+    form.title !== base.title ||
+    form.narration !== base.narration ||
+    form.caption !== base.caption ||
+    form.visualPrompt !== base.visualPrompt ||
+    form.durationSeconds !== base.durationSeconds ||
+    form.transition !== base.transition;
 
   const save = (): void => {
-    const base = formOf(entry);
     const patch: Record<string, string | number> = {};
-    for (const key of ["title", "narration", "caption", "visualPrompt"] as const) {
+    for (const key of ["title", "narration", "caption", "visualPrompt", "transition"] as const) {
       if (form[key] !== base[key]) {
         patch[key] = form[key];
       }
@@ -495,6 +517,20 @@ function ShotCard({
               value={form.durationSeconds}
               onChange={(e) => setForm({ ...form, durationSeconds: e.target.value })}
             />
+          </label>
+          <label className="field">
+            转场（只改剪点，不删配音与素材）
+            <select
+              disabled={busy}
+              value={form.transition}
+              onChange={(e) => setForm({ ...form, transition: e.target.value })}
+            >
+              {transitionOptions(form.transition).map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
           </label>
           <div className="row">
             <button className="primary" disabled={busy || saving || !dirty()} onClick={save}>
